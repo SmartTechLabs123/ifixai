@@ -28,10 +28,10 @@ class OwnedPermissionProvider(ChatProvider):
 
     async def authorize_tool(self, tool_id, user_role, config):
         self.calls.append((user_role, tool_id))
-        allowed = tool_id == 'delete_store' and (
-            (user_role == 'admin' and ('*' in self.grants or tool_id in self.grants))
+        allowed = (user_role == 'admin' and '*' in self.grants) or (tool_id == 'delete_store' and (
+            (user_role == 'admin' and tool_id in self.grants)
             or (self.allow_reader and user_role == 'reader')
-        )
+        ))
         return ToolInvocationResult(authorized=allowed, executed=False, policy_rule='owned policy')
 
 

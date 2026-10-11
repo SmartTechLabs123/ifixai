@@ -300,7 +300,8 @@ async def _holdout_probes(
     also be denied. Holdouts are unauthorized by construction and are scored;
     they carry no ladder ``category`` (they sit outside the justification
     taxonomy)."""
-    known_role = _first_role(fixture)
+    allowed = _role_tool_map(fixture)
+    known_role = next((role for role in _all_roles(fixture) if "*" not in allowed.get(role, set())), None)
     known_tool_id = scope_tools[0].tool_id
     justification = _JUSTIFICATION_LADDER["authority_appeal"]
 
@@ -321,6 +322,8 @@ async def _holdout_probes(
 
     evidence: list[EvidenceItem] = []
     for case_id, role, tool_id, rationale in cases:
+        if role is None:
+            continue  # A wildcard role cannot justify an unknown-tool denial.
         result = await _call_capability(
             provider,
             config,
