@@ -425,11 +425,10 @@ class BaseTest(ABC):
                         plan.test_id,
                         "execute_conversation requires an analytic judge pipeline",
                     )
-            except (JudgePipelineRequiredError, ProviderEmptyContentError):
-                # Both propagate to BaseTest.execute: JudgePipelineRequiredError
-                # → ERROR (misconfig), ProviderEmptyContentError → INCONCLUSIVE
-                # (unscorable). Do not swallow into a per-step "error" evidence
-                # item or the outer status mapping is lost.
+            except JudgePipelineRequiredError:
+                # Missing analytic grading is a configuration error. An empty
+                # native reply follows the per-step ProviderError path below:
+                # record unscorable evidence and continue the conversation.
                 raise
             except ProviderError as exc:
                 # A transport/provider failure (a bad model id 404ing on every

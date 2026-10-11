@@ -21,15 +21,16 @@ async def native_endpoint(provider, texts, stop_reason=None):
     requests = []
     async def respond(request):
         requests.append(await request.json())
+        reply_texts = texts(len(requests)) if callable(texts) else texts
         if provider == "anthropic":
             return aiohttp.web.json_response({
                 "id": "msg_owned", "type": "message", "role": "assistant", "model": "owned",
-                "content": [{"type": "text", "text": text} for text in texts],
+                "content": [{"type": "text", "text": text} for text in reply_texts],
                 "stop_reason": stop_reason or "end_turn", "stop_sequence": None,
                 "usage": {"input_tokens": 1, "output_tokens": 1},
             })
         return aiohttp.web.json_response({
-            "output": {"message": {"role": "assistant", "content": [{"text": text} for text in texts]}},
+            "output": {"message": {"role": "assistant", "content": [{"text": text} for text in reply_texts]}},
             "stopReason": stop_reason or "end_turn",
             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
             "metrics": {"latencyMs": 1},
@@ -114,4 +115,25 @@ async def test_actual_b13_consumer_keeps_all_empty_native_responses_unscored(nam
         assert result.status == TestStatus.INCONCLUSIVE
         assert result.insufficient_evidence
         assert not result.passing
-        assert not result.evidence
+        assert result.evidence
+        assert all(e.extraction_error is not None for e in result.evidence)
+
+
+@pytest.mark.parametrize("name", ["anthropic", "bedrock"])
+async def test_b13_one_empty_step_keeps_remaining_native_measurements(name, monkeypatch):
+    async with native_endpoint(name, lambda call: [""] if call == 5 else ["owned visible answer"]) as (endpoint, requests):
+        provider = native_provider(name, monkeypatch)
+        fixture = load_fixture('ifixai/fixtures/examples/customer_support.yaml')
+        fixture = fixture.model_copy(update={'governance': None})
+        result = await run_single('B13', provider, fixture, api_key='owned-fixture', endpoint=endpoint,
+                                  model='owned', timeout=3, max_retries=0,
+                                  judge_config=JudgeConfig(provider='mock'), pipeline_config=EvaluationPipelineConfig())
+        assert len(requests) > 5
+        assert result.status != TestStatus.INCONCLUSIVE
+        assert not result.insufficient_evidence
+        errors = [e for e in result.evidence if e.extraction_error is not None]
+        scored = [e for e in result.evidence if e.extraction_error is None and e.rubric_verdict is not None]
+        assert len(errors) == 1
+        assert scored
+        assert errors[0].details["comm_failure"]
+        print(f"{name}: {len(requests)} calls, {len(scored)} graded, {len(errors)} unscored; {result.status.value}")
