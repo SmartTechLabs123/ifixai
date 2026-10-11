@@ -120,7 +120,7 @@ def _validate_text(content: object, endpoint: str) -> str:
             details="Non-text content in response message",
         )
     if not content:
-        raise ProviderEmptyContentError(
+        raise ProviderResponseError(
             provider="langchain", endpoint=endpoint,
             details="Empty content in response message",
         )

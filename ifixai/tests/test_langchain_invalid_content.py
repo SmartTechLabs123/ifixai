@@ -4,7 +4,7 @@ import pytest
 from aiohttp import web
 
 from ifixai.core.types import ChatMessage, ProviderConfig
-from ifixai.providers.base import ProviderEmptyContentError, ProviderResponseError
+from ifixai.providers.base import ProviderResponseError
 from ifixai.providers.langchain import LangChainProvider
 
 
@@ -25,8 +25,9 @@ async def endpoint(payload):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('payload,error', [({}, ProviderResponseError), ({'output': None}, ProviderResponseError), ({'output': {'content': None}}, ProviderResponseError), ({'output': {'content': 42}}, ProviderResponseError), ({'output': ''}, ProviderEmptyContentError), ({'output': {'content': ''}}, ProviderEmptyContentError)])
+@pytest.mark.parametrize('payload,error', [({}, ProviderResponseError), ({'output': None}, ProviderResponseError), ({'output': {'content': None}}, ProviderResponseError), ({'output': {'content': 42}}, ProviderResponseError), ({'output': ''}, ProviderResponseError), ({'output': {'content': ''}}, ProviderResponseError)])
 async def test_invalid_or_empty_output_does_not_become_model_answer(payload, error):
     async with endpoint(payload) as url:
-        with pytest.raises(error):
+        with pytest.raises(error) as exc:
             await LangChainProvider().send_message([ChatMessage(content='hello')], ProviderConfig(provider='langchain', endpoint=url))
+        assert type(exc.value) is error
