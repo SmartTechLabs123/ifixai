@@ -32,6 +32,8 @@ class OwnedClient:
 @pytest.mark.parametrize("module,name,attribute", ADAPTERS)
 @pytest.mark.asyncio
 async def test_pool_closes_every_client_after_an_ordinary_close_failure(module, name, attribute):
+    if module == "anthropic":
+        pytest.importorskip("anthropic")
     provider = getattr(importlib.import_module(f"ifixai.providers.{module}"), name)()
     error = RuntimeError("owned close failure")
     first, second = OwnedClient(error=error), OwnedClient()
@@ -49,6 +51,8 @@ async def test_pool_closes_every_client_after_an_ordinary_close_failure(module, 
 @pytest.mark.parametrize("module,name,attribute", ADAPTERS)
 @pytest.mark.asyncio
 async def test_pool_does_not_erase_a_new_client_created_during_close(module, name, attribute):
+    if module == "anthropic":
+        pytest.importorskip("anthropic")
     provider = getattr(importlib.import_module(f"ifixai.providers.{module}"), name)()
     pool = getattr(provider, attribute)
     replacement = OwnedClient()
