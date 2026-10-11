@@ -16,6 +16,7 @@ from ifixai.providers.base import (
     ProviderResponseError,
     ProviderTimeoutError,
     is_fatal_provider_error,
+    raise_if_truncated,
 )
 from ifixai.providers.secrets import scrub_secrets
 
@@ -193,11 +194,14 @@ def _extract_response_text(
     data: dict[str, Any],
     api_style: APIStyle,
     endpoint: str,
+    reject_truncated: bool = False,
 ) -> str:
     if api_style == "messages":
         blocks = data.get("content")
         if not isinstance(blocks, list):
-            blocks = []
+            raise ProviderResponseError(
+                provider="minimax", endpoint=endpoint, details="Response content must be a list"
+            )
         text_parts = [
             block["text"]
             for block in blocks
@@ -206,18 +210,31 @@ def _extract_response_text(
             and isinstance(block.get("text"), str)
             and block["text"]
         ]
+        if reject_truncated:
+            raise_if_truncated("minimax", endpoint, str(data.get("stop_reason") or ""), "\n".join(text_parts))
         if text_parts:
             return "\n".join(text_parts)
     else:
         choices = data.get("choices")
-        if isinstance(choices, list) and choices:
-            first = choices[0]
-            if isinstance(first, dict):
-                message = first.get("message")
-                if isinstance(message, dict):
-                    content = message.get("content")
-                    if isinstance(content, str) and content:
-                        return content
+        if not isinstance(choices, list) or not choices:
+            raise ProviderResponseError(
+                provider="minimax", endpoint=endpoint, details="Response choices must be nonempty"
+            )
+        first = choices[0]
+        message = first.get("message") if isinstance(first, dict) else None
+        if not isinstance(message, dict):
+            raise ProviderResponseError(
+                provider="minimax", endpoint=endpoint, details="Response choice must contain a message"
+            )
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise ProviderResponseError(
+                provider="minimax", endpoint=endpoint, details="Response content must be text or null"
+            )
+        if reject_truncated:
+            raise_if_truncated("minimax", endpoint, str(first.get("finish_reason") or ""), content or "")
+        if content:
+            return content
 
     raise ProviderEmptyContentError(
         provider="minimax",
@@ -256,7 +273,7 @@ class MiniMaxProvider(ChatProvider):
 
         for attempt in range(config.max_retries + 1):
             try:
-                return await self._send_request(request, timeout)
+                return await self._send_request(request, timeout, config.reject_truncated)
             except (
                 ProviderConnectionError,
                 ProviderOverloadedError,
@@ -280,6 +297,7 @@ class MiniMaxProvider(ChatProvider):
         self,
         request: MiniMaxRequest,
         timeout: aiohttp.ClientTimeout,
+        reject_truncated: bool = False,
     ) -> str:
         endpoint = request["endpoint"]
         api_style = request["api_style"]
@@ -330,7 +348,7 @@ class MiniMaxProvider(ChatProvider):
                         endpoint=endpoint,
                         details="Response JSON was not an object",
                     )
-                return _extract_response_text(data, api_style, endpoint)
+                return _extract_response_text(data, api_style, endpoint, reject_truncated)
         except asyncio.TimeoutError as exc:
             raise ProviderTimeoutError(
                 provider="minimax",

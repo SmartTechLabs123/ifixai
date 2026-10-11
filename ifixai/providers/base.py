@@ -137,6 +137,7 @@ _FATAL_ERROR_MARKERS: tuple[str, ...] = (
 _QUOTA_EXHAUSTED_MARKERS: tuple[str, ...] = (
     "insufficient_quota",
     "insufficient credits",
+    "insufficient balance",
     "payment required",
 )
 

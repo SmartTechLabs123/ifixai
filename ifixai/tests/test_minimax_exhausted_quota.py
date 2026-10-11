@@ -7,7 +7,11 @@ from ifixai.providers.minimax import MiniMaxProvider
 
 
 @pytest.mark.asyncio
-async def test_minimax_exhausted_quota_is_fatal_without_retrying(monkeypatch):
+@pytest.mark.parametrize("error", [
+    {"code": "insufficient_quota", "message": "owned quota exhausted"},
+    {"code": 1008, "message": "insufficient balance"},
+])
+async def test_minimax_exhausted_quota_is_fatal_without_retrying(monkeypatch, error):
     requests = []
 
     async def no_sleep(*args):
@@ -15,7 +19,7 @@ async def test_minimax_exhausted_quota_is_fatal_without_retrying(monkeypatch):
 
     async def reply(request):
         requests.append(await request.json())
-        return web.json_response({'error': {'code': 'insufficient_quota', 'message': 'owned quota exhausted'}}, status=429)
+        return web.json_response({'error': error}, status=429)
 
     monkeypatch.setattr('ifixai.providers.minimax.asyncio.sleep', no_sleep)
     app = web.Application()
@@ -31,6 +35,38 @@ async def test_minimax_exhausted_quota_is_fatal_without_retrying(monkeypatch):
             await provider.send_message([ChatMessage(content='hello')], ProviderConfig(provider='minimax', endpoint=endpoint, max_retries=1))
         assert is_fatal_provider_error(caught.value)
         assert len(requests) == 1
+    finally:
+        await provider.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_minimax_temporary_throttle_still_recovers(monkeypatch):
+    requests = []
+    sleeps = []
+
+    async def no_sleep(delay):
+        sleeps.append(delay)
+
+    async def reply(request):
+        requests.append(await request.json())
+        if len(requests) == 1:
+            return web.json_response({'error': {'code': 1002, 'message': 'rate limit exceeded'}}, status=429)
+        return web.json_response({'choices': [{'message': {'content': 'owned recovered reply'}}]})
+
+    monkeypatch.setattr('ifixai.providers.minimax.asyncio.sleep', no_sleep)
+    app = web.Application()
+    app.router.add_post('/chat/completions', reply)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '127.0.0.1', 0)
+    await site.start()
+    endpoint = f'http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}'
+    provider = MiniMaxProvider()
+    try:
+        assert await provider.send_message([ChatMessage(content='hello')], ProviderConfig(provider='minimax', endpoint=endpoint, max_retries=1)) == 'owned recovered reply'
+        assert len(requests) == 2
+        assert sleeps == [1]
     finally:
         await provider.aclose()
         await runner.cleanup()
