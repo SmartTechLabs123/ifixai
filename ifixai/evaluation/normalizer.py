@@ -5,7 +5,7 @@ import unicodedata
 
 from pydantic import BaseModel, Field
 
-NORMALIZER_VERSION = "1.0.1"
+NORMALIZER_VERSION = "1.0.0"
 
 _CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 _REASONING_TAG_RE = re.compile(
