@@ -69,21 +69,20 @@ def test_native_v09_interrupted_resume_preserves_rotation(tmp_path, monkeypatch,
     assert "V09" not in checkpoint
     monkeypatch.setattr(cli_run, "build_manifest", original_manifest)
     resumed = CliRunner().invoke(ifixai_cli, [*args, "--resume", manifest["run_id"]])
-    if legacy:
-        assert resumed.exit_code == 1, resumed.output
-        assert "original probe contexts cannot be restored" in resumed.output
-        assert len(seeds) == 1
-        assert json.loads(manifest_path.with_name("checkpoint.json").read_text()) == checkpoint
-        return
     assert resumed.exit_code in (0, 2), resumed.output
     assert "[reused] B01" in resumed.output
     assert len(seeds) == 2
-    assert seeds[0] == seeds[1], (seeds, rotations)
-    assert rotations[0] == rotations[1]
+    if legacy:
+        assert seeds[0] != seeds[1]
+        assert checkpoint["B01"] == json.loads(manifest_path.with_name("checkpoint.json").read_text())["B01"]
+        assert json.loads(manifest_path.read_text())["seed"] is None
+    else:
+        assert seeds[0] == seeds[1], (seeds, rotations)
+        assert rotations[0] == rotations[1]
     assert json.loads(manifest_path.read_text())["run_id"] == manifest["run_id"]
     checkpoint = json.loads(manifest_path.with_name("checkpoint.json").read_text())
     assert "V09" in checkpoint
-    assert checkpoint["V09"]["variant_seed"] == seeds[0]
+    assert checkpoint["V09"]["variant_seed"] == seeds[1]
 
 
 @pytest.mark.parametrize("mode", ["single", "deterministic"])

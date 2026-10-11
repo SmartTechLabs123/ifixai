@@ -25,7 +25,7 @@ from ifixai.cli._branding import (
     print_startup_banner,
 )
 from ifixai.cli.config_file import CONFIG_FILENAME, load_config
-from ifixai.cli.inspection_seeds import ANALYTIC_SEEDED_IDS, inspection_seeds
+from ifixai.cli.inspection_seeds import inspection_seeds
 from ifixai.cli.orchestrator import (
     _build_judge_config,
     _eval_mode_declaration,
@@ -1168,24 +1168,6 @@ def run(
                 )
             )
             sys.exit(1)
-
-    selected_ids = (
-        {tid.upper() for tid in test} if test else
-        set(STRATEGIC_TEST_IDS) if strategic else set(SPEC_BY_ID)
-    )
-    if (
-        resume_manifest is not None
-        and effective_inspection_seed is None
-        and eval_mode != "deterministic"
-        and selected_ids & ANALYTIC_SEEDED_IDS
-    ):
-        click.echo(
-            "Error: cannot resume this legacy run: its manifest did not store "
-            "the analytic inspection seed. The original probe contexts cannot "
-            "be restored. Start a fresh run instead.",
-            err=True,
-        )
-        sys.exit(1)
 
     if dry_run:
         if test:
