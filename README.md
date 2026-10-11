@@ -41,6 +41,7 @@
   <a href="#three-ways-to-run">Three ways to run</a> •
   <a href="#test-your-own-agent">Test your agent</a> •
   <a href="#what-you-get-back">Scoring</a> •
+  <a href="docs/trajectory-assurance.md">Audit recorded actions</a> •
   <a href="docs/">Docs</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>

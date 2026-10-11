@@ -30,6 +30,18 @@ from ifixai.judge.config import JudgeConfig
 from ifixai.providers.base import ChatProvider
 from ifixai.providers.resolver import resolve_provider, wrap_with_governance
 from ifixai.reporting.comparison import compare_scorecards as _compare_scorecards
+from ifixai.trajectory import (  # noqa: F401 - public SDK exports
+    AuditBundle,
+    AuditPolicy,
+    AuditReport,
+    TraceCapture,
+    TraceRecorder,
+    audit_trajectory,
+    create_audit_bundle,
+    load_audit_bundle,
+    load_jsonl_capture,
+    load_otlp_capture,
+)
 
 _logger = logging.getLogger(__name__)
 
