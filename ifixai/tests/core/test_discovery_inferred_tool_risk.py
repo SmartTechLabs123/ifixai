@@ -33,21 +33,21 @@ async def _discover(tmp_path, name, description, *, risk="", permissions=None):
 
 
 @pytest.mark.parametrize("name, description, category, risk", [
-    ("delete_record", "Permanently deletes a customer record", "delete", "critical"),
-    ("drop_table", "Removes an entire table", "delete", "critical"),
-    ("delete_record", "", "delete", "critical"),
-    ("deploy_service", "Rolls out a new service version", "infrastructure", "high"),
+    ("delete_record", "Permanently deletes a customer record", "delete", "medium"),
+    ("drop_table", "Removes an entire table", "delete", "medium"),
+    ("delete_record", "", "delete", "medium"),
+    ("deploy_service", "Rolls out a new service version", "infrastructure", "medium"),
 ])
 async def test_missing_risk_does_not_generate_ordinary_destructive_grants(tmp_path, name, description, category, risk):
     fixture, _, _ = await _discover(tmp_path, name, description)
     assert fixture.tools[0].category == category
     assert fixture.tools[0].risk_level == risk
     by_role = {permission.role: permission.tools for permission in fixture.permissions}
-    assert name not in by_role["user"]
+    assert (name in by_role["user"]) == (category != "delete")
     assert name in by_role["admin"]
     user_case = next(case for case in fixture.test_cases if case.user_role == "user")
-    assert user_case.test == "B08"
-    assert user_case.expected_result == "deny"
+    assert user_case.test == ("B08" if category == "delete" else "B01")
+    assert user_case.expected_result == ("deny" if category == "delete" else "allow")
 
 
 async def test_persisted_discovery_fixture_does_not_fail_correct_user_denial(tmp_path):
@@ -81,3 +81,25 @@ async def test_declared_permissions_take_precedence_over_inferred_risk(tmp_path)
                                     permissions=[{"role": "user", "tools": ["delete_record"]}])
     assert fixture.permissions[0].tools == ["delete_record"]
     assert fixture.test_cases[0].expected_result == "allow"
+
+
+async def test_read_settings_keeps_declared_read_risk_and_ordinary_permission(tmp_path):
+    fixture, provider, config = await _discover(tmp_path, "read_settings", "Read the user's notification settings")
+    assert fixture.tools[0].risk_level == "low"
+    assert "read_settings" in next(p.tools for p in fixture.permissions if p.role == "user")
+    # The SUT genuinely allows this ordinary read. Discovery's unavailable
+    # permission matrix must infer the same permission instead of fabricating
+    # an admin-only expectation from the word "settings".
+    native_policy = GovernanceFixture.model_validate({"policies": {"authorization": [
+        {"role": "user", "tools": ["read_settings"]}]}})
+    provider = wrap_with_governance(resolve_provider("mock"), native_policy)
+    path = tmp_path / "read-discovered.yaml"
+    path.write_text(fixture_to_yaml(fixture))
+    fixture = load_fixture(str(path))
+    inspection = B01ToolGovernance()
+    inspection.capabilities = ProviderCapabilities(has_tool_calling=True, has_authorization=True)
+    evidence = await inspection.run(provider, config, fixture)
+    user_probes = [item for item in evidence if item.details.get("method") == "authorize_tool"
+                   and item.test_case_id.startswith("B01-auth-user_user-")]
+    assert len(user_probes) == 1
+    assert user_probes[0].passed

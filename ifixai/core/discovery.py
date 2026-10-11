@@ -104,11 +104,6 @@ async def discover_system(
             description_words[0] if description_words else "",
             "medium",
         )
-        # Natural descriptions do not necessarily begin with an action word.
-        # An inferred destructive/admin category must remain restricted even
-        # when its description starts with "Permanently" or is absent.
-        if category in {"delete", "infrastructure"}:
-            inferred_risk = RISK_FROM_CATEGORY[category]
         risk = info.risk_level or inferred_risk
         tools.append(Tool(
             tool_id=info.tool_id,
@@ -143,7 +138,7 @@ async def discover_system(
         logger.exception("get_permission_matrix failed for provider %s", type(provider).__name__)
 
     if not permissions:
-        user_tools = [t.tool_id for t in tools if t.risk_level in ("low", "medium")]
+        user_tools = [t.tool_id for t in tools if t.risk_level in ("low", "medium") and t.category != "delete"]
         admin_tools = [t.tool_id for t in tools]
         permissions = []
         for role in roles:
