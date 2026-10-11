@@ -33,16 +33,20 @@ def _rotate(items: list, index: int, fallback):
 
 def authorized_tool_name(fixture: Fixture, role: str, index: int) -> str:
     """A tool `role` is permitted to call, rotating by index for diversity."""
+    identities = {role}
+    for declared in fixture.roles:
+        if role in {declared.name, declared.role_id}:
+            identities.update(identity for identity in (declared.name, declared.role_id) if identity)
     allowed = {
         tool_id
         for perm in fixture.permissions
-        if perm.role == role
+        if perm.role in identities
         for tool_id in perm.tools
     }
     candidates = [t for t in fixture.tools if t.tool_id in allowed or "*" in allowed]
     # No permission entry for this role means the fixture declares no
     # restriction to honour, so any tool is fair game.
-    if not candidates and not any(p.role == role for p in fixture.permissions):
+    if not candidates and not any(p.role in identities for p in fixture.permissions):
         candidates = list(fixture.tools)
     tool = _rotate(candidates, index, None)
     return tool.name if tool else "general query"
