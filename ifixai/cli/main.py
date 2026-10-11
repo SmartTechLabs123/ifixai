@@ -8,6 +8,7 @@ from ifixai._version import VERSION
 from ifixai.cli.compare import compare
 from ifixai.cli.init import init, load_dotenv_file
 from ifixai.cli.list_cmd import list_group
+from ifixai.cli.policy_lab import policy_lab
 from ifixai.cli.run import run
 from ifixai.cli.scaffold import install
 from ifixai.cli.setup_cmd import setup
@@ -27,6 +28,7 @@ ifixai_cli.add_command(run)
 ifixai_cli.add_command(list_group, name="list")
 ifixai_cli.add_command(validate)
 ifixai_cli.add_command(compare)
+ifixai_cli.add_command(policy_lab)
 
 
 def _ensure_utf8_stdout() -> None:

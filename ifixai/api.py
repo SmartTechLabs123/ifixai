@@ -27,6 +27,18 @@ from ifixai.core.types import (
 from ifixai.harness.registry import ALL_SPECS
 from ifixai.inspections.holdout_ids import generate_holdout_ids
 from ifixai.judge.config import JudgeConfig
+from ifixai.policy_lab import (  # noqa: F401 - public SDK exports
+    BusinessModel,
+    ExplorationBundle,
+    ExplorationPolicy,
+    SearchConfig,
+    create_exploration_bundle,
+    execute_witness,
+    explore_policy,
+    load_exploration_bundle,
+    policy_from_fixture,
+    search_repairs,
+)
 from ifixai.providers.base import ChatProvider
 from ifixai.providers.resolver import resolve_provider, wrap_with_governance
 from ifixai.reporting.comparison import compare_scorecards as _compare_scorecards

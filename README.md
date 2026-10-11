@@ -83,6 +83,8 @@ All three run the same diagnostic underneath. The difference is how you configur
 
 ## Quick start
 
+**Explore business-policy compositions:** [Policy Lab](docs/business-policy-lab.md) finds shortest harmful sequences of permitted actions and checks permission repairs against legitimate completion goals. Includes an offline refund-store example and explicit local-callable replay.
+
 Now try it yourself. Pick a path from the table above; full walkthrough: **[docs/get-started.md](docs/get-started.md)**.
 
 ### Guided wizard (recommended)
