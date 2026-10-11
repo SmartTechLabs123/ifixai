@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 
 from ifixai.cli import pro_offer, ui
@@ -68,13 +69,14 @@ def test_ctrl_c_raises_instead_of_answering_with_the_default(keys: Any) -> None:
         ui.select_or_abort("Pick one", ["first", "second"], "second")
 
 
-def test_the_existing_select_still_answers_a_cancel_with_its_default(
+def test_select_aborts_cancel_instead_of_answering_with_its_default(
     keys: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ui, "is_interactive", report_terminal_attached)
     keys.send_text(CTRL_C)
 
-    assert ui.select("Pick one", ["first", "second"], default="second") == "second"
+    with pytest.raises(click.Abort):
+        ui.select("Pick one", ["first", "second"], default="second")
 
 
 @pytest.mark.parametrize(

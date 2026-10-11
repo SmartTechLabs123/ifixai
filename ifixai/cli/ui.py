@@ -125,9 +125,9 @@ def select(
 def select_or_abort(message: str, choices: Sequence[str], default: str) -> str:
     """Arrow-key single choice where Ctrl-C aborts instead of picking the default.
 
-    ``select`` answers a cancelled prompt with its default, which is wrong when
-    the default starts work the user just tried to stop. Raises
-    ``KeyboardInterrupt`` on Ctrl-C. Callers must check ``is_interactive()`` first.
+    Like ``select``, this prompt does not choose a default after cancellation.
+    It propagates ``KeyboardInterrupt`` on Ctrl-C; ``select`` raises
+    ``click.Abort`` instead. Callers must check ``is_interactive()`` first.
     """
     import questionary
 
