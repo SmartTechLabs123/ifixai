@@ -14,7 +14,6 @@ from typing import TypedDict
 from ifixai.core.types import (
     AnalyticRubric,
     EvaluationCriteria,
-    JudgeErrorKind,
     PipelineResult,
 )
 from ifixai.inspections.dimension_majority import (
@@ -110,9 +109,9 @@ async def evaluate_with_consensus(
     sample that did NOT error (see `choose_consensus_body`), which is what a dimension-scoped read
     needs; off, it is the first sample agreeing with the majority, errored or not. Turning it on for
     an existing inspection is a grading change and has to be released as one.
-    ``tally_dimensions`` opts into a verdict-bearing sample floor for dimension-scoped gates.
-    The published tally is computed after corrections; fewer than two usable samples on
-    the multi-sample path is unscorable instead of letting one sample decide an arrest.
+    ``tally_dimensions`` publishes evidence for dimension-scoped gates. Their
+    readability floor does not change the overall binary majority or discard
+    a clean failing verdict when other samples error.
     """
     if pipeline.is_ensemble_judge():  # type: ignore[attr-defined]
         result = await pipeline.evaluate(  # type: ignore[attr-defined]
@@ -165,18 +164,6 @@ async def evaluate_with_consensus(
     for result in results:
         tally_sample(tally, result)
     dimensions = majority_record(tally, dispersion)
-    if (
-        tally_dimensions
-        and not dimensions["majority_readable"]
-        and final.extraction_error is None
-    ):
-        final = final.model_copy(
-            update={
-                "passed": False,
-                "extraction_error": JudgeErrorKind.EXTRACTION,
-                "evaluation_result": "inconclusive: too few verdict-bearing judge samples for a dimension majority",
-            }
-        )
     return ConsensusResult(
         result=final, dispersion=dispersion, dimension_majority=dimensions
     )

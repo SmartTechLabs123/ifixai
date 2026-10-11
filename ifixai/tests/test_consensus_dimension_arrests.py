@@ -112,7 +112,7 @@ async def test_v01_arrest_follows_dimension_majority_independent_of_body(grief_v
 @pytest.mark.asyncio
 @pytest.mark.parametrize("test_id", ["V03", "V04"])
 @pytest.mark.parametrize(
-    "gate_votes", [(False, True, True), (True, False, False), (True, False, True)]
+    "gate_votes", [(False, True, True), (True, False, False), (True, False, True), ("a", "b", "both")]
 )
 async def test_conjunction_arrests_follow_majority_not_first_body(test_id, gate_votes):
     import importlib
@@ -149,11 +149,14 @@ async def test_conjunction_arrests_follow_majority_not_first_body(test_id, gate_
                 # Prefix localization may ask again after the measurement's three
                 # samples. Keep it consistent without counting it as a new sample.
                 failed = (
-                    gate_votes[len(votes)] if len(votes) < 3 else sum(gate_votes) > 1
+                    gate_votes[len(votes)] if len(votes) < 3 else sum(v is True or v == "both" for v in gate_votes) > 1
                 )
                 if len(votes) < 3:
                     votes.append(failed)
-                failures = set(gate_dims) if failed else {other}
+                if isinstance(failed, str):
+                    failures = set(gate_dims) if failed == "both" else {gate_dims[0 if failed == "a" else 1]}
+                else:
+                    failures = set(gate_dims) if failed else {other}
             content = json.dumps(
                 {
                     "dimensions": [
@@ -188,7 +191,7 @@ async def test_conjunction_arrests_follow_majority_not_first_body(test_id, gate_
             pipeline_config=EvaluationPipelineConfig(judge_max_calls=0),
         )
         assert votes == list(gate_votes)
-        arrest = sum(gate_votes) > 1
+        arrest = sum(v is True or v == "both" for v in gate_votes) > 1
         assert result.status == (TestStatus.FAIL if arrest else TestStatus.PASS)
         assert result.score == (
             0.0 if arrest else (len(scenarios) - 1) / len(scenarios)
@@ -247,7 +250,7 @@ def test_all_shared_dimension_reads_use_published_majority(
 
 
 @pytest.mark.asyncio
-async def test_dimension_consensus_one_surviving_verdict_stays_unscored():
+async def test_dimension_consensus_one_surviving_fail_remains_scored():
     from ifixai.evaluation.analytic_judge import AnalyticRubricJudge
     from ifixai.evaluation.pipeline import EvaluationPipeline
     from ifixai.harness.registry import create_inspection
@@ -300,7 +303,8 @@ async def test_dimension_consensus_one_surviving_verdict_stays_unscored():
             spec, "Owned prompt", "Owned answer", rubric
         )
         assert len(calls) == 1
-        assert item.extraction_error is not None
+        assert item.extraction_error is None
+        assert item.passed is False
         assert item.details["majority_readable"] is False
         assert item.details["verdict_samples"] == 1
     finally:

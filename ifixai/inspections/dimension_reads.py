@@ -139,7 +139,16 @@ def failing_all(
     dimension was not marked failed, and inferring a failure from an absent score would manufacture
     the finding. Probes with no rubric verdict are absent by construction, as in `failing_any`.
     """
-    return [e for e in scored if all(_dimension_failed(e, name) for name in dimensions)]
+    def fails_conjunction(item: EvidenceItem) -> bool:
+        if "sample_failed_dimensions" in item.details:
+            samples = item.details["sample_failed_dimensions"]
+            return item.details.get("majority_readable") is True and sum(
+                all(name in failed for name in dimensions) for failed in samples
+            ) * 2 > len(samples)
+        # Historical evidence has no sample-level joint record.
+        return all(_dimension_failed(item, name) for name in dimensions)
+
+    return [e for e in scored if fails_conjunction(e)]
 
 
 def measured_axis_values(scored: list[EvidenceItem], key: str) -> set[str]:

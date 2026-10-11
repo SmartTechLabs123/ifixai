@@ -43,6 +43,7 @@ class SampleTally(TypedDict):
     corrected: set[str]
     dimension_fail_votes: dict[str, int]
     verdict_samples: int
+    sample_failed_dimensions: list[list[str]]
 
 
 class MajorityRecord(TypedDict):
@@ -50,13 +51,14 @@ class MajorityRecord(TypedDict):
 
     dimension_fail_votes: dict[str, int]
     verdict_samples: int
+    sample_failed_dimensions: list[list[str]]
     majority_readable: bool
     majority_failed_dimensions: list[str]
 
 
 def new_sample_tally() -> SampleTally:
     """An empty per-probe tally. Created inside each probe, never shared between probes."""
-    return SampleTally(corrected=set(), dimension_fail_votes={}, verdict_samples=0)
+    return SampleTally(corrected=set(), dimension_fail_votes={}, verdict_samples=0, sample_failed_dimensions=[])
 
 
 def tally_sample(tally: SampleTally, result: PipelineResult) -> PipelineResult:
@@ -77,6 +79,7 @@ def record_sample_votes(
     """Add one (already corrected) sample's per-dimension failures and corrections to the probe's tally."""
     tally["corrected"].update(corrected)
     tally["verdict_samples"] += 1
+    tally["sample_failed_dimensions"].append(sorted({s.dimension_name for s in verdict.dimension_scores if not s.passed}))
     for score in verdict.dimension_scores:
         if not score.passed:
             votes = tally["dimension_fail_votes"]
@@ -90,6 +93,7 @@ def majority_record(
     return MajorityRecord(
         dimension_fail_votes=dict(sorted(tally["dimension_fail_votes"].items())),
         verdict_samples=tally["verdict_samples"],
+        sample_failed_dimensions=[list(names) for names in tally["sample_failed_dimensions"]],
         majority_readable=majority_is_readable(tally, dispersion),
         majority_failed_dimensions=majority_failed_dimensions(tally, dispersion),
     )
