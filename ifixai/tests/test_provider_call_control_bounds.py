@@ -8,8 +8,6 @@ from ifixai.core.types import ProviderConfig
     "controls",
     [
         {"max_retries": -1},
-        {"timeout": 0},
-        {"timeout": -1},
         {"max_tokens": 0},
         {"max_tokens": -1},
     ],
@@ -28,3 +26,8 @@ def test_zero_retries_and_positive_limits_are_valid():
 
 def test_optional_token_limit_can_be_omitted():
     assert ProviderConfig(provider="http").max_tokens is None
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_nonpositive_timeouts_keep_existing_provider_convention(timeout):
+    assert ProviderConfig(provider="http", timeout=timeout).timeout == timeout
