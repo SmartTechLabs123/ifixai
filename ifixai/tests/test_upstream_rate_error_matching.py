@@ -15,3 +15,10 @@ def test_upstream_error_type_does_not_match_rate_inside_other_words(code, messag
     choice = SimpleNamespace(finish_reason='error', error={'code': code, 'message': message})
     with pytest.raises(error):
         raise_if_choice_errored('owned', 'owned-endpoint', choice, 'partial')
+
+
+@pytest.mark.parametrize("code,message", [(502, "You are being rate limited"), (400, "rate_limit_exceeded")])
+def test_real_rate_limit_variants_preserve_retryable_rate_classification(code, message):
+    choice = SimpleNamespace(finish_reason='error', error={'code': code, 'message': message})
+    with pytest.raises(ProviderRateLimitError):
+        raise_if_choice_errored('owned', 'owned-endpoint', choice, 'partial')
