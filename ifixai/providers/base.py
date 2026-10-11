@@ -140,6 +140,12 @@ _QUOTA_EXHAUSTED_MARKERS: tuple[str, ...] = (
 )
 
 
+def _auth_status_code(detail: str) -> str | None:
+    """Read status-shaped authentication codes, never digits in IDs or URLs."""
+    match = re.search(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:[_\s-]*code)?|code)\s*[:=]?\s*(401|403)\b", detail, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def is_fatal_provider_error(exc: BaseException) -> bool:
     """True when an error means the credential is rejected / out of quota."""
     if isinstance(exc, ProviderAuthError):
@@ -153,7 +159,7 @@ def is_fatal_provider_error(exc: BaseException) -> bool:
     if isinstance(exc, TRANSIENT_PROVIDER_ERRORS):
         return False
     text = str(exc).lower()
-    return bool(re.search(r"(?<!\d)(?:401|403)(?!\d)", text)) or any(
+    return _auth_status_code(text) is not None or any(
         marker in text for marker in _FATAL_ERROR_MARKERS
     )
 
@@ -216,7 +222,7 @@ def friendly_provider_message(detail: str) -> str | None:
             "Top it up, raise the limit, or use a different key."
         )
     if (
-        "401" in low
+        _auth_status_code(low) == "401"
         or "invalid api key" in low
         or "incorrect api key" in low
         or "unauthorized" in low
@@ -226,7 +232,7 @@ def friendly_provider_message(detail: str) -> str | None:
             "API key was rejected (authentication failed). "
             "Check the key value and that it matches the chosen provider."
         )
-    if "403" in low or "permission" in low or "forbidden" in low:
+    if _auth_status_code(low) == "403" or "permission" in low or "forbidden" in low:
         return (
             "Access was forbidden (403). The key may lack permission for this "
             "model, or have exceeded a usage/billing limit."
