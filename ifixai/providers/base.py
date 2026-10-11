@@ -380,7 +380,7 @@ def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoRet
     """
     status = getattr(exc, "status_code", None)
     details = f"HTTP {status}: {exc}" if status is not None else str(exc)
-    if status in RETRYABLE_HTTP_STATUS_CODES:
+    if status in RETRYABLE_HTTP_STATUS_CODES or (provider == "anthropic" and status == 529):
         raise ProviderOverloadedError(
             provider=provider, endpoint=endpoint, details=details
         ) from exc

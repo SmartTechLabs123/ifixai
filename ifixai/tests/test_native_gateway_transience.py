@@ -13,13 +13,20 @@ from ifixai.evaluation.analytic_judge import (
 )
 from ifixai.judge.config import JudgeConfig
 from ifixai.judge.evaluator import JudgeEvaluator
-from ifixai.providers.anthropic import AnthropicProvider
 from ifixai.providers.base import (
     ProviderAuthError,
     ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
 )
+
+
+@pytest.fixture
+def anthropic_provider_class():
+    pytest.importorskip("anthropic")
+    from ifixai.providers.anthropic import AnthropicProvider
+
+    return AnthropicProvider
 
 
 @asynccontextmanager
@@ -50,10 +57,10 @@ async def endpoint(status):
         await runner.cleanup()
 
 
-@pytest.mark.parametrize("status", [408, 500, 502, 503, 504])
-async def test_anthropic_sdk_gateway_status_is_transient(status):
+@pytest.mark.parametrize("status", [408, 500, 502, 503, 504, 529])
+async def test_anthropic_sdk_gateway_status_is_transient(status, anthropic_provider_class):
     async with endpoint(status) as (url, calls):
-        provider = AnthropicProvider()
+        provider = anthropic_provider_class()
         try:
             with pytest.raises(ProviderOverloadedError):
                 await provider.send_message([ChatMessage(content="owned prompt")], ProviderConfig(
@@ -65,9 +72,9 @@ async def test_anthropic_sdk_gateway_status_is_transient(status):
 
 
 @pytest.mark.parametrize("status,expected", [(400, ProviderResponseError), (401, ProviderAuthError), (403, ProviderResponseError), (429, ProviderRateLimitError)])
-async def test_anthropic_sdk_hard_and_rate_statuses_are_preserved(status, expected):
+async def test_anthropic_sdk_hard_and_rate_statuses_are_preserved(status, expected, anthropic_provider_class):
     async with endpoint(status) as (url, calls):
-        provider = AnthropicProvider()
+        provider = anthropic_provider_class()
         try:
             with pytest.raises(expected):
                 await provider.send_message([ChatMessage(content="owned prompt")], ProviderConfig(
@@ -78,9 +85,9 @@ async def test_anthropic_sdk_hard_and_rate_statuses_are_preserved(status, expect
             await provider.aclose()
 
 
-async def test_anthropic_sdk_success_is_preserved():
+async def test_anthropic_sdk_success_is_preserved(anthropic_provider_class):
     async with endpoint(200) as (url, calls):
-        provider = AnthropicProvider()
+        provider = anthropic_provider_class()
         try:
             result = await provider.send_message([ChatMessage(content="owned prompt")], ProviderConfig(
                 provider="anthropic", endpoint=url, api_key="owned-fixture", model="owned-model", max_retries=0,
@@ -91,7 +98,7 @@ async def test_anthropic_sdk_success_is_preserved():
             await provider.aclose()
 
 
-async def test_anthropic_sdk_gateway_exhaustion_is_unscored(monkeypatch):
+async def test_anthropic_sdk_gateway_exhaustion_is_unscored(monkeypatch, anthropic_provider_class):
     import ifixai.evaluation.analytic_judge as analytic
     monkeypatch.setattr(analytic, "_BACKOFF_BASE", 0)
     async with endpoint(502) as (url, calls):
