@@ -6,7 +6,7 @@ from ifixai.evaluation.atomic_claims import _parse_atomic_response
 
 
 @pytest.mark.parametrize("duplicate", ["The limit is 5.", " the LIMIT is   5. "])
-def test_duplicate_atomic_claims_are_rejected(duplicate):
+def test_duplicate_atomic_claims_are_skipped_without_discarding_score(duplicate):
     raw = json.dumps(
         [
             {"claim": "The limit is 5.", "supported": True},
@@ -14,7 +14,10 @@ def test_duplicate_atomic_claims_are_rejected(duplicate):
             {"claim": "The owner is Pat.", "supported": False},
         ]
     )
-    assert "duplicate" in _parse_atomic_response(raw, "grounding").error
+    score = _parse_atomic_response(raw, "grounding")
+    assert not score.error
+    assert len(score.claims) == 2
+    assert score.score == 0.5
 
 
 def test_distinct_claims_retain_fractional_score():

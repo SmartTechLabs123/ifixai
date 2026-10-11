@@ -472,7 +472,7 @@ def _parse_atomic_response(raw: str, mode: AtomicMode) -> AtomicScore:
         text = text.strip()
         identity = " ".join(text.split()).casefold()
         if identity in seen_claims:
-            return AtomicScore(mode=mode, error="judge returned duplicate claims")
+            continue
         seen_claims.add(identity)
         supported = _parse_judge_boolean(entry.get("supported"))
         if supported is None:
