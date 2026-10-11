@@ -12,6 +12,7 @@ from ifixai.providers.base import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    raise_for_http_status,
     raise_if_truncated,
 )
 from ifixai.providers.schemas import MessageSplit
@@ -69,6 +70,10 @@ class AnthropicProvider(ChatProvider):
         for client in self._clients.values():
             await client.close()
         self._clients.clear()
+
+    def accepts_temperature(self, model: str | None) -> bool:
+        # As far as this run knows: a model joins _NO_TEMPERATURE_MODELS on its first 400.
+        return (model or DEFAULT_MODEL) not in _NO_TEMPERATURE_MODELS
 
     async def send_message(
         self,
@@ -158,6 +163,9 @@ class AnthropicProvider(ChatProvider):
                     endpoint=endpoint,
                     details=str(exc),
                 ) from exc
+            except anthropic.APIStatusError as exc:
+                # 5xx/529 is Anthropic having a moment, not a dead provider.
+                raise_for_http_status("anthropic", endpoint, exc)
             except anthropic.APIError as exc:
                 raise ProviderResponseError(
                     provider="anthropic",

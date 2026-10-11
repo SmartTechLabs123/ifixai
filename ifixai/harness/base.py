@@ -42,6 +42,45 @@ from ifixai.core.types import (
 _logger = logging.getLogger(__name__)
 
 
+# Judge-side outcomes that say nothing about the agent, so no score counts them,
+# even where a spec counts its other unscored items as fails.
+_NEVER_SCORED = frozenset(
+    {
+        JudgeErrorKind.BUDGET,
+        JudgeErrorKind.JUDGE_UNREACHABLE,
+        JudgeErrorKind.JUDGE_TRANSIENT,
+    }
+)
+
+
+def scored_evidence(
+    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
+) -> list[EvidenceItem]:
+    """The items a score counts: graded ones, plus, when the spec opts in, every
+    other unscored item as a fail, except a budget skip, dead or flaky judge."""
+    if not count_extraction_errors_as_fail:
+        return [e for e in evidence if e.extraction_error is None]
+    return [e for e in evidence if e.extraction_error not in _NEVER_SCORED]
+
+
+def measured_count(
+    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
+) -> int:
+    """What the min_evidence_items floor counts: scored items, never diagnostics
+    (a runner's compute_score already leaves those out)."""
+    measurements = [e for e in evidence if not e.is_diagnostic]
+    return len(scored_evidence(measurements, count_extraction_errors_as_fail))
+
+
+def is_provider_failure(item: EvidenceItem) -> bool:
+    """A call the agent's provider never answered, or a judge rejected outright.
+    A judge that only timed out on an item is not one."""
+    return item.extraction_error in (
+        JudgeErrorKind.COMMUNICATION,
+        JudgeErrorKind.JUDGE_UNREACHABLE,
+    )
+
+
 def build_system_message(
     system_prompt: str | None, run_nonce: str | None
 ) -> str | None:
@@ -122,9 +161,7 @@ class BaseTest(ABC):
         upward. `docs/scoring.md` § Noise tells readers to compare runs by CI overlap, so
         the two must measure the same thing.
         """
-        if self.spec.count_extraction_errors_as_fail:
-            return evidence
-        return [item for item in evidence if item.extraction_error is None]
+        return scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
 
     def get_variant_seed(self) -> Optional[int]:
         return None
@@ -166,13 +203,9 @@ class BaseTest(ABC):
             # Diagnostics never count toward the floor: a runner's compute_score already
             # excludes them, and a floor cleared by items the score ignores means the two
             # disagree on the denominator.
-            measurements = [e for e in evidence if not e.is_diagnostic]
-            if self.spec.count_extraction_errors_as_fail:
-                scoreable_count = len(measurements)
-            else:
-                scoreable_count = sum(
-                    1 for e in measurements if e.extraction_error is None
-                )
+            scoreable_count = measured_count(
+                evidence, self.spec.count_extraction_errors_as_fail
+            )
             insufficient = scoreable_count < self.spec.min_evidence_items
             meets_threshold = score >= self.spec.threshold
             if insufficient:
@@ -264,10 +297,7 @@ class BaseTest(ABC):
             return plan
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
-        if self.spec.count_extraction_errors_as_fail:
-            scored = evidence
-        else:
-            scored = [e for e in evidence if e.extraction_error is None]
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         total = sum(
@@ -287,11 +317,7 @@ class BaseTest(ABC):
         a correct response below threshold. Judge extraction-errors are excluded
         (-> INCONCLUSIVE) unless the spec counts them as failures.
         """
-        scored = (
-            evidence
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in evidence if e.extraction_error is None]
-        )
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)

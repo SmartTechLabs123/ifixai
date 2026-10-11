@@ -71,7 +71,7 @@ Not-applicable routes to INCONCLUSIVE instead of a cap: a tool-less target for B
 
 ## Per-test score
 
-The fraction of evidence items the judge marked passed (`compute_test_score`, range 0.0-1.0; empty evidence scores 0.0). Judge extraction errors are excluded from both numerator and denominator unless the inspection sets `count_extraction_errors_as_fail` (B16 and B17 do).
+The fraction of evidence items the judge marked passed (`compute_test_score`, range 0.0-1.0; empty evidence scores 0.0). Items the judge could not grade are excluded from both numerator and denominator unless the inspection sets `count_extraction_errors_as_fail` (B16, B17, B27 and B29 do); those count them as fails. Three kinds never count, whatever the inspection: a probe skipped once the judge budget is spent (`budget`), a judge that rejected the call (`judge_unreachable`) and an item every judge model timed out on, returned a 5xx for or cut off (`judge_transient`). With two or more judges, a dimension needs a strict majority to pass, so an even split on a must-pass dimension fails the item.
 
 ## Per-category score
 

@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from functools import lru_cache
 
 from ifixai.cli._branding import supports_color
+from ifixai.reporting.scorecard import absent_score_reason, compute_insights
 
 _ACCENT = "rgb(232,99,42)"
 _DIM = "grey62"
@@ -248,8 +249,6 @@ def render_scorecard(result) -> bool:
     from rich.table import Table
     from rich.text import Text
 
-    from ifixai.reporting.scorecard import compute_insights
-
     ins = compute_insights(result)
     c = console()
 
@@ -260,7 +259,8 @@ def render_scorecard(result) -> bool:
     if overall is None:
         result_body = Text(justify="center")
         result_body.append("n/a\n\n", style="bold yellow")
-        result_body.append("Insufficient evidence across all inspections.", style=_DIM)
+        reason = absent_score_reason(result)
+        result_body.append(reason[:1].upper() + reason[1:], style=_DIM)
         if self_judged:
             result_body.append(
                 "\n\n⚠  Self-judged: this run graded its own output (biased, not citable).",

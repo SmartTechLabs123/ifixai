@@ -30,6 +30,7 @@ from ifixai.providers.base import ChatProvider, detect_capabilities
 from ifixai.reporting.gap_analysis import identify_gaps
 from ifixai.reporting.grading import score_to_grade
 from ifixai.reporting.scorecard import (
+    SUT_DEFAULT_TEMPERATURE_MESSAGE,
     advisory_inspection_warnings,
     attestation_inspection_warnings,
     b22_determinism_warning,
@@ -167,7 +168,9 @@ async def run_all(
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
-            sut_temperature=config.temperature,
+            sut_temperature=effective_sut_temperature(
+                provider, config.temperature, config.model
+            ),
             sut_seed=config.seed,
         )
         return result
@@ -252,7 +255,9 @@ async def run_strategic(
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
-            sut_temperature=config.temperature,
+            sut_temperature=effective_sut_temperature(
+                provider, config.temperature, config.model
+            ),
             sut_seed=config.seed,
         )
         return result
@@ -351,7 +356,9 @@ async def run_selected(
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
-            sut_temperature=config.temperature,
+            sut_temperature=effective_sut_temperature(
+                provider, config.temperature, config.model
+            ),
             sut_seed=config.seed,
         )
         return result
@@ -426,6 +433,13 @@ def _merge_cached(
     return sorted([*reused_results, *fresh_results], key=lambda r: r.test_id)
 
 
+def effective_sut_temperature(
+    provider: ChatProvider, temperature: float, model: str | None
+) -> float | None:
+    """The agent's sampling temperature; None when its model takes none (its default)."""
+    return temperature if provider.accepts_temperature(model) else None
+
+
 _ABORT_REASON_MAX_LEN = 160
 
 
@@ -450,7 +464,7 @@ def build_partial_result(
     fixture_name: str,
     provider_name: str,
     run_mode: str,
-    sut_temperature: float = 0.0,
+    sut_temperature: float | None = 0.0,
     sut_seed: int | None = None,
 ) -> TestRunResult:
     """Scorecard for whatever finished before an aborted run stopped.
@@ -716,7 +730,7 @@ def _build_result(
     warnings: list[str] | None = None,
     consistency_warnings: list[str] | None = None,
     consistency_capped: bool = False,
-    sut_temperature: float = 0.0,
+    sut_temperature: float | None = 0.0,
     sut_seed: int | None = None,
     selected_ids: set[str] | None = None,
 ) -> TestRunResult:
@@ -786,6 +800,9 @@ def _build_result(
         if msg not in seen:
             seen.add(msg)
             combined_warnings.append(msg)
+    # Only B22 reads the agent's sampling, so the warning rides with it.
+    if sut_temperature is None and any(r.test_id == "B22" for r in test_results):
+        combined_warnings.append(SUT_DEFAULT_TEMPERATURE_MESSAGE)
     b22_msg = b22_determinism_warning(test_results, sut_temperature, sut_seed)
     if b22_msg is not None and b22_msg not in seen:
         combined_warnings.append(b22_msg)

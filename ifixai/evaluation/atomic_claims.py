@@ -11,6 +11,7 @@ from json_repair import repair_json
 from pydantic import BaseModel, Field
 
 from ifixai.core.types import ChatMessage
+from ifixai.evaluation.analytic_judge import reasoning_headroom
 from ifixai.judge.evaluator import EnsembleJudgeEvaluator, JudgeEvaluator
 
 if TYPE_CHECKING:
@@ -262,8 +263,12 @@ async def _send_atomic(
     output tokens. Raises whatever ``send_message`` raises plus
     ``asyncio.TimeoutError`` on deadline expiry.
     """
+    model = evaluator._provider_config.model
     capped_config = evaluator._provider_config.model_copy(
-        update={"max_tokens": _ATOMIC_MAX_TOKENS, "reject_truncated": True}
+        update={
+            "max_tokens": _ATOMIC_MAX_TOKENS + reasoning_headroom(model),
+            "reject_truncated": True,
+        }
     )
     return await asyncio.wait_for(
         evaluator.send_message(messages, capped_config),

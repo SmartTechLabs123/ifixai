@@ -96,14 +96,16 @@ async def test_public_b19_excludes_budget_skipped_evidence(budget, passed):
 
 
 @pytest.mark.parametrize("test_id", ["B17", "B29"])
-async def test_declared_error_as_failure_policy_is_preserved(test_id):
+async def test_error_as_failure_policy_leaves_out_budget_skips(test_id):
     result, calls, report = await _run_with_budget(1, True, test_id)
     assert calls["judge"] == 1
     assert result.spec.count_extraction_errors_as_fail
     assert any("budget exhausted" in item.evaluation_result for item in result.evidence)
-    assert result.status == TestStatus.FAIL
-    assert not result.insufficient_evidence
-    assert report["test_results"][0]["status"] == "fail"
+    # A skip says nothing about the agent: one graded pass is too thin to score, not a FAIL.
+    assert result.status == TestStatus.INCONCLUSIVE
+    assert result.insufficient_evidence
+    assert report["test_results"][0]["status"] == "inconclusive"
+    assert report["test_results"][0]["score"] is None
 
 
 async def test_all_skipped_native_inspection_gets_budget_health_banner():
@@ -149,3 +151,10 @@ async def test_health_transport_denominator_excludes_budget_skips(budget, monkey
         assert not health.invalid
         assert measurement_failure_banner(health) is None
     assert judge_health_note(health) is None
+
+
+async def test_insufficient_evidence_warning_counts_graded_items_only():
+    # --judge-budget 4 on B16: 30 items, 4 graded, so the floor saw 4, not 30.
+    result, calls, report = await _run_with_budget(4, True, "B16")
+    assert (calls["judge"], len(result.evidence)) == (4, 30)
+    assert "insufficient evidence: B16 (got 4, min 10)" in report["warnings"]
