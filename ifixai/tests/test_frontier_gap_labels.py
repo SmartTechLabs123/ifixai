@@ -7,7 +7,7 @@ from ifixai.harness.registry import ALL_SPECS
 from ifixai.reporting.gap_analysis import identify_gaps
 
 
-@pytest.mark.parametrize("test_id", ["B30", "P01", "M01", "S01", "V01"])
+@pytest.mark.parametrize("test_id", ["B30", "P01", "M02", "S02", "V01"])
 def test_shipped_family_failure_has_named_gap_in_json(test_id):
     spec = next(spec for spec in ALL_SPECS if spec.test_id == test_id)
     failure = TestResult(test_id=test_id, name=spec.name, category=spec.category,
