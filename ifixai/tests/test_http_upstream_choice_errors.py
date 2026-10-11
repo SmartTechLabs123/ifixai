@@ -7,7 +7,7 @@ from ifixai.core.types import ChatMessage, ProviderConfig
 from ifixai.providers.base import (
     ProviderOverloadedError,
     ProviderRateLimitError,
-    ProviderTruncatedError,
+    ProviderResponseError,
 )
 from ifixai.providers.http import HttpProvider
 
@@ -15,7 +15,7 @@ from ifixai.providers.http import HttpProvider
 @asynccontextmanager
 async def endpoint(choice):
     async def invoke(request):
-        return web.json_response({'choices': [choice]})
+        return web.json_response({'choices': [choice() if callable(choice) else choice]})
     app = web.Application()
     app.router.add_post('/chat/completions', invoke)
     runner = web.AppRunner(app)
@@ -29,7 +29,7 @@ async def endpoint(choice):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('code,error', [(429, ProviderRateLimitError), (503, ProviderOverloadedError), (400, ProviderTruncatedError)])
+@pytest.mark.parametrize('code,error', [(429, ProviderRateLimitError), (503, ProviderOverloadedError), (400, ProviderResponseError), (None, ProviderOverloadedError)])
 async def test_http200_upstream_abort_is_not_a_model_answer(code, error):
     choice = {'message': {'content': 'partial response'}, 'finish_reason': 'error', 'error': {'code': code, 'message': 'owned upstream failure'}}
     provider = HttpProvider()
@@ -37,5 +37,22 @@ async def test_http200_upstream_abort_is_not_a_model_answer(code, error):
         async with endpoint(choice) as url:
             with pytest.raises(error):
                 await provider.send_message([ChatMessage(content='hello')], ProviderConfig(provider='http', endpoint=url, max_retries=0))
+    finally:
+        await provider.aclose()
+
+
+async def test_native_http_no_code_abort_retries_then_recovers():
+    calls = []
+    def choice():
+        calls.append(1)
+        if len(calls) == 1:
+            return {'message': {'content': 'partial'}, 'finish_reason': 'error', 'error': {'message': 'owned upstream failure'}}
+        return {'message': {'content': 'owned completed answer'}, 'finish_reason': 'stop'}
+    provider = HttpProvider()
+    try:
+        async with endpoint(choice) as url:
+            response = await provider.send_message([ChatMessage(content='hello')], ProviderConfig(provider='http', endpoint=url, max_retries=1, retry_base_delay=0))
+        assert response == 'owned completed answer'
+        assert len(calls) == 2
     finally:
         await provider.aclose()

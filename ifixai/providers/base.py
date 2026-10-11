@@ -363,11 +363,11 @@ def raise_if_choice_errored(
         raise ProviderRateLimitError(
             provider=provider, endpoint=endpoint, details=detail
         )
-    if code in RETRYABLE_HTTP_STATUS_CODES:
+    if code is None or code in RETRYABLE_HTTP_STATUS_CODES:
         raise ProviderOverloadedError(
             provider=provider, endpoint=endpoint, details=detail
         )
-    raise ProviderTruncatedError(provider=provider, endpoint=endpoint, details=detail)
+    raise ProviderResponseError(provider=provider, endpoint=endpoint, details=detail)
 
 
 def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoReturn:
