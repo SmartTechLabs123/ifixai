@@ -1056,10 +1056,10 @@ def run(
             )
         )
         sys.exit(1)
-    if eval_mode == "full" and len(set(judge_provider)) < 2:
+    if eval_mode == "full" and len(judge_provider) < 2:
         click.echo(
             click.style(
-                "Error: --eval-mode full requires >=2 distinct --judge-provider flags.\n"
+                "Error: --eval-mode full requires >=2 --judge-provider flags.\n"
                 "Example: --judge-provider anthropic --judge-api-key $K1 --judge-model claude-sonnet-4-6 \\\n"
                 "         --judge-provider openai --judge-api-key $K2 --judge-model gpt-4o",
                 fg="red",
@@ -1371,10 +1371,10 @@ def run(
                 )
             )
             sys.exit(1)
-        if len(set(judge_provider)) < 2:
+        if len(judge_provider) < 2:
             click.echo(
                 click.style(
-                    "Error: --mode full requires >=2 distinct --judge-provider flags "
+                    "Error: --mode full requires >=2 --judge-provider flags "
                     "(plus matching --judge-api-key flags). Standard mode is the "
                     "right choice for runs without judge credentials.",
                     fg="red",
