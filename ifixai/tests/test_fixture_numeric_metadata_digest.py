@@ -29,3 +29,14 @@ def test_json_key_collisions_are_rejected(tmp_path):
     path = write_fixture(tmp_path, {1: "one", "1": "different"})
     with pytest.raises(ValueError, match="duplicate canonical fixture key"):
         compute_fixture_digest(path)
+
+
+def test_numeric_only_keys_preserve_legacy_digest(tmp_path):
+    import hashlib
+    import json
+
+    path = tmp_path / "numeric-only.yaml"
+    path.write_text("metadata:\n  2: two\n  10: ten\n")
+    legacy = json.dumps({"metadata": {2: "two", 10: "ten"}},
+                        sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert compute_fixture_digest(path) == hashlib.sha256(legacy.encode()).hexdigest()
