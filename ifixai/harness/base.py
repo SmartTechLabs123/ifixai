@@ -246,22 +246,13 @@ class BaseTest(ABC):
             )
 
     def load_inspection_data(self) -> ConversationPlan | None:
-        try:
-            plan = load_inspection_definition(self.spec.test_id)
-        except Exception as exc:  # noqa: BLE001 — YAML load is best-effort; fall back to hardcoded logic
-            _logger.warning(
-                "%s: failed to load YAML inspection: %s — using hardcoded logic",
+        plan = load_inspection_definition(self.spec.test_id)
+        if plan is None:
+            _logger.debug(
+                "%s: no YAML inspection definition, using hardcoded logic",
                 self.spec.test_id,
-                exc,
             )
-            return None
-        else:
-            if plan is None:
-                _logger.debug(
-                    "%s: no YAML inspection definition, using hardcoded logic",
-                    self.spec.test_id,
-                )
-            return plan
+        return plan
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
         if self.spec.count_extraction_errors_as_fail:
