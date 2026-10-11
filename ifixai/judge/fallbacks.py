@@ -4,6 +4,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ifixai.reporting.scorecard import grading_vendor
+
 PACKAGED_FALLBACKS_PATH: Path = Path(__file__).parent / "judge_fallbacks.json"
 PROJECT_FALLBACKS_FILENAME = "ifixai.judge-fallbacks.json"
 FALLBACKS_PATH_ENV_VAR = "IFIXAI_JUDGE_FALLBACKS"
@@ -91,28 +93,6 @@ def load_fallback_policy(path: Path | None = None) -> JudgeFallbackPolicy:
         raise JudgeFallbackConfigError(resolved, f"has invalid fields\n{exc}") from exc
 
 
-_NATIVE_MODEL_VENDORS = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "gemini": "google",
-}
-
-
-def _model_identity(provider: str | None, model: str | None) -> tuple[str, str] | None:
-    """Match native IDs to explicit OpenRouter namespaces, never custom deployments."""
-    if provider is None or model is None:
-        return None
-    provider = provider.strip().lower()
-    vendor = _NATIVE_MODEL_VENDORS.get(provider)
-    if vendor is not None:
-        return vendor, model
-    if provider == "openrouter":
-        vendor, separator, name = model.partition("/")
-        if separator and name and vendor in _NATIVE_MODEL_VENDORS.values():
-            return vendor, name
-    return None
-
-
 def resolve_judge_model_chain(
     provider: str,
     primary_model: str | None,
@@ -126,22 +106,18 @@ def resolve_judge_model_chain(
     file, so declaring a fallback never silently reorders the operator's choice.
     ``None`` means "whatever the provider defaults to" and is preserved as-is.
 
-    `excluded_model` is the system under test. A fallback that happens to name the
-    SUT's own model would quietly turn a cross-provider grade into self-judging
-    while the run manifest still claims an independent judge — the exact thing
-    ``build_manifest`` refuses to record — so it is dropped from the chain. The
-    ``excluded_provider`` additionally matches native OpenAI/Anthropic/Gemini
-    IDs to OpenRouter's explicit vendor namespace. Unknown providers and custom
-    deployment names are not inferred. The configured judge model is never dropped: an operator who points the judge at
-    the SUT has chosen ``--eval-mode self``, which is declared, not silent.
+    ``excluded_provider`` and ``excluded_model`` identify the system under test.
+    Exclude every fallback from its vendor, using the scorecard's canonical
+    vendor resolution so dated IDs, related models and aggregator aliases cannot
+    silently turn an independent judge into a same-vendor judge. The configured
+    primary remains the operator's explicit choice, including self-grading.
     """
-    excluded_identity = _model_identity(excluded_provider, excluded_model)
+    excluded_vendor = grading_vendor(excluded_provider, excluded_model) if excluded_provider else None
     chain = (policy or load_fallback_policy()).chain_for(provider)
     ordered: list[str | None] = [primary_model]
     seen: set[str | None] = {primary_model, excluded_model}
     for candidate in chain.models:
-        candidate_identity = _model_identity(provider, candidate.model)
-        if excluded_identity is not None and candidate_identity == excluded_identity:
+        if excluded_vendor is not None and grading_vendor(provider, candidate.model) == excluded_vendor:
             continue
         if candidate.model not in seen:
             ordered.append(candidate.model)

@@ -17,7 +17,7 @@ from ifixai.judge.config import JudgeConfig
     "sut_model,expected_fallback",
     [
         ("gpt-4o-mini", "anthropic/claude-haiku-4.5"),
-        ("gpt-4o", "openai/gpt-4o-mini"),
+        ("gpt-4o", "anthropic/claude-haiku-4.5"),
     ],
 )
 async def test_public_run_excludes_native_sut_alias_from_packaged_fallbacks(
@@ -132,12 +132,12 @@ async def test_public_run_excludes_native_sut_alias_from_packaged_fallbacks(
         (
             "openai",
             "gpt-4o",
-            ["primary", "openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
+            ["primary", "anthropic/claude-haiku-4.5"],
         ),
         ("anthropic", "claude-haiku-4.5", ["primary", "openai/gpt-4o-mini"]),
     ],
 )
-def test_fallback_identity_requires_known_vendor_and_exact_model(
+def test_fallback_excludes_same_sut_vendor(
     sut_provider, sut_model, expected
 ):
     from ifixai.judge.fallbacks import JudgeFallbackPolicy, resolve_judge_model_chain
@@ -204,3 +204,16 @@ def test_ensemble_pipeline_propagates_sut_identity_to_each_judge():
     assert pipeline is not None
     for member in pipeline._judge._per_judge:
         assert "openai/gpt-4o-mini" not in member._model_chain
+
+
+@pytest.mark.parametrize("sut_provider,sut_model,expected", [
+    ("anthropic", "claude-haiku-4-5", ["primary", "openai/gpt-4o-mini", "google/gemini-2.5-flash"]),
+    ("openai", "gpt-4o-mini-2024-07-18", ["primary", "anthropic/claude-haiku-4.5", "google/gemini-2.5-flash"]),
+    ("azure", "owned-deployment", ["primary", "anthropic/claude-haiku-4.5", "google/gemini-2.5-flash"]),
+    ("gemini", "gemini-2.5-flash-lite", ["primary", "openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"]),
+])
+def test_vendor_exclusion_covers_aliases_dates_and_related_model_families(sut_provider, sut_model, expected):
+    from ifixai.judge.fallbacks import JudgeFallbackPolicy, resolve_judge_model_chain
+    policy = JudgeFallbackPolicy.model_validate({"providers": {"openrouter": {"models": [
+        {"model": "openai/gpt-4o-mini"}, {"model": "anthropic/claude-haiku-4.5"}, {"model": "google/gemini-2.5-flash"}]}}})
+    assert resolve_judge_model_chain("openrouter", "primary", policy, excluded_provider=sut_provider, excluded_model=sut_model) == expected
