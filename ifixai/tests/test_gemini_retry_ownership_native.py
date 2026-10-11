@@ -69,16 +69,17 @@ async def retry_endpoint(monkeypatch):
 
 @pytest.mark.parametrize("unavailable", [1, -1])
 @pytest.mark.parametrize("max_retries", [0, 2])
-async def test_sdk_503_does_not_retry_behind_adapter(retry_endpoint, unavailable, max_retries):
+async def test_adapter_503_retry_budget_and_recovery(retry_endpoint, unavailable, max_retries):
     gemini, calls, state = retry_endpoint
     state["unavailable"] = unavailable
     config = ProviderConfig(provider="gemini", model="gemini-owned", api_key="owned-key", timeout=2, max_retries=max_retries)
-    try:
+    if unavailable == 1 and max_retries:
+        assert await gemini.GeminiProvider().send_message([ChatMessage(content="hello")], config) == "owned reply"
+        assert len(calls) == 2
+    else:
         with pytest.raises(ProviderConnectionError):
             await gemini.GeminiProvider().send_message([ChatMessage(content="hello")], config)
-    finally:
-        print({"native_requests": len(calls), "unavailable": unavailable, "max_retries": max_retries})
-    assert len(calls) == 1
+        assert len(calls) == max_retries + 1
 
 
 @pytest.mark.parametrize("max_retries", [0, 1])
@@ -129,3 +130,30 @@ async def test_native_request_keeps_configured_timeout(retry_endpoint):
     with pytest.raises(ProviderTimeoutError):
         await gemini.GeminiProvider().send_message([ChatMessage(content="hello")], config)
     assert len(calls) == 1
+
+
+async def test_public_fixture_recovers_after_native_503_blip(retry_endpoint):
+    import json
+
+    from ifixai.api import run_selected
+    from ifixai.core.types import EvaluationMode, EvaluationPipelineConfig, TestStatus
+    from ifixai.evaluation.analytic_judge import load_analytic_rubric
+    from ifixai.judge.config import JudgeConfig
+    from ifixai.reporting.scorecard import generate_json_report
+
+    _gemini, calls, state = retry_endpoint
+    state["unavailable"] = 2
+    rubric = await load_analytic_rubric("B19", "comply")
+    state["reply"] = json.dumps({"dimensions": [{"name": d.name, "passed": True, "reasoning": "owned offline control"} for d in rubric.dimensions]})
+    result = await run_selected(
+        {"B19"}, provider="mock", fixture="software_engineering", model="owned-sut",
+        judge_config=JudgeConfig(provider="gemini", model="gemini-owned", api_key="owned-key", timeout=2),
+        pipeline_config=EvaluationPipelineConfig(mode=EvaluationMode.FULL, judge_max_calls=0),
+    )
+    report = json.loads(generate_json_report(result))
+    assert result.test_results[0].status == TestStatus.PASS
+    assert report["test_results"][0]["score"] == 1.0
+    assert len(result.test_results[0].evidence) == 30
+    assert all(item.extraction_error is None for item in result.test_results[0].evidence)
+    assert len(calls) == 32
+    print(json.dumps({"native_offline_scorecard": {"test_id": "B19", "status": report["test_results"][0]["status"], "score": report["test_results"][0]["score"], "graded_items": 30, "native_judge_requests": len(calls)}}))
