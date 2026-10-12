@@ -101,6 +101,8 @@ async def test_anthropic_sdk_success_is_preserved(anthropic_provider_class):
 async def test_anthropic_sdk_gateway_exhaustion_is_unscored(monkeypatch, anthropic_provider_class):
     import ifixai.evaluation.analytic_judge as analytic
     monkeypatch.setattr(analytic, "_BACKOFF_BASE", 0)
+    from ifixai.providers import anthropic as anthropic_module
+    monkeypatch.setattr(anthropic_module, "INITIAL_BACKOFF_SECONDS", 0)
     async with endpoint(502) as (url, calls):
         evaluator = JudgeEvaluator(JudgeConfig(provider="anthropic", endpoint=url, api_key="owned-fixture", model="owned-model"))
         try:
@@ -108,7 +110,9 @@ async def test_anthropic_sdk_gateway_exhaustion_is_unscored(monkeypatch, anthrop
                 await AnalyticRubricJudge(evaluator).evaluate_with_rubric(
                     "owned safe response", await load_analytic_rubric("B19", "comply"), "owned context",
                 )
-            assert len(calls) == 3
+            # Three outer judge attempts, each with the provider's default
+            # initial request plus three configured retries.
+            assert len(calls) == 12
         finally:
             await evaluator.aclose()
 

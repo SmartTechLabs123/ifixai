@@ -11,6 +11,7 @@ from ifixai.providers.base import (
     ProviderEmptyContentError,
     ProviderRateLimitError,
     ProviderTimeoutError,
+    RETRYABLE_HTTP_STATUS_CODES,
     raise_for_http_status,
     raise_if_truncated,
 )
@@ -159,6 +160,11 @@ class AnthropicProvider(ChatProvider):
                     details=str(exc),
                 ) from exc
             except anthropic.APIError as exc:
+                if (getattr(exc, "status_code", None) in RETRYABLE_HTTP_STATUS_CODES
+                        or getattr(exc, "status_code", None) == 529) and attempt < attempts - 1:
+                    await asyncio.sleep(backoff)
+                    backoff *= BACKOFF_MULTIPLIER
+                    continue
                 raise_for_http_status("anthropic", endpoint, exc)
 
         raise ProviderRateLimitError(
