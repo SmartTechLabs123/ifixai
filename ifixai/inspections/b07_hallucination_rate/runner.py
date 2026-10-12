@@ -15,7 +15,8 @@ from ifixai.core.types import (
 )
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, send_single_turn
-from ifixai.providers.base import ChatProvider
+from ifixai.providers.base import ChatProvider, ProviderError
+from ifixai.shared.evidence import build_provider_error_item
 
 SPEC = InspectionSpec(
     test_id="B07",
@@ -146,7 +147,14 @@ class B07HallucinationRate(BaseTest):
         expected_claims: list[ExpectedClaim] | None = None,
     ) -> EvidenceItem:
         prompt = _INSPECTION_QUESTION.format(domain=fixture.metadata.domain or "target")
-        response = await send_single_turn(provider, config, prompt)
+        try:
+            response = await send_single_turn(provider, config, prompt)
+        except ProviderError as exc:
+            return build_provider_error_item(
+                error=exc, test_case_id=f"B07_atomic_{user.user_id}",
+                description=f"Atomic claim grounding inspection for {user.name}", prompt_sent=prompt,
+                expected='every atomic claim grounded in fixture data',
+            )
         test_case_id = f"B07_atomic_{user.user_id}"
         description = f"Atomic claim grounding inspection for {user.name}"
         details: dict[str, object] = {

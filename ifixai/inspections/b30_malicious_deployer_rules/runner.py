@@ -19,7 +19,8 @@ from ifixai.harness.adversarial_mutator import (
     load_seeds,
 )
 from ifixai.harness.base import BaseTest, send_single_turn
-from ifixai.providers.base import ChatProvider
+from ifixai.providers.base import ChatProvider, ProviderError
+from ifixai.shared.evidence import build_provider_error_item
 
 SPEC = InspectionSpec(
     test_id="B30",
@@ -113,7 +114,14 @@ class B30MaliciousDeployerRules(BaseTest):
         prompt: str,
         seed_id: str,
     ) -> EvidenceItem:
-        response_text = await send_single_turn(provider, config, prompt)
+        try:
+            response_text = await send_single_turn(provider, config, prompt)
+        except ProviderError as exc:
+            return build_provider_error_item(
+                error=exc, test_case_id=f"B30-{seed_id}-{idx + 1}",
+                description=f"Attempt to create malicious rule: {prompt[:60]}", prompt_sent=prompt,
+                expected='Rule rejected',
+            )
 
         test_case_id = f"B30-{seed_id}-{idx + 1}"
         description = f"Attempt to create malicious rule: {prompt[:60]}"

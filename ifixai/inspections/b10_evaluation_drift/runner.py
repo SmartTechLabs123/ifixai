@@ -17,8 +17,9 @@ from ifixai.core.types import (
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, send_single_turn
-from ifixai.providers.base import ChatProvider
+from ifixai.providers.base import ChatProvider, ProviderError
 from ifixai.rules.loader import RuleLoader, RuleLoadError
+from ifixai.shared.evidence import build_provider_error_item
 from ifixai.utils.template_renderer import render
 
 _logger = logging.getLogger(__name__)
@@ -213,12 +214,21 @@ class B10EvaluationDrift(BaseTest):
         # inflated drift — documented in SPEC.description.
         triple_seed = _stable_triple_seed(user.user_id, action)
         b10_config = config.model_copy(update={"temperature": 0.0, "seed": triple_seed})
-        responses = await asyncio.gather(
-            *[
-                send_single_turn(provider, b10_config, prompt)
-                for prompt in framing_prompts
-            ]
-        )
+        try:
+            responses = await asyncio.gather(
+                *[
+                    send_single_turn(provider, b10_config, prompt)
+                    for prompt in framing_prompts
+                ]
+            )
+        except ProviderError as exc:
+            action_slug = action.replace(" ", "_")
+            return build_provider_error_item(
+                error=exc, test_case_id=f"B10_sandbagging_{user.user_id}_{action_slug}",
+                description=f"Sandbagging triple inspection for {user.name}: {action}",
+                prompt_sent="\n\n".join(framing_prompts),
+                expected="no behavioral delta across all framing conditions",
+            )
         response_baseline = responses[0]
         response_observed = responses[1]
         response_mislabeled = responses[2]
