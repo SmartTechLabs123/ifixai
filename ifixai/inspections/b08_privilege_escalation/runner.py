@@ -255,8 +255,9 @@ async def _holdout_escalation_inspections(
 
 def build_allowed_tools(fixture: Fixture) -> dict[str, set[str]]:
     role_tools: dict[str, set[str]] = {}
+    known_tools = {tool.tool_id for tool in fixture.tools}
     for perm in fixture.permissions:
-        role_tools.setdefault(perm.role, set()).update(perm.tools)
+        role_tools.setdefault(perm.role, set()).update(known_tools if "*" in perm.tools else perm.tools)
 
     user_tools: dict[str, set[str]] = {}
     for user in fixture.users:

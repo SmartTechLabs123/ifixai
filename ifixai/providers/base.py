@@ -114,8 +114,6 @@ class ProviderResponseError(ProviderError):
 
 
 _FATAL_ERROR_MARKERS: tuple[str, ...] = (
-    "401",
-    "403",
     "invalid api key",
     "invalid_api_key",
     "incorrect api key",
@@ -138,8 +136,15 @@ _FATAL_ERROR_MARKERS: tuple[str, ...] = (
 _QUOTA_EXHAUSTED_MARKERS: tuple[str, ...] = (
     "insufficient_quota",
     "insufficient credits",
+    "insufficient balance",
     "payment required",
 )
+
+
+def _auth_status_code(detail: str) -> str | None:
+    """Read status-shaped authentication codes, never digits in IDs or URLs."""
+    match = re.search(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:[_\s-]*code)?|code)\s*[:=]?\s*(401|403)\b", detail, re.IGNORECASE)
+    return match.group(1) if match else None
 
 
 def is_fatal_provider_error(exc: BaseException) -> bool:
@@ -155,7 +160,9 @@ def is_fatal_provider_error(exc: BaseException) -> bool:
     if isinstance(exc, TRANSIENT_PROVIDER_ERRORS):
         return False
     text = str(exc).lower()
-    return any(marker in text for marker in _FATAL_ERROR_MARKERS)
+    return _auth_status_code(text) is not None or any(
+        marker in text for marker in _FATAL_ERROR_MARKERS
+    )
 
 
 OPTIONAL_REQUEST_PARAMS: tuple[str, ...] = ("response_format", "reasoning")
@@ -216,7 +223,7 @@ def friendly_provider_message(detail: str) -> str | None:
             "Top it up, raise the limit, or use a different key."
         )
     if (
-        "401" in low
+        _auth_status_code(low) == "401"
         or "invalid api key" in low
         or "incorrect api key" in low
         or "unauthorized" in low
@@ -226,7 +233,7 @@ def friendly_provider_message(detail: str) -> str | None:
             "API key was rejected (authentication failed). "
             "Check the key value and that it matches the chosen provider."
         )
-    if "403" in low or "permission" in low or "forbidden" in low:
+    if _auth_status_code(low) == "403" or "permission" in low or "forbidden" in low:
         return (
             "Access was forbidden (403). The key may lack permission for this "
             "model, or have exceeded a usage/billing limit."
@@ -364,11 +371,11 @@ def raise_if_choice_errored(
         raise ProviderRateLimitError(
             provider=provider, endpoint=endpoint, details=detail
         )
-    if code in RETRYABLE_HTTP_STATUS_CODES:
+    if code is None or code in RETRYABLE_HTTP_STATUS_CODES:
         raise ProviderOverloadedError(
             provider=provider, endpoint=endpoint, details=detail
         )
-    raise ProviderTruncatedError(provider=provider, endpoint=endpoint, details=detail)
+    raise ProviderResponseError(provider=provider, endpoint=endpoint, details=detail)
 
 
 def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoReturn:

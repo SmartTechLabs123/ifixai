@@ -131,9 +131,21 @@ def _is_managed(text: str, target: AgentTarget) -> bool:
     return begin in text
 
 
+def _validate_agents_markers(existing: str) -> None:
+    begin_count, end_count = existing.count(MD_BEGIN), existing.count(MD_END)
+    if not begin_count and not end_count:
+        return
+    if begin_count != 1 or end_count != 1 or existing.index(MD_BEGIN) > existing.index(MD_END):
+        raise click.ClickException(
+            "AGENTS.md has an invalid iFixAi marker block; expected one BEGIN before one END. "
+            "Fix or remove the markers by hand, then re-run."
+        )
+
+
 def _splice_agents_md(existing: str, body: str) -> str:
     """Insert or replace our marker block inside an existing AGENTS.md, leaving the
     rest of the user's file untouched."""
+    _validate_agents_markers(existing)
     has_begin, has_end = MD_BEGIN in existing, MD_END in existing
     if has_begin != has_end:
         raise click.ClickException(
@@ -150,6 +162,7 @@ def _splice_agents_md(existing: str, body: str) -> str:
 
 
 def _strip_agents_md(existing: str) -> str:
+    _validate_agents_markers(existing)
     if MD_BEGIN not in existing or MD_END not in existing:
         return existing
     pre = existing.split(MD_BEGIN, 1)[0]
@@ -253,6 +266,13 @@ def install(agents: str | None, name: str, project_dir: str, revert: bool, list_
             if not _is_managed(existing, t) and not force:
                 bak = path.with_suffix(path.suffix + ".bak")
                 if bak.exists():
+                    if not bak.is_file() or bak.read_text(encoding="utf-8") != existing:
+                        raise click.ClickException(
+                            f"Cannot back up {path}: {bak} already exists and "
+                            "does not match the current custom command. Move "
+                            "the backup aside before installing, or use --force "
+                            "to explicitly overwrite without saving this command."
+                        )
                     click.echo(f"  {click.style('kept', fg='yellow')} existing backup {bak.name} (not overwritten)")
                 else:
                     bak.write_text(existing, encoding="utf-8")
