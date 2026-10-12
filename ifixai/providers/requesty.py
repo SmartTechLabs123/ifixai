@@ -16,6 +16,7 @@ from ifixai.providers.base import (
     raise_if_choice_errored,
     raise_if_truncated,
 )
+from ifixai.providers.client_pool import close_cached_clients
 
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 DEFAULT_BASE_URL = "https://router.requesty.ai/v1"
@@ -63,9 +64,7 @@ class RequestyProvider(ChatProvider):
             return client
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
+        await close_cached_clients(self._clients)
 
     async def send_message(
         self,
@@ -116,6 +115,7 @@ class RequestyProvider(ChatProvider):
                     details=f"Missing message in choice (finish_reason={finish_reason})",
                 )
             content = choice.message.content
+            raise_if_choice_errored("requesty", base_url, choice, content or "")
             if config.reject_truncated:
                 raise_if_truncated("requesty", base_url, finish_reason, content or "")
             if not content:
@@ -124,7 +124,6 @@ class RequestyProvider(ChatProvider):
                     endpoint=base_url,
                     details=f"Empty content in response (finish_reason={finish_reason})",
                 )
-            raise_if_choice_errored("requesty", base_url, choice, content)
         except openai.AuthenticationError as exc:
             raise ProviderAuthError(
                 provider="requesty", endpoint=base_url, details=str(exc)

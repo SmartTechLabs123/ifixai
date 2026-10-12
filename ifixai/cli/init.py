@@ -1,9 +1,12 @@
 
 
 import os
+import re
 from pathlib import Path
 
 import click
+
+from ifixai.providers.resolver import credential_env_vars, credential_requires_all
 
 SMOKE_FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "smoke_tiny.yaml"
 
@@ -11,23 +14,61 @@ SMOKE_FIXTURE_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "smok
 PROVIDER_ENV_KEYS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "atlascloud": "ATLASCLOUD_API_KEY",
     "minimax": "MINIMAX_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "orcarouter": "ORCAROUTER_API_KEY",
     "requesty": "REQUESTY_API_KEY",
+    "vercel": "AI_GATEWAY_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "azure": "AZURE_OPENAI_API_KEY",
     "bedrock": "AWS_ACCESS_KEY_ID",
     "huggingface": "HF_TOKEN",
+    # Last on purpose: this variable is usually set for wrangler or Terraform,
+    # so it must not outrank a model vendor's key as the suggested provider.
+    "cloudflare": "CLOUDFLARE_API_TOKEN",
+}
+
+# Additional settings or credentials required to make a provider call.
+# Listed beside the key by `ifixai init` and the setup wizard.
+PROVIDER_COMPANION_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "cloudflare": ("CLOUDFLARE_ACCOUNT_ID",),
+    "bedrock": ("AWS_SECRET_ACCESS_KEY",),
 }
 
 
 def detect_available_providers() -> list[tuple[str, str]]:
-    return [
-        (provider, env_var)
-        for provider, env_var in PROVIDER_ENV_KEYS.items()
-        if os.environ.get(env_var)
-    ]
+    """Providers whose key and every companion setting are in the environment.
+
+    A key without its companion cannot make a call, so it is not offered as ready.
+    """
+    available = []
+    for provider, primary in PROVIDER_ENV_KEYS.items():
+        # Required credential pairs are not interchangeable aliases.
+        candidates = (primary,) if credential_requires_all(provider) else credential_env_vars(provider) or (primary,)
+        env_var = next((name for name in candidates if os.environ.get(name)), None)
+        if env_var and all(
+            os.environ.get(companion)
+            for companion in PROVIDER_COMPANION_ENV_KEYS.get(provider, ())
+        ):
+            available.append((provider, env_var))
+    return available
+
+
+def _parse_dotenv_value(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith(("\"", "'")):
+        quote = value[0]
+        escaped = False
+        for index, character in enumerate(value[1:], start=1):
+            if character == quote and not escaped:
+                suffix = value[index + 1:].strip()
+                if not suffix or suffix.startswith("#"):
+                    return value[1:index]
+                return value
+            escaped = character == "\\" and not escaped
+        return value
+    return re.sub(r"\s+#.*$", "", raw).strip()
 
 
 def load_dotenv_file(path: "Path | None" = None) -> list[str]:
@@ -56,9 +97,7 @@ def load_dotenv_file(path: "Path | None" = None) -> list[str]:
         if not sep:
             continue
         key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-            value = value[1:-1]
+        value = _parse_dotenv_value(value)
         if key and key not in os.environ:
             os.environ[key] = value
             loaded.append(key)
@@ -91,7 +130,10 @@ def init(non_interactive: bool) -> None:
         click.echo(click.style("  No provider API keys detected in environment.", fg="yellow"))
         click.echo("  Set one of the following before running tests:")
         for provider, env_var in PROVIDER_ENV_KEYS.items():
-            click.echo(f"    - {env_var}  (for --provider {provider})")
+            required = " + ".join(
+                (env_var, *PROVIDER_COMPANION_ENV_KEYS.get(provider, ()))
+            )
+            click.echo(f"    - {required}  (for --provider {provider})")
         return
 
     click.echo("  Detected provider keys:")

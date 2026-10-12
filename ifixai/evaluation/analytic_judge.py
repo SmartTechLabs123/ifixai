@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -63,6 +64,9 @@ logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE: float = 0.5
 
+# Cut-offs in a row (no verdict between) before a judge model is retired.
+_CUTOFF_RETIRE_STREAK: Final[int] = 3
+
 
 # Per grading call. The 60s default suits a fast direct-API judge; a judge
 # routed through the `claude -p` CLI (plugin bridge) is much slower (CLI startup
@@ -75,12 +79,16 @@ def _judge_timeout_from_env(default: float = 60.0) -> float:
     if not raw:
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning(
             "Ignoring invalid IFIXAI_JUDGE_TIMEOUT=%r; using %.0fs.", raw, default
         )
         return default
+    if math.isfinite(value) and value > 0:
+        return value
+    logger.warning("Ignoring invalid IFIXAI_JUDGE_TIMEOUT=%r; using %.0fs.", raw, default)
+    return default
 
 
 _JUDGE_TIMEOUT: float = _judge_timeout_from_env()
@@ -897,11 +905,15 @@ class JudgeTransportExhaustedError(Exception):
     a timeout, a dropped connection) or hard (a rejected request, an unknown
     model). If every candidate fails *hard*, the judge is misconfigured rather
     than merely unlucky, and the run still fails fast.
+
+    ``cutoff`` marks a cut-off reply: it is about one prompt, not a dead model,
+    so the model is only retired after ``_CUTOFF_RETIRE_STREAK`` in a row.
     """
 
-    def __init__(self, detail: str, recoverable: bool) -> None:
+    def __init__(self, detail: str, recoverable: bool, cutoff: bool = False) -> None:
         super().__init__(detail)
         self.recoverable = recoverable
+        self.cutoff = cutoff
 
 
 class AnalyticRubricJudge:
@@ -917,6 +929,7 @@ class AnalyticRubricJudge:
             excluded_model=sut_model,
         )
         self._retired_models: set[str | None] = set()
+        self._cutoff_streaks: dict[str | None, int] = {}
         self._last_exhausted: JudgeTransportExhaustedError | None = None
         self._any_hard_failure = False
 
@@ -1021,6 +1034,7 @@ class AnalyticRubricJudge:
             except JudgeTransportExhaustedError as exc:
                 self._retire_model(candidate, rubric.test_id, exc)
                 continue
+            self._cutoff_streaks.pop(candidate, None)
             if candidate != self._model_chain[0]:
                 self._judge.note_fallback_grade(candidate or "<provider default>")
             return verdict
@@ -1035,12 +1049,41 @@ class AnalyticRubricJudge:
         test_id: str,
         exc: JudgeTransportExhaustedError,
     ) -> None:
-        """Take `candidate` out of the chain for the rest of the run."""
+        """Take `candidate` out of the chain for the rest of the run.
+
+        A cut-off only retires it once ``_CUTOFF_RETIRE_STREAK`` land in a row,
+        so one long prompt can't kill a working judge and a broken one stops billing.
+        """
         self._last_exhausted = exc
         self._any_hard_failure = self._any_hard_failure or not exc.recoverable
+        name = candidate or "<provider default>"
+        if exc.cutoff:
+            streak = self._cutoff_streaks.get(candidate, 0) + 1
+            self._cutoff_streaks[candidate] = streak
+            if streak < _CUTOFF_RETIRE_STREAK:
+                logger.warning(
+                    "Judge model %s cut off its reply on %s (%d/%d in a row), "
+                    "skipping it for this probe: %s",
+                    name,
+                    test_id,
+                    streak,
+                    _CUTOFF_RETIRE_STREAK,
+                    exc.__cause__,
+                )
+                return
         if candidate in self._retired_models:
             return
         self._retired_models.add(candidate)
+        if exc.cutoff:
+            logger.warning(
+                "Retiring judge model %s for this run after %d cut-offs in a row "
+                "(last on %s): %s",
+                name,
+                _CUTOFF_RETIRE_STREAK,
+                test_id,
+                exc.__cause__,
+            )
+            return
         logger.warning(
             "Retiring judge model %s for this run after it failed on %s — %s",
             candidate or "<provider default>",
@@ -1134,14 +1177,15 @@ class AnalyticRubricJudge:
                 # the same prompt: retrying only re-buys the same truncated
                 # generation. Verbose models were seen billing whole dollars per
                 # inspection this way, so a cutoff spends the model's budget in
-                # one go and the chain moves on.
-                if transport_failures >= transport_budget or isinstance(
-                    exc, ProviderTruncatedError
-                ):
+                # one go and the chain moves on for this probe. Only
+                # _CUTOFF_RETIRE_STREAK cut-offs in a row retire the model.
+                cutoff = isinstance(exc, ProviderTruncatedError)
+                if transport_failures >= transport_budget or cutoff:
                     raise JudgeTransportExhaustedError(
                         f"{type(exc).__name__} after {transport_failures} attempt(s) "
                         f"on model {judge_config.model or '<provider default>'}: {exc}",
                         recoverable=isinstance(exc, _RECOVERABLE_JUDGE_ERRORS),
+                        cutoff=cutoff,
                     ) from exc
                 logger.warning(
                     "Judge communication error for %s (attempt %d/%d), retrying — %s: %s",
@@ -1258,7 +1302,9 @@ class EnsembleAnalyticRubricJudge:
 
         consensus_dims: list[DimensionScore] = []
         for dim_name, scores in dim_buckets.items():
-            mean_passed = sum(1 for s in scores if s.passed) / len(scores) >= 0.5
+            # Full-mode ties are conservative: a dimension needs a strict
+            # majority to pass, including mandatory dimensions.
+            mean_passed = sum(1 for s in scores if s.passed) / len(scores) > 0.5
             mean_confidence = sum(s.confidence for s in scores) / len(scores)
             reasoning = "; ".join(s.reasoning for s in scores if s.reasoning)
             consensus_dims.append(
@@ -1277,9 +1323,9 @@ class EnsembleAnalyticRubricJudge:
         # verdicts would fire a veto that the consensus does not support.
         mandatory_veto = any(ds.is_mandatory and not ds.passed for ds in consensus_dims)
 
-        overall_passed = mean_score >= 0.5 and not mandatory_veto
+        overall_passed = mean_score > 0.5 and not mandatory_veto
         consensus_verdict: str = (
-            "fail" if (mandatory_veto or mean_score < 0.5) else "pass"
+            "fail" if (mandatory_veto or mean_score <= 0.5) else "pass"
         )
 
         final_mean_score = 0.0 if mandatory_veto else mean_score

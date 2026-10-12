@@ -225,7 +225,8 @@ def judge_substitution_warnings(judge_stats: dict | None) -> list[str]:
         )
         messages.append(
             SUBSTITUTE_JUDGE_PREFIX
-            + f"{breakdown} — {configured} was unreachable. "
+            + f"{breakdown}. {configured} gave no verdict on those probes "
+            "(a failed call or a cut-off reply). "
             "Scores are not comparable to a run graded by the configured judge."
         )
     failures = judge_stats.get("judge_transport_failures") or {}
@@ -283,16 +284,41 @@ def b32_not_applicable_warning(
 
 # Providers that front many vendors behind one name. For these the real grading
 # vendor is the model slug's prefix, so a cross-vendor judge routed through one
-# aggregator (e.g. a Gemini SUT graded by a Claude judge, both via OpenRouter or
-# Requesty) is recognized as independent instead of mislabeled "self-judge".
+# aggregator (e.g. a Gemini SUT graded by a Claude judge, both via OpenRouter,
+# Requesty, Cloudflare AI Gateway or Vercel AI Gateway) is recognized as
+# independent instead of mislabeled "self-judge".
 _AGGREGATOR_PROVIDERS: Final[frozenset[str]] = frozenset(
-    {"openrouter", "orcarouter", "requesty", "atlascloud", "litellm", "http", "langchain"}
+    {"openrouter", "orcarouter", "requesty", "cloudflare", "vercel", "atlascloud", "litellm", "http", "langchain", "huggingface"}
+)
+
+# Namespaces that sit in front of the author, as in the Workers AI ids
+# "@cf/meta/llama-3.3-70b-instruct-fp8-fast" and "@hf/google/gemma-7b-it", which
+# Cloudflare AI Gateway also accepts behind its own "workers-ai/" prefix: the
+# vendor is the first segment that is not a namespace.
+CATALOG_NAMESPACE_PREFIXES: Final[frozenset[str]] = frozenset(
+    {"workers-ai", "@cf", "@hf"}
 )
 
 # Distinct provider slugs that front the SAME underlying model vendor, so a
 # self-judge across them is still same-vendor (biased): Azure OpenAI serves
 # OpenAI models; the direct Gemini API and a "google/..." slug are both Google.
-_VENDOR_ALIASES: Final[dict[str, str]] = {"azure": "openai", "gemini": "google"}
+# "google-ai-studio" and "grok" are the names Cloudflare AI Gateway routes Google
+# and xAI models under. The rest are one vendor spelled two ways: gateways
+# disagree on xAI and Mistral (Workers AI alone uses both Mistral spellings), and
+# Workers AI names Meta, DeepSeek and Z.ai by their Hugging Face organisation.
+# Without the alias a Llama judge on one gateway reads as independent of a Llama
+# system under test on another.
+_VENDOR_ALIASES: Final[dict[str, str]] = {
+    "azure": "openai",
+    "gemini": "google",
+    "google-ai-studio": "google",
+    "grok": "xai",
+    "x-ai": "xai",
+    "mistralai": "mistral",
+    "meta-llama": "meta",
+    "deepseek-ai": "deepseek",
+    "zai-org": "z-ai",
+}
 
 # Aggregator prefixes that name the cloud hosting the model, not its developer
 # ("bedrock/claude-sonnet-4-6@eu-central-1"), so the vendor comes from the family.
@@ -308,8 +334,26 @@ _MODEL_FAMILY_VENDORS: Final[dict[str, str]] = {
 
 def grading_vendor(provider: str, model: str | None) -> str:
     p = (provider or "").lower()
-    if p in _AGGREGATOR_PROVIDERS and model and "/" in model:
+    if p == "bedrock" and model:
+        # Native foundation-model IDs declare the creator before a dot, with
+        # an optional cross-region prefix. Only named foundation models and
+        # system inference profiles in ARNs carry that identity; application
+        # profiles and custom model ARNs are opaque and must remain unresolved.
+        identifier = model.lower()
+        if identifier.startswith("arn:"):
+            resource = identifier.split(":", 5)[-1]
+            if resource.startswith(("foundation-model/", "inference-profile/")):
+                identifier = resource.partition("/")[2]
+            else:
+                identifier = ""
+        parts = identifier.split(".")
+        if parts[0] in {"us", "eu", "apac", "global"}:
+            parts = parts[1:]
+        raw = parts[0] if len(parts) > 1 else p
+    elif p in _AGGREGATOR_PROVIDERS and model and "/" in model:
         raw, _, rest = model.lower().partition("/")
+        while raw in CATALOG_NAMESPACE_PREFIXES and "/" in rest:
+            raw, _, rest = rest.partition("/")
         if raw in _CLOUD_HOST_PREFIXES:
             raw = next((v for f, v in _MODEL_FAMILY_VENDORS.items() if f in rest), raw)
     else:
@@ -645,7 +689,7 @@ def build_test_results_section(
             "error": br.error,
             "regulatory_mappings": get_test_regulatory_mappings(br.test_id, frameworks),
         }
-        if is_error and br.error_message:
+        if br.error_message:
             br_dict["error_message"] = br.error_message
         br_dict["evaluation_path"] = _dominant_evaluation_path(br)
         if br.confidence_interval:
@@ -1040,15 +1084,15 @@ def render_regulatory_compliance(
 
     lines = [
         "## Regulatory Compliance Summary\n",
-        "| Framework | Version | Tests Mapped | Passing | Coverage |",
-        "|---|---|---|---|---|",
+        "| Framework | Version | Inspected / mapped | Passing | Observed pass rate | Inspection coverage |",
+        "|---|---|---|---|---|---|",
     ]
 
     for item in summary:
         lines.append(
             f"| {item['name']} | {item['version']} "
-            f"| {item['tests_mapped']} | {item['tests_passing']} "
-            f"| {item['coverage_pct']} |"
+            f"| {item['tests_mapped']}/{item['tests_mapped_total']} | {item['tests_passing']} "
+            f"| {item['coverage_pct']} | {item['inspection_coverage_pct']} |"
         )
 
     return "\n".join(lines)
@@ -1059,7 +1103,7 @@ def render_consistency_warnings(result: TestRunResult) -> str:
         return ""
     lines = [
         "## Consistency Warnings\n",
-        "> Cross-hook inconsistencies detected. Affected benchmark scores are capped at 50%.\n",
+        "> Cross-hook verification findings are listed below. Confirmed inconsistencies cap affected inspection scores at 50%; incomplete checks retain completed inspection scores.\n",
     ]
     for warning in result.validation_warnings:
         lines.append(f"- {warning}")

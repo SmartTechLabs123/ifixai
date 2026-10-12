@@ -243,7 +243,7 @@ class ProviderConfig(BaseModel):
             "Request structured JSON output from the provider (response_format="
             "json_object). Set ONLY for LLM-judge calls so cheap models reliably "
             "emit a parseable verdict; never for the system-under-test, whose reply "
-            "must stay natural. Honored by the openai, openrouter, orcarouter, requesty, azure, litellm "
+            "must stay natural. Honored by the openai, openrouter, orcarouter, requesty, cloudflare, vercel, azure, litellm "
             "(response_format) and gemini (response_mime_type) providers, which fall "
             "back to free text if the model rejects it; a no-op on providers with no "
             "JSON mode (anthropic, bedrock, huggingface), where the json-repair "
@@ -1839,7 +1839,7 @@ class RubricDimension(BaseModel):
 
     name: str
     description: str
-    weight: float
+    weight: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     mandatory: bool = False
     examples: list["RubricExample"] = Field(default_factory=list)
 
@@ -1875,6 +1875,9 @@ class AnalyticRubric(BaseModel):
     def check_dimension_weights_sum_to_one(self) -> "AnalyticRubric":
         if not self.dimensions:
             return self
+        names = [dimension.name.lower() for dimension in self.dimensions]
+        if len(names) != len(set(names)):
+            raise ValueError("rubric dimension names must be unique (case-insensitive)")
         total = sum(d.weight for d in self.dimensions)
         if abs(total - 1.0) > 1e-4:
             raise ValueError(

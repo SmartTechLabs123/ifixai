@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from copy import copy
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -134,20 +135,25 @@ async def run_all(
         )
         test_results = _merge_cached(reused_results, test_results)
 
+        consistency_warnings = []
         try:
             violations = await CrossHookValidator().run(provider, config, fixture)
-        except Exception:
+        except Exception as exc:
             _logger.exception("CrossHookValidator failed; skipping consistency checks")
             violations = []
+            consistency_warnings.append(
+                "Cross-hook consistency verification incomplete: "
+                f"{type(exc).__name__}. Completed inspection scores are retained; "
+                "the unavailable check does not establish consistency."
+            )
 
         if violations:
             test_results, consistency_capped = apply_consistency_cap(
                 test_results, violations
             )
-            consistency_warnings = [v.detail for v in violations]
+            consistency_warnings.extend(v.detail for v in violations)
         else:
             consistency_capped = False
-            consistency_warnings = []
 
         result = _build_result(
             test_results=test_results,
@@ -213,20 +219,25 @@ async def run_strategic(
         )
         test_results = _merge_cached(reused_results, test_results)
 
+        consistency_warnings = []
         try:
             violations = await CrossHookValidator().run(provider, config, fixture)
-        except Exception:
+        except Exception as exc:
             _logger.exception("CrossHookValidator failed; skipping consistency checks")
             violations = []
+            consistency_warnings.append(
+                "Cross-hook consistency verification incomplete: "
+                f"{type(exc).__name__}. Completed inspection scores are retained; "
+                "the unavailable check does not establish consistency."
+            )
 
         if violations:
             test_results, consistency_capped = apply_consistency_cap(
                 test_results, violations
             )
-            consistency_warnings = [v.detail for v in violations]
+            consistency_warnings.extend(v.detail for v in violations)
         else:
             consistency_capped = False
-            consistency_warnings = []
 
         result = _build_result(
             test_results=test_results,
@@ -270,6 +281,13 @@ async def run_selected(
     computed via _build_result, so it may be capped when a mandatory-minimum
     inspection is absent from the selection. Per-test results are exact.
     """
+    unknown_ids = sorted(set(test_ids) - INSPECTION_REGISTRY.keys())
+    if unknown_ids:
+        raise ValueError(
+            f"Unknown test ID(s): {', '.join(unknown_ids)}. "
+            f"Available: {sorted(INSPECTION_REGISTRY.keys())}"
+        )
+
     if capabilities is None:
         capabilities = await detect_capabilities(provider, config)
 
@@ -300,20 +318,25 @@ async def run_selected(
         )
         test_results = _merge_cached(reused_results, test_results)
 
+        consistency_warnings = []
         try:
             violations = await CrossHookValidator().run(provider, config, fixture)
-        except Exception:
+        except Exception as exc:
             _logger.exception("CrossHookValidator failed; skipping consistency checks")
             violations = []
+            consistency_warnings.append(
+                "Cross-hook consistency verification incomplete: "
+                f"{type(exc).__name__}. Completed inspection scores are retained; "
+                "the unavailable check does not establish consistency."
+            )
 
         if violations:
             test_results, consistency_capped = apply_consistency_cap(
                 test_results, violations
             )
-            consistency_warnings = [v.detail for v in violations]
+            consistency_warnings.extend(v.detail for v in violations)
         else:
             consistency_capped = False
-            consistency_warnings = []
 
         result = _build_result(
             test_results=test_results,
@@ -347,6 +370,15 @@ async def run_single(
     capabilities: ProviderCapabilities | None = None,
 ) -> TestResult:
 
+    inspection = INSPECTION_REGISTRY.get(test_id)
+    if inspection is None:
+        raise ValueError(
+            f"Unknown test: {test_id}. Available: {sorted(INSPECTION_REGISTRY.keys())}"
+        )
+
+    # Registry entries are prototypes; execution stores per-run state on each instance.
+    inspection = copy(inspection)
+
     if capabilities is None:
         capabilities = await detect_capabilities(provider, config)
 
@@ -354,11 +386,6 @@ async def run_single(
 
     pipeline = _build_pipeline(pipeline_config, judge, sut_model=config.model)
 
-    inspection = INSPECTION_REGISTRY.get(test_id)
-    if inspection is None:
-        raise ValueError(
-            f"Unknown test: {test_id}. Available: {sorted(INSPECTION_REGISTRY.keys())}"
-        )
     try:
         return await inspection.execute(
             provider,
@@ -519,6 +546,7 @@ async def _run_sequential(
     for index, (test_id, inspection) in enumerate(inspections.items(), start=1):
         spec = spec_map.get(test_id)
         try:
+            inspection = copy(inspection)
             result = await inspection.execute(
                 provider,
                 config,
@@ -566,6 +594,7 @@ async def _execute_single_inspection(
 ) -> TestResult:
     async with governor.acquire():
         try:
+            inspection = copy(inspection)
             return await inspection.execute(  # type: ignore[union-attr]
                 provider,
                 config,

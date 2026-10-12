@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, NoReturn
@@ -113,8 +114,6 @@ class ProviderResponseError(ProviderError):
 
 
 _FATAL_ERROR_MARKERS: tuple[str, ...] = (
-    "401",
-    "403",
     "invalid api key",
     "invalid_api_key",
     "incorrect api key",
@@ -133,20 +132,27 @@ _FATAL_ERROR_MARKERS: tuple[str, ...] = (
 # The subset meaning the account itself is spent, not merely throttled. A 429
 # carrying any of these never clears on retry, so the run must stop and say so
 # rather than burn the whole budget on calls that cannot succeed.
+# Bare quota/billing/credit words also appear in retryable per-minute limits.
 _QUOTA_EXHAUSTED_MARKERS: tuple[str, ...] = (
-    "quota",
     "insufficient_quota",
     "insufficient credits",
-    "billing",
+    "insufficient balance",
     "payment required",
-    "credit",
 )
+
+
+def _auth_status_code(detail: str) -> str | None:
+    """Read status-shaped authentication codes, never digits in IDs or URLs."""
+    match = re.search(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:[_\s-]*code)?|code)\s*[:=]?\s*(401|403)\b", detail, re.IGNORECASE)
+    return match.group(1) if match else None
 
 
 def is_fatal_provider_error(exc: BaseException) -> bool:
     """True when an error means the credential is rejected / out of quota."""
     if isinstance(exc, ProviderAuthError):
         return True
+    if isinstance(exc, ProviderRateLimitError):
+        return any(marker in exc.details.lower() for marker in _QUOTA_EXHAUSTED_MARKERS)
     # Transient by construction, so never a credential problem — and they must
     # be excluded by type, not by text. The markers below are matched as bare
     # substrings, and a truncation detail carries a character count: a reply cut
@@ -154,14 +160,9 @@ def is_fatal_provider_error(exc: BaseException) -> bool:
     if isinstance(exc, TRANSIENT_PROVIDER_ERRORS):
         return False
     text = str(exc).lower()
-    # Every provider maps HTTP 429 to ProviderRateLimitError whether it is a
-    # per-minute ceiling that clears in seconds or an exhausted account that
-    # never will, so the body is the only thing that separates them. Match the
-    # narrow account-dead markers, not the generic ones: "rate limit exceeded"
-    # contains "limit exceeded" and must stay retryable.
-    if isinstance(exc, ProviderRateLimitError):
-        return any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS)
-    return any(marker in text for marker in _FATAL_ERROR_MARKERS)
+    return _auth_status_code(text) is not None or any(
+        marker in text for marker in _FATAL_ERROR_MARKERS
+    )
 
 
 OPTIONAL_REQUEST_PARAMS: tuple[str, ...] = ("response_format", "reasoning")
@@ -222,7 +223,7 @@ def friendly_provider_message(detail: str) -> str | None:
             "Top it up, raise the limit, or use a different key."
         )
     if (
-        "401" in low
+        _auth_status_code(low) == "401"
         or "invalid api key" in low
         or "incorrect api key" in low
         or "unauthorized" in low
@@ -232,7 +233,7 @@ def friendly_provider_message(detail: str) -> str | None:
             "API key was rejected (authentication failed). "
             "Check the key value and that it matches the chosen provider."
         )
-    if "403" in low or "permission" in low or "forbidden" in low:
+    if _auth_status_code(low) == "403" or "permission" in low or "forbidden" in low:
         return (
             "Access was forbidden (403). The key may lack permission for this "
             "model, or have exceeded a usage/billing limit."
@@ -370,11 +371,11 @@ def raise_if_choice_errored(
         raise ProviderRateLimitError(
             provider=provider, endpoint=endpoint, details=detail
         )
-    if code in RETRYABLE_HTTP_STATUS_CODES:
+    if code is None or code in RETRYABLE_HTTP_STATUS_CODES:
         raise ProviderOverloadedError(
             provider=provider, endpoint=endpoint, details=detail
         )
-    raise ProviderTruncatedError(provider=provider, endpoint=endpoint, details=detail)
+    raise ProviderResponseError(provider=provider, endpoint=endpoint, details=detail)
 
 
 def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoReturn:

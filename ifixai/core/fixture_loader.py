@@ -6,6 +6,7 @@ from typing import Any
 
 import jsonschema
 import yaml
+from pydantic import ValidationError
 
 from ifixai.core.types import (
     DataSource,
@@ -37,16 +38,19 @@ def load_schema() -> dict[str, Any]:
 
 def resolve_fixture_path(name_or_path: str | Path) -> Path:
     path = Path(name_or_path)
-    if path.exists():
+    if path.exists() and not path.is_dir():
         return path
 
-    builtin_path = _FIXTURES_DIR / str(name_or_path) / "fixture.yaml"
-    if builtin_path.exists():
-        return builtin_path
+    name = str(name_or_path)
+    # Explicit paths must not silently select a different shipped fixture.
+    if name == path.name and name not in {".", ".."} and "\\" not in name:
+        builtin_path = _FIXTURES_DIR / name / "fixture.yaml"
+        if builtin_path.is_file():
+            return builtin_path
 
-    example_path = _FIXTURES_DIR / "examples" / f"{name_or_path}.yaml"
-    if example_path.exists():
-        return example_path
+        example_path = _FIXTURES_DIR / "examples" / f"{name}.yaml"
+        if example_path.is_file():
+            return example_path
 
     raise FileNotFoundError(
         f"Fixture not found: '{name_or_path}'. "
@@ -93,7 +97,16 @@ def validate_fixture(path: str | Path) -> list[str]:
 
     schema = load_schema()
     validator = jsonschema.Draft7Validator(schema)
-    return [error.message for error in validator.iter_errors(raw)]
+    errors = [error.message for error in validator.iter_errors(raw)]
+    if errors:
+        return errors
+    # Schema validation is only the structural half of the loading contract.
+    # Validate the same typed invariants a run will enforce before declaring Valid.
+    try:
+        _parse_fixture(raw)
+    except (ValidationError, KeyError, TypeError, ValueError) as exc:
+        return [f"Invalid fixture fields: {exc}"]
+    return []
 
 def list_test_coverage(fixture: Fixture) -> dict[str, int]:
     coverage: dict[str, int] = {}

@@ -35,6 +35,7 @@ from ifixai.cli.orchestrator import (
     _resolve_standard_eval_mode,
     execute_tests,
 )
+from ifixai.cli.pro_offer import NO_PROMO_ENV_VAR, RunDecision, offer_pro_version
 from ifixai.cli.reports import save_reports
 from ifixai.cli.schemas import InteractiveConfig
 from ifixai.core.concurrency import (
@@ -143,9 +144,12 @@ PROVIDER_CHOICES = [
     "huggingface",
     "http",
     "langchain",
+    "litellm",
     "openrouter",
     "orcarouter",
     "requesty",
+    "cloudflare",
+    "vercel",
 ]
 
 FORMAT_CHOICES = ["json", "markdown", "both"]
@@ -460,12 +464,14 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
 @click.option(
     "--output",
     "-o",
+    type=click.Path(file_okay=False, readable=False),
     default="./ifixai-results/",
     show_default=True,
     help="Directory to save reports.",
 )
 @click.option(
     "--artifact-out",
+    type=click.Path(dir_okay=False, readable=False),
     default=None,
     help="Also write the self-contained interactive HTML scorecard to this path.",
 )
@@ -734,6 +740,16 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
     "DO_NOT_TRACK=1 to disable it permanently.",
 )
 @click.option(
+    "--no-promo",
+    "no_promo",
+    is_flag=True,
+    default=False,
+    envvar=NO_PROMO_ENV_VAR,
+    help="Skip the Pro-version offer and start the run immediately. Set "
+    f"{NO_PROMO_ENV_VAR}=1 to skip it on every run. The offer is never shown "
+    "in CI or when input/output is not a terminal.",
+)
+@click.option(
     "--print-telemetry",
     "print_telemetry",
     is_flag=True,
@@ -795,6 +811,7 @@ def run(
     grounding: str,
     quiet: bool,
     no_telemetry: bool,
+    no_promo: bool,
     print_telemetry: bool,
     show_install_id: bool,
 ) -> None:
@@ -819,7 +836,15 @@ def run(
         from click.core import ParameterSource
 
         provider = _cfg_value(ctx, "provider", provider, config_obj.provider)
-        model = _cfg_value(ctx, "model", model, config_obj.model)
+        # Connection defaults belong to the saved target. An explicit switch
+        # must use the new provider's model, endpoint and credential defaults.
+        # Configurations without a provider retain their generic defaults.
+        same_target_provider = (
+            not config_obj.provider
+            or config_obj.provider.lower() == (provider or "").lower()
+        )
+        if same_target_provider:
+            model = _cfg_value(ctx, "model", model, config_obj.model)
         fixture = _cfg_value(ctx, "fixture", fixture, config_obj.fixture)
         explicit_selector = (
             strategic
@@ -836,17 +861,18 @@ def run(
             ctx, "report_format", report_format, config_obj.format
         )
         timeout = _cfg_value(ctx, "timeout", timeout, config_obj.timeout)
-        endpoint = _cfg_value(ctx, "endpoint", endpoint, config_obj.endpoint)
-        auth_method = _cfg_value(
-            ctx, "auth_method", auth_method, config_obj.auth_method
-        )
+        if same_target_provider:
+            endpoint = _cfg_value(ctx, "endpoint", endpoint, config_obj.endpoint)
+            auth_method = _cfg_value(
+                ctx, "auth_method", auth_method, config_obj.auth_method
+            )
         grounding = _cfg_value(ctx, "grounding", grounding, config_obj.grounding)
         if governance_path is None and config_obj.governance:
             governance_path = config_obj.governance
-        if extra_headers is None and config_obj.extra_headers:
+        if same_target_provider and extra_headers is None and config_obj.extra_headers:
             extra_headers = config_obj.extra_headers
         system_name = _cfg_value(ctx, "system_name", system_name, config_obj.name)
-        if api_key is None and config_obj.api_key_env:
+        if same_target_provider and api_key is None and config_obj.api_key_env:
             api_key = os.environ.get(config_obj.api_key_env)
         if config_obj.judges and (
             ctx.get_parameter_source("judge_provider") == ParameterSource.DEFAULT
@@ -937,6 +963,10 @@ def run(
         holdout_seed = resume_manifest.holdout_seed
 
     print_startup_banner(IFIXAI_VERSION, quiet=quiet)
+    # Asked before telemetry and any provider call, so abandoning leaves no trace.
+    if not (no_promo or dry_run) and offer_pro_version() is RunDecision.ABANDON:
+        click.echo("Run abandoned -- no inspections were run.")
+        return
     if no_telemetry:
         telemetry.disable()
     telemetry.show_disclosure()
@@ -1028,10 +1058,19 @@ def run(
             )
         judge_api_key = tuple(resolved_keys)
 
+    if eval_mode in ("single", "semantic") and len(judge_provider) != 1:
+        click.echo(
+            click.style(
+                "Error: single-judge evaluation requires exactly one --judge-provider flag. "
+                "Use --eval-mode full for an ensemble.",
+                fg="red",
+            )
+        )
+        sys.exit(1)
     if eval_mode == "full" and len(judge_provider) < 2:
         click.echo(
             click.style(
-                "Error: --eval-mode full requires >=2 distinct --judge-provider flags.\n"
+                "Error: --eval-mode full requires >=2 --judge-provider flags.\n"
                 "Example: --judge-provider anthropic --judge-api-key $K1 --judge-model claude-sonnet-4-6 \\\n"
                 "         --judge-provider openai --judge-api-key $K2 --judge-model gpt-4o",
                 fg="red",
@@ -1332,7 +1371,7 @@ def run(
         )
         if (
             fixture is not None
-            and Path(fixture).resolve() == default_fixture_path.resolve()
+            and resolve_fixture_path(fixture).resolve() == default_fixture_path.resolve()
         ):
             click.echo(
                 click.style(
@@ -1346,7 +1385,7 @@ def run(
         if len(judge_provider) < 2:
             click.echo(
                 click.style(
-                    "Error: --mode full requires >=2 distinct --judge-provider flags "
+                    "Error: --mode full requires >=2 --judge-provider flags "
                     "(plus matching --judge-api-key flags). Standard mode is the "
                     "right choice for runs without judge credentials.",
                     fg="red",
@@ -1632,13 +1671,24 @@ def run(
         from ifixai.providers.http import DEFAULT_ENDPOINT
         effective_endpoint = (effective_endpoint or DEFAULT_ENDPOINT).rstrip("/")
 
+    rubric_hashes = compute_rubric_digests_for_tests_layout(
+        _TESTS_DIR, mutation_bank_path=_TESTS_DIR.parent / "harness" / "synonyms.yaml"
+    )
+    if resume_manifest is not None:
+        # Added fingerprints must not invalidate a run that predates them.
+        # Existing keys still use current digests, so edits remain detectable.
+        rubric_hashes = {
+            key: digest for key, digest in rubric_hashes.items()
+            if key in resume_manifest.rubric_hashes
+        }
+
     manifest = build_manifest(
         mode=manifest_mode,
         model_under_test=model_descriptor,
         judge_models=[],
         normalizer_version=NORMALIZER_VERSION,
         test_versions=test_versions,
-        rubric_hashes=compute_rubric_digests_for_tests_layout(_TESTS_DIR),
+        rubric_hashes=rubric_hashes,
         fixture_digest=compute_fixture_digest(resolved_fixture_path),
         governance_fixture_digest=governance_fixture_digest_value,
         governance_source=governance_source,

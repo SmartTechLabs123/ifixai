@@ -16,6 +16,7 @@ from ifixai.providers.base import (
     raise_if_choice_errored,
     raise_if_truncated,
 )
+from ifixai.providers.client_pool import close_cached_clients
 
 DEFAULT_API_VERSION = "2024-10-21"
 
@@ -69,9 +70,7 @@ class AzureOpenAIProvider(ChatProvider):
             return client
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
+        await close_cached_clients(self._clients)
 
     async def send_message(
         self,
@@ -134,6 +133,7 @@ class AzureOpenAIProvider(ChatProvider):
                     details=f"Missing message in choice (finish_reason={finish_reason})",
                 )
             content = choice.message.content
+            raise_if_choice_errored("azure", config.endpoint or "", choice, content or "")
             if config.reject_truncated:
                 raise_if_truncated(
                     "azure", config.endpoint or "", finish_reason, content or ""
@@ -144,7 +144,6 @@ class AzureOpenAIProvider(ChatProvider):
                     endpoint=config.endpoint,
                     details=f"Empty content in response (finish_reason={finish_reason})",
                 )
-            raise_if_choice_errored("azure", config.endpoint or "", choice, content)
         except openai.AuthenticationError as exc:
             raise ProviderAuthError(
                 provider="azure",

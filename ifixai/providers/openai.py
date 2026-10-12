@@ -16,6 +16,7 @@ from ifixai.providers.base import (
     raise_if_choice_errored,
     raise_if_truncated,
 )
+from ifixai.providers.client_pool import close_cached_clients
 
 DEFAULT_MODEL = "gpt-4o"
 
@@ -57,9 +58,7 @@ class OpenAIProvider(ChatProvider):
             return client
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
+        await close_cached_clients(self._clients)
 
     async def send_message(
         self,
@@ -104,6 +103,7 @@ class OpenAIProvider(ChatProvider):
                     details=f"Missing message in choice (finish_reason={finish_reason})",
                 )
             content = choice.message.content
+            raise_if_choice_errored("openai", endpoint, choice, content or "")
             if config.reject_truncated:
                 raise_if_truncated("openai", endpoint, finish_reason, content or "")
             if not content:
@@ -112,7 +112,6 @@ class OpenAIProvider(ChatProvider):
                     endpoint=endpoint,
                     details=f"Empty content in response (finish_reason={finish_reason})",
                 )
-            raise_if_choice_errored("openai", endpoint, choice, content)
         except openai.AuthenticationError as exc:
             raise ProviderAuthError(
                 provider="openai",

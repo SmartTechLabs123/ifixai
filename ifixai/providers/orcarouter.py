@@ -16,6 +16,7 @@ from ifixai.providers.base import (
     raise_if_choice_errored,
     raise_if_truncated,
 )
+from ifixai.providers.client_pool import close_cached_clients
 
 DEFAULT_MODEL = "openai/gpt-4o"
 DEFAULT_BASE_URL = "https://api.orcarouter.ai/v1"
@@ -64,9 +65,7 @@ class OrcaRouterProvider(ChatProvider):
             return client
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
+        await close_cached_clients(self._clients)
 
     async def send_message(
         self,
@@ -122,6 +121,7 @@ class OrcaRouterProvider(ChatProvider):
                     details=f"Missing message in choice (finish_reason={finish_reason})",
                 )
             content = choice.message.content
+            raise_if_choice_errored("orcarouter", base_url, choice, content or "")
             if config.reject_truncated:
                 raise_if_truncated("orcarouter", base_url, finish_reason, content or "")
             if not content:
@@ -130,7 +130,6 @@ class OrcaRouterProvider(ChatProvider):
                     endpoint=base_url,
                     details=f"Empty content in response (finish_reason={finish_reason})",
                 )
-            raise_if_choice_errored("orcarouter", base_url, choice, content)
         except openai.AuthenticationError as exc:
             raise ProviderAuthError(
                 provider="orcarouter", endpoint=base_url, details=str(exc)

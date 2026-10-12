@@ -46,6 +46,8 @@ The scrubber (`ifixai/providers/secrets.py::scrub_secrets`) is parametrically ve
 | `openrouter` | `sk-or-[A-Za-z0-9_-]{20,}` (matched before `openai`) | `***REDACTED_OPENROUTER_KEY***` |
 | `orcarouter` | `sk-orca-[A-Za-z0-9_-]{20,}` (matched before `openai`) | `***REDACTED_ORCAROUTER_KEY***` |
 | `requesty` | `rqsty-[A-Za-z0-9+/=_-]{20,}` | `***REDACTED_REQUESTY_KEY***` |
+| `cloudflare` | `cfut_`, `cfat_` or `cfk_` followed by `[A-Za-z0-9_-]{40,}`; tokens in the older unprefixed format have no fixed shape and are redacted only inside an `Authorization: Bearer` header | `***REDACTED_CLOUDFLARE_TOKEN***` |
+| `vercel` | `vck_[A-Za-z0-9_-]{20,}` | `***REDACTED_VERCEL_KEY***` |
 | `anthropic` | `sk-ant-[A-Za-z0-9_-]{20,}`, `anthropic_[A-Za-z0-9_-]{20,}` | `***REDACTED_ANTHROPIC_KEY***` |
 | `gemini` | `AIzaSy[0-9A-Za-z_-]{33}` | `***REDACTED_GEMINI_KEY***` |
 | `azure` | 32-char hex (`\b[a-fA-F0-9]{32}\b`) | `***REDACTED_AZURE_KEY***` |
@@ -82,7 +84,7 @@ iFixAi sends pseudonymous run telemetry — from the CLI, the plugin, and scaffo
 - a file at `${XDG_CONFIG_HOME:-~/.config}/ifixai/telemetry-opt-out`
 - automatically in CI (`CI`, or a known vendor variable such as `GITHUB_ACTIONS`)
 
-**Data protection (GDPR / UK GDPR).** The install id is a persistent identifier, so this telemetry is *pseudonymous personal data*, not anonymous. Lawful basis: legitimate interest (Art 6(1)(f)) in understanding adoption and retention; the processing is minimal (seven fields, no model I/O, only classifications and never the paths they were derived from), IP-stripped, opt-out-respecting, and never used for profiling or advertising. **Retention: events are kept indefinitely** — we do not auto-delete. **Erasure:** run `ifixai run --show-id` to read your install id, then email **info@ime.life** to have its events deleted; deleting the local `install-id` file stops future linkage but does not remove rows already collected. Data controller: iMe (**info@ime.life**).
+**Data protection (GDPR / UK GDPR).** The install id is a persistent identifier, so this telemetry is *pseudonymous personal data*, not anonymous. Lawful basis: legitimate interest (Art 6(1)(f)) in understanding adoption and retention; the processing is minimal (seven fields, no model I/O, only classifications and never the paths they were derived from), IP-stripped, opt-out-respecting, and never used for profiling or advertising. **Retention: events are kept indefinitely** — we do not auto-delete. **Erasure:** run `ifixai run --show-id` to read your install id, then email **info@ime.life** to have its events deleted; deleting the local `install-id` file stops future linkage but does not remove rows already collected. Data controller: iFixAi (**info@ime.life**).
 
 ## Coordinated disclosure
 
