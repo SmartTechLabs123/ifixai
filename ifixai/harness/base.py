@@ -5,7 +5,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
@@ -160,7 +160,7 @@ class BaseTest(ABC):
             return evidence
         return [item for item in evidence if item.extraction_error is None]
 
-    def get_variant_seed(self) -> Optional[int]:
+    def get_variant_seed(self) -> int | None:
         return None
 
     def get_variant_seed_pinned(self) -> bool:
