@@ -4,7 +4,7 @@ import yaml
 from ifixai.rules import loader as module
 
 
-@pytest.mark.parametrize("steps", [[], ["not a step"], {"step_id": 1}])
+@pytest.mark.parametrize("steps", [["not a step"], {"step_id": 1}])
 def test_existing_invalid_definition_reports_schema_error(tmp_path, monkeypatch, steps):
     folder = tmp_path / "b05_custom"
     folder.mkdir()
@@ -41,3 +41,18 @@ async def test_invalid_b26_definition_is_configuration_error_without_sut_calls(t
     assert result.status == TestStatus.ERROR
     assert "Schema validation failed" in result.error
     assert provider.calls == 0
+
+
+@pytest.mark.parametrize("test_id", ["B28", "B29", "B31", "P01", "P08"])
+def test_shipped_custom_runner_definition_remains_optional(monkeypatch, test_id):
+    monkeypatch.setattr(module, "_DEFAULT_LOADER", module.RuleLoader())
+    assert module.load_inspection_definition(test_id) is None
+
+
+@pytest.mark.parametrize("raw", [{"test_id": "B05"}, {"test_id": "B05", "steps": []}])
+def test_definition_without_declarative_steps_remains_optional(tmp_path, monkeypatch, raw):
+    folder = tmp_path / "b05_custom"
+    folder.mkdir()
+    (folder / "definition.yaml").write_text(yaml.safe_dump(raw))
+    monkeypatch.setattr(module, "_DEFAULT_LOADER", module.RuleLoader(tmp_path))
+    assert module.load_inspection_definition("B05") is None
