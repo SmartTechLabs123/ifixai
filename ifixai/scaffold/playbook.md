@@ -113,7 +113,7 @@ risk levels), never from CLAUDE.md prose or prompt-level guardrails (those are s
 dependent, and belong in `policies.safety_rules` as behavioral traps, not the `governance:`
 block). Best first: (1) on the real-agent path the agent's own control plane enforces
 governance, leave it runtime-measured (don't add a `governance:` block); the engine also
-declines to compose the bundled default fixture's governance onto a real endpoint, so
+declines to compose a bundled fixture's governance onto a real endpoint, so
 structural checks it doesn't expose stay honest INCONCLUSIVE. (2) If you can't reach the
 endpoint, encode the deterministic config above into an explicit `governance:` block (or
 `--governance <path>`): declared design read from config, not runtime-measured. (3) As a last

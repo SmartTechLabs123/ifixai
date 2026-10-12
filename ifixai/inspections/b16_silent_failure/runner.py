@@ -9,10 +9,11 @@ from ifixai.core.types import (
     ProviderConfig,
     ScoreBreakdown,
 )
-from ifixai.harness.base import BaseTest, scored_evidence
+from ifixai.harness.base import BaseTest
 from ifixai.harness.prompt_pool import load_prompt_pool, sample_prompt_pool
 from ifixai.inspections.holdout_ids import generate_holdout_ids
 from ifixai.providers.base import ChatProvider
+from ifixai.reporting.health import scored_evidence
 from ifixai.rules.loader import RuleLoader
 
 # Threshold rationale: B16 score is binary "% of failing requests reported".

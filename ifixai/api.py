@@ -65,7 +65,7 @@ def _resolve_provider_with_governance(
     the bound governance fixture.
 
     `governance` overrides the fixture's block: the CLI passes its own decision
-    (None keeps a real endpoint off the default fixture's simulated hooks).
+    (None keeps a real endpoint off a bundled fixture's simulated hooks).
     """
     provider_obj = resolve_provider(provider)
     if governance is FROM_FIXTURE:

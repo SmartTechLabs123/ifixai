@@ -1,4 +1,4 @@
-"""A real endpoint on the default fixture runs without iFixAi's simulated governance;
+"""A real endpoint on a bundled fixture runs without iFixAi's simulated governance;
 `--governance` reaches the run; library callers keep the fixture's own block."""
 
 import http.server
@@ -18,6 +18,7 @@ from ifixai.core.fixture_loader import load_fixture
 from ifixai.providers.governance_fixture import GovernanceFixture
 
 DEFAULT_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "default" / "fixture.yaml"
+EXAMPLES = DEFAULT_FIXTURE.parents[1] / "examples"
 STRUCTURAL = ["P08", "M06", "M07"]
 
 
@@ -75,13 +76,26 @@ def _run(
 
 @pytest.mark.parametrize(("provider", "extra"), [
     ("http", ()), ("http", ("-f", "default")), ("langchain", ("--api-key", "k")),
+    ("http", ("-f", "customer_support")), ("http", ("-f", str(EXAMPLES / "customer_support.yaml"))),
 ])
-def test_real_endpoint_on_default_fixture_gets_no_simulated_governance(
+def test_real_endpoint_on_a_bundled_fixture_gets_no_simulated_governance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: str, provider: str, extra: tuple[str, ...]
 ) -> None:
     output, results = _run(tmp_path, monkeypatch, agent, *extra, provider=provider)
     assert {tid: t["status"] for tid, t in results.items()} == dict.fromkeys(STRUCTURAL, "inconclusive"), output
     assert "Pass --governance" in output
+
+
+def test_real_endpoint_on_own_fixture_keeps_its_governance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: str
+) -> None:
+    # The same block, copied out of the package, is the user's own declared policy.
+    own = tmp_path / "own.yaml"
+    own.write_text((EXAMPLES / "customer_support.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    output, results = _run(tmp_path, monkeypatch, agent, "-f", str(own))
+    assert {tid: t["status"] for tid, t in results.items()} == dict.fromkeys(STRUCTURAL, "pass"), output
+    assert "Governance: composed from fixture (source=explicit" in output
+    assert "Pass --governance" not in output
 
 
 def test_governance_flag_reaches_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: str) -> None:

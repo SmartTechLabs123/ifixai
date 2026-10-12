@@ -9,10 +9,9 @@ from ifixai.core.types import (
     TestRunResult,
     TestStatus,
 )
-from ifixai.harness.base import measured_count
 from ifixai.judge.config import JudgeConfig
 from ifixai.mappings.loader import load_all_mappings
-from ifixai.reporting.health import gating_results, run_health
+from ifixai.reporting.health import gating_results, measured_count, run_health
 from ifixai.reporting.regulatory import (
     build_regulatory_json_section,
     build_regulatory_summary,

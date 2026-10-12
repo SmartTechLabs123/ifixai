@@ -261,16 +261,17 @@ def _parse_extra_headers(value: "str | dict | None") -> dict[str, str]:
 _DEFAULT_FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent / "fixtures" / "default" / "fixture.yaml"
 )
+_BUNDLED_FIXTURES_DIR = _DEFAULT_FIXTURE_PATH.parents[1]
 
 # Providers that reach a live agent endpoint, not a model.
 _REAL_AGENT_PROVIDERS = ("http", "langchain")
 
 
-def _skip_default_fixture_governance(provider: "str | None", fixture: str) -> bool:
-    """Whether to withhold the BUNDLED default fixture's governance from the SUT.
+def _skip_bundled_fixture_governance(provider: "str | None", fixture: str) -> bool:
+    """Whether to withhold a BUNDLED fixture's governance from the SUT.
 
     True only when the SUT is a live agent endpoint (``http``, ``langchain``) AND
-    the fixture is the bundled default, auto-selected or named (``-f default``):
+    the fixture ships with iFixAi (the default or an example, by name or path):
     composing a fake org's declared policy onto a real agent would shadow the
     agent's own runtime control plane. A user-supplied fixture with a
     ``governance:`` block, or an explicit ``--governance``, is always honored
@@ -278,7 +279,7 @@ def _skip_default_fixture_governance(provider: "str | None", fixture: str) -> bo
     """
     if (provider or "").lower() not in _REAL_AGENT_PROVIDERS:
         return False
-    return resolve_fixture_path(fixture).resolve() == _DEFAULT_FIXTURE_PATH
+    return resolve_fixture_path(fixture).resolve().is_relative_to(_BUNDLED_FIXTURES_DIR)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -1242,7 +1243,7 @@ def run(
         )
     governance_source: str = "runtime"
     # What the run wraps the SUT with: the --governance file, else the fixture's
-    # own block, else nothing (a real endpoint on the default fixture, below).
+    # own block, else nothing (a real endpoint on a bundled fixture, below).
     run_governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE
     if governance_path is not None:
         if (provider or "").lower() == "mock":
@@ -1587,23 +1588,23 @@ def run(
     # provider here. Vanilla path leaves `governance_source == "runtime"`
     # so insufficient_evidence on governance inspections stays honest.
     #
-    # Exception: don't shadow a real agent with the BUNDLED default fixture's
-    # governance. When the SUT is a live endpoint and the fixture is the
-    # default, composing its `governance:` block would grade a fake
+    # Exception: don't shadow a real agent with a BUNDLED fixture's
+    # governance. When the SUT is a live endpoint and the fixture ships with
+    # iFixAi, composing its `governance:` block would grade a fake
     # org's declared policy instead of the agent's real control plane. Leave
     # governance_source == "runtime" so those inspections stay honest
     # insufficient_evidence; a user who wants declared governance can pass
     # --governance <policy.yaml> or their own fixture with a governance block.
-    shadow_default_governance = _skip_default_fixture_governance(provider, fixture)
+    shadow_bundled_governance = _skip_bundled_fixture_governance(provider, fixture)
     if (
-        shadow_default_governance
+        shadow_bundled_governance
         and governance_source == "runtime"
         and fixture_obj_for_grounding.governance is not None
     ):
         run_governance = None
         click.echo(
             click.style(
-                "Governance: real endpoint detected -- not composing the default "
+                "Governance: real endpoint detected -- not composing the built-in "
                 "fixture's governance onto your agent. Pass --governance "
                 "<policy.yaml> to score against your declared control plane.",
                 fg="cyan",
@@ -1628,7 +1629,7 @@ def run(
     if (
         governance_source == "runtime"
         and fixture_obj_for_grounding.governance is not None
-        and not shadow_default_governance
+        and not shadow_bundled_governance
         and not empty_fixture_governance
     ):
         resolved_provider = wrap_with_governance(

@@ -14,6 +14,7 @@ from ifixai.providers.base import (
     ProviderError,
     ProviderRateLimitError,
 )
+from ifixai.reporting.health import measured_count, scored_evidence
 from ifixai.rules.loader import load_inspection_definition
 from ifixai.scoring.engine import compute_test_ci
 from ifixai.shared.evidence import flag_diagnostics
@@ -40,36 +41,6 @@ from ifixai.core.types import (
 )
 
 _logger = logging.getLogger(__name__)
-
-
-# Judge-side outcomes that say nothing about the agent, so no score counts them,
-# even where a spec counts its other unscored items as fails.
-_NEVER_SCORED = frozenset(
-    {
-        JudgeErrorKind.BUDGET,
-        JudgeErrorKind.JUDGE_UNREACHABLE,
-        JudgeErrorKind.JUDGE_TRANSIENT,
-    }
-)
-
-
-def scored_evidence(
-    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
-) -> list[EvidenceItem]:
-    """The items a score counts: graded ones, plus, when the spec opts in, every
-    other unscored item as a fail, except a budget skip, dead or flaky judge."""
-    if not count_extraction_errors_as_fail:
-        return [e for e in evidence if e.extraction_error is None]
-    return [e for e in evidence if e.extraction_error not in _NEVER_SCORED]
-
-
-def measured_count(
-    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
-) -> int:
-    """What the min_evidence_items floor counts: scored items, never diagnostics
-    (a runner's compute_score already leaves those out)."""
-    measurements = [e for e in evidence if not e.is_diagnostic]
-    return len(scored_evidence(measurements, count_extraction_errors_as_fail))
 
 
 def is_provider_failure(item: EvidenceItem) -> bool:

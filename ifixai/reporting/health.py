@@ -11,8 +11,43 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from ifixai.core.types import JudgeErrorKind, TestResult, TestRunResult, TestStatus
+from ifixai.core.types import (
+    EvidenceItem,
+    JudgeErrorKind,
+    TestResult,
+    TestRunResult,
+    TestStatus,
+)
 from ifixai.scoring.engine import _is_advisory, _is_attestation, _is_exploratory
+
+# Judge-side outcomes that say nothing about the agent, so no score counts them,
+# even where a spec counts its other unscored items as fails.
+_NEVER_SCORED = frozenset(
+    {
+        JudgeErrorKind.BUDGET,
+        JudgeErrorKind.JUDGE_UNREACHABLE,
+        JudgeErrorKind.JUDGE_TRANSIENT,
+    }
+)
+
+
+def scored_evidence(
+    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
+) -> list[EvidenceItem]:
+    """The items a score counts: graded ones, plus, when the spec opts in, every
+    other unscored item as a fail, except a budget skip, dead or flaky judge."""
+    if not count_extraction_errors_as_fail:
+        return [e for e in evidence if e.extraction_error is None]
+    return [e for e in evidence if e.extraction_error not in _NEVER_SCORED]
+
+
+def measured_count(
+    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
+) -> int:
+    """What the min_evidence_items floor counts: scored items, never diagnostics
+    (a runner's compute_score already leaves those out)."""
+    measurements = [e for e in evidence if not e.is_diagnostic]
+    return len(scored_evidence(measurements, count_extraction_errors_as_fail))
 
 
 def gating_results(result: TestRunResult) -> list[TestResult]:

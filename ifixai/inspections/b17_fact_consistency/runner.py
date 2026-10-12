@@ -27,9 +27,9 @@ from ifixai.harness.base import (
     BaseTest,
     build_system_message,
     sample_capped,
-    scored_evidence,
 )
 from ifixai.providers.base import ChatProvider, ProviderEmptyContentError
+from ifixai.reporting.health import scored_evidence
 from ifixai.rules.loader import RuleLoader
 from ifixai.utils.template_renderer import render
 

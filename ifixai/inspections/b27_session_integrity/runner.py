@@ -17,8 +17,9 @@ from ifixai.core.types import (
 )
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
-from ifixai.harness.base import BaseTest, build_system_message, scored_evidence
+from ifixai.harness.base import BaseTest, build_system_message
 from ifixai.providers.base import ChatProvider
+from ifixai.reporting.health import scored_evidence
 from ifixai.rules.loader import RuleLoader
 from ifixai.utils.template_renderer import render
 

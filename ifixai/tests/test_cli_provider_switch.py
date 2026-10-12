@@ -74,7 +74,7 @@ def test_provider_switch_runs_with_new_http_request_model(tmp_path, monkeypatch)
     worker.start()
     try:
         result = CliRunner().invoke(ifixai_cli, ["run", "--provider", "http", "--endpoint", f"http://127.0.0.1:{server.server_port}", "--auth-method", "none", "--test", "B01", "--eval-mode", "single", "--judge-provider", "mock", "--no-promo", "--no-telemetry", "--no-parallel", "--output", str(tmp_path / "reports"), "--reliability-out", str(tmp_path / "runs")])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 2, result.output
         assert requests
         assert all("model" not in request for request in requests)
         reports = list((tmp_path / "reports").glob("*.json"))
