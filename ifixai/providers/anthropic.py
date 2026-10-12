@@ -5,13 +5,13 @@ import anthropic
 
 from ifixai.core.types import ChatMessage, ProviderConfig
 from ifixai.providers.base import (
+    RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
     ProviderAuthError,
     ProviderConnectionError,
     ProviderEmptyContentError,
     ProviderRateLimitError,
     ProviderTimeoutError,
-    RETRYABLE_HTTP_STATUS_CODES,
     raise_for_http_status,
     raise_if_truncated,
 )
