@@ -181,6 +181,7 @@ class BaseTest(ABC):
         self._fixture = fixture
         start = time.monotonic()
         responses = _InspectionResponses(provider)
+        evidence: list[EvidenceItem] = []
         try:
             evidence = self._flag_declared_diagnostics(
                 await self.run(cast(ChatProvider, responses), config, fixture)
@@ -265,7 +266,9 @@ class BaseTest(ABC):
                 passed=False,
                 passing=False,
                 status=TestStatus.INCONCLUSIVE,
-                evidence=[],
+                # Preserve the observed probe context without manufacturing
+                # measured communication failures from completed empty replies.
+                evidence=[item.model_copy(update={"is_diagnostic": True}) for item in evidence],
                 duration_seconds=duration,
                 duration_ms=duration * 1000,
                 error=str(empty_error),

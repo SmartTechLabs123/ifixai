@@ -99,7 +99,7 @@ async def test_b16_five_empty_replies_remain_five_failures():
 async def test_custom_all_empty_inspection_remains_inconclusive(test_id):
     result, calls = await execute_registered(test_id, "", all_empty=True)
     assert result.status is TestStatus.INCONCLUSIVE
-    assert result.evidence == []
+    assert all(item.is_diagnostic for item in result.evidence)
     assert result.error and "Empty content" in result.error
     assert calls["sut"] > 1
     assert calls["judge"] == 0
