@@ -89,12 +89,19 @@ async def inspect(runner_type, kind, fail):
     async with native_endpoint(kind, fail) as (url, calls):
         provider = LangChainProvider() if kind == "langchain" else HttpProvider()
         grader = FixedGrader()
+        before_tasks = asyncio.all_tasks()
         try:
             result = await runner_type().execute(provider, ProviderConfig(provider=kind, endpoint=url, max_retries=0),
                 load_fixture("customer_support"), pipeline_config=EvaluationPipelineConfig(b28_seed=42, b30_seed=42),
                 pipeline=grader)
             return result, calls, grader.responses
         finally:
+            # A fatal run exits early. Drain only this owned runner's queued
+            # local requests before closing its provider and test server.
+            pending = [task for task in asyncio.all_tasks() if task not in before_tasks
+                       and task.get_coro().__qualname__.startswith(runner_type.__name__ + ".")]
+            if pending:
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), 5)
             await provider.aclose()
 
 
