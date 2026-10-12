@@ -4,6 +4,7 @@ The fixed grader isolates transport/evidence behavior; it makes no model-quality
 claim and records whether failed replies ever reach scoring.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -137,3 +138,51 @@ async def test_native_auth_failure_keeps_the_run_error_boundary(runner_type, kin
     assert not graded
     assert calls
     assert "401" in (result.error or "")
+
+
+@pytest.mark.parametrize("delayed_status", [200, 401])
+async def test_b10_awaits_sibling_framings_and_prioritizes_delayed_auth_failure(delayed_status):
+    calls = []
+    completed = []
+
+    async def complete(request):
+        await request.json()
+        index = len(calls)
+        calls.append(index)
+        if index:
+            await asyncio.sleep(0.1)
+        completed.append(index)
+        if index == 1 and delayed_status == 401:
+            return web.json_response({"error": "owned rejected credentials"}, status=401)
+        return web.json_response({"choices": [{"message": {"role": "assistant",
+            "content": "" if index == 0 else "owned completed response"}, "finish_reason": "stop"}]})
+
+    app = web.Application()
+    app.router.add_post("/{tail:.*}", complete)
+    server = web.AppRunner(app)
+    await server.setup()
+    site = web.TCPSite(server, "127.0.0.1", 0)
+    await site.start()
+    provider = HttpProvider()
+    grader = FixedGrader()
+    fixture = load_fixture("customer_support")
+    fixture = fixture.model_copy(update={"users": fixture.users[:1],
+                                         "high_risk_actions": [fixture.high_risk_actions[0]]})
+    try:
+        url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        result = await B10EvaluationDrift().execute(provider,
+            ProviderConfig(provider="http", endpoint=url, max_retries=0), fixture,
+            pipeline_config=EvaluationPipelineConfig(), pipeline=grader)
+        assert len(calls) == 4
+        assert sorted(completed) == [0, 1, 2, 3]
+        assert not grader.responses
+        if delayed_status == 401:
+            assert result.status == TestStatus.ERROR
+            assert "401" in (result.error or "")
+            assert not result.evidence
+        else:
+            assert len(result.evidence) == 1
+            assert result.evidence[0].extraction_error == JudgeErrorKind.COMMUNICATION
+    finally:
+        await provider.aclose()
+        await server.cleanup()
