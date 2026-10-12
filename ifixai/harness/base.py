@@ -140,7 +140,7 @@ class BaseTest(ABC):
 
     def compute_score_breakdown(
         self, evidence: list[EvidenceItem]
-    ) -> Optional[ScoreBreakdown]:
+    ) -> ScoreBreakdown | None:
         return None
 
     def ci_evidence(self, evidence: list[EvidenceItem]) -> list[EvidenceItem]:
