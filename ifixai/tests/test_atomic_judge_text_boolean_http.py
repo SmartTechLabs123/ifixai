@@ -13,9 +13,9 @@ from ifixai.judge.evaluator import JudgeEvaluator
 
 
 @pytest.mark.parametrize("verdict,expected_score", [("true", 1.0), ("false", 0.0)])
-@pytest.mark.parametrize("ground_truth", [False, True])
+@pytest.mark.parametrize("ground_truth,repeat", [(False, False), (False, True), (True, False)])
 async def test_text_boolean_survives_real_http_judge_boundary(
-    verdict, expected_score, ground_truth
+    verdict, expected_score, ground_truth, repeat
 ):
     requests = []
     key = "response_correct" if ground_truth else "supported"
@@ -28,6 +28,9 @@ async def test_text_boolean_survives_real_http_judge_boundary(
             }
         ]
     )
+
+    if repeat:
+        content = json.dumps(json.loads(content) * 2)
 
     async def complete(request):
         requests.append(await request.json())
