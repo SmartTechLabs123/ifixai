@@ -21,6 +21,8 @@ from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.judge.config import JudgeConfig
 from ifixai.providers.base import (
     ProviderEmptyContentError,
+    ProviderOverloadedError,
+    ProviderRateLimitError,
     ProviderResponseError,
     ProviderTruncatedError,
 )
@@ -70,12 +72,12 @@ async def owned_endpoint(reply):
         (completion([]), ProviderResponseError),
         ({"error": {"code": 429, "message": "rate limited"}}, ProviderResponseError),
         ({"choices": [{"message": {"content": ""}, "finish_reason": "error",
-                       "error": {"code": 429, "message": "rate limited"}}]}, ProviderResponseError),
+                       "error": {"code": 429, "message": "rate limited"}}]}, ProviderRateLimitError),
         (dict(completion(), error={"code": 429, "message": "rate limited"}), ProviderResponseError),
         (completion("", "length"), ProviderTruncatedError),
         (completion("ordinary"), "ordinary"),
         (completion(), ProviderEmptyContentError),
-        (completion("", "ERROR"), ProviderResponseError),
+        (completion("", "ERROR"), ProviderOverloadedError),
         ({"choices": [{"message": {"content": ""}, "error": {}}]}, ProviderResponseError),
     ],
 )
@@ -95,7 +97,7 @@ async def test_empty_completion_keeps_other_response_failures_distinct(reply, ex
                 assert type(caught.value) is expected
                 assert caught.value.provider == "http"
                 assert caught.value.endpoint == endpoint
-            assert len(requests) == 1
+            assert len(requests) == (2 if expected in (ProviderRateLimitError, ProviderOverloadedError) else 1)
         finally:
             await provider.aclose()
 
@@ -177,7 +179,7 @@ async def test_public_b06_preserves_surviving_probes(bad_content, bad_at, all_ba
         assert calls["retrieve"] == 1
         expected_graded = 0 if all_bad else (43 if bad_at else 44)
         assert len(measured) == calls["judge"] == expected_graded
-        assert health.unreachable == ((44 if all_bad else 1) if bad_content is None else 0)
+        assert health.unreachable == (44 if all_bad and bad_content is None else (1 if bad_at else 0))
         assert health.judge_broke == 0
         if all_bad:
             assert result.status is TestStatus.INCONCLUSIVE
@@ -203,10 +205,12 @@ async def test_empty_accounting_is_isolated_between_concurrent_and_repeated_insp
         assert empty.error and "Empty content" in empty.error
         assert empty.evidence == []
         assert mixed.status is TestStatus.PASS
-        assert len(mixed.evidence) == 43
+        assert len(mixed.evidence) == 44
+        assert sum(item.extraction_error is None for item in mixed.evidence) == 43
         # The same registered inspection runs again after both return paths.
         repeated = await run_b06(endpoint, "repeated")
         assert repeated.status is TestStatus.PASS
-        assert len(repeated.evidence) == 43
+        assert len(repeated.evidence) == 44
+        assert sum(item.extraction_error is None for item in repeated.evidence) == 43
         calls = Counter(body.get("model", "retrieve") for _, body in requests)
         assert calls == {"all-empty": 44, "mixed": 44, "repeated": 44, "judge": 86, "retrieve": 3}

@@ -258,8 +258,12 @@ class HttpProvider(ChatProvider):
                     content if isinstance(content, str) else "",
                 )
         if (
-            isinstance(content, str)
+            isinstance(message, dict)
+            and isinstance(content, str)
             and not content
+            and not message.get("tool_calls")
+            and not message.get("function_call")
+            and str(first.get("finish_reason", "")).lower() not in {"tool_calls", "function_call"}
             and data.get("error") is None
             and first.get("error") is None
             and str(first.get("finish_reason", "")).lower() != "error"

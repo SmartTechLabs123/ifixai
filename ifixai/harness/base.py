@@ -4,9 +4,8 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Optional, TypeVar, cast
 
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
@@ -15,6 +14,7 @@ from ifixai.providers.base import (
     ProviderEmptyContentError,
     ProviderError,
     ProviderRateLimitError,
+    ProviderResponseError,
 )
 from ifixai.rules.loader import load_inspection_definition
 from ifixai.scoring.engine import compute_test_ci
@@ -45,17 +45,35 @@ _logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _ConversationResponses:
+class _InspectionResponses:
+    """Observe only this invocation's SUT calls, including custom runner paths."""
+
+    provider: ChatProvider
     attempts: int = 0
     empty: int = 0
     first_empty: ProviderEmptyContentError | None = None
 
+    def __getattr__(self, name: str) -> Any:
+        # Preserve every capability method and provider flag. Judge transports
+        # belong to the pipeline and never pass through this SUT wrapper.
+        return getattr(self.provider, name)
 
-# Inspection instances are registered once; concurrent executions must not
-# share empty-reply accounting. Child tasks inherit this invocation's record.
-_conversation_responses: ContextVar[_ConversationResponses | None] = ContextVar(
-    "conversation_responses", default=None,
-)
+    async def send_message(
+        self, messages: list[ChatMessage], config: ProviderConfig,
+    ) -> str:
+        self.attempts += 1
+        try:
+            return await self.provider.send_message(messages, config)
+        except ProviderEmptyContentError as exc:
+            self.empty += 1
+            if self.first_empty is None:
+                self.first_empty = exc
+            # A single empty reply follows the runner's existing probe-error
+            # contract. Promote to the typed inspection result only after all
+            # attempted SUT replies have been observed to be empty.
+            raise ProviderResponseError(
+                provider=exc.provider, endpoint=exc.endpoint, details=exc.details,
+            ) from exc
 
 
 def build_system_message(
@@ -162,15 +180,13 @@ class BaseTest(ABC):
         self._pipeline = pipeline
         self._fixture = fixture
         start = time.monotonic()
-        responses = _ConversationResponses()
-        response_token = _conversation_responses.set(responses)
+        responses = _InspectionResponses(provider)
         try:
             evidence = self._flag_declared_diagnostics(
-                await self.run(provider, config, fixture)
+                await self.run(cast(ChatProvider, responses), config, fixture)
             )
             if (
-                not evidence
-                and responses.attempts > 0
+                responses.attempts > 0
                 and responses.empty == responses.attempts
                 and responses.first_empty is not None
             ):
@@ -228,6 +244,11 @@ class BaseTest(ABC):
                 variant_seed_pinned=self.get_variant_seed_pinned(),
             )
         except ProviderEmptyContentError as exc:
+            empty_error = (
+                responses.first_empty
+                if responses.empty == responses.attempts and responses.first_empty is not None
+                else exc
+            )
             # Empty SUT response is unscorable, not misconfigured. The run
             # completed; the model produced no scoreable output. Map to
             # INCONCLUSIVE so it routes through the existing inconclusive
@@ -247,8 +268,8 @@ class BaseTest(ABC):
                 evidence=[],
                 duration_seconds=duration,
                 duration_ms=duration * 1000,
-                error=str(exc),
-                error_message=str(exc),
+                error=str(empty_error),
+                error_message=str(empty_error),
                 insufficient_evidence=True,
             )
         except Exception as exc:  # noqa: BLE001 — top-level inspection guard: any failure becomes a failed TestResult, never aborts the run
@@ -269,8 +290,6 @@ class BaseTest(ABC):
                 error=str(exc),
                 error_message=str(exc),
             )
-        finally:
-            _conversation_responses.reset(response_token)
 
     def load_inspection_data(self) -> ConversationPlan | None:
         try:
@@ -395,20 +414,7 @@ class BaseTest(ABC):
             history.append(ChatMessage(role="user", content=prompt))
 
             try:
-                responses = _conversation_responses.get()
-                if responses is not None:
-                    responses.attempts += 1
-                try:
-                    response = await provider.send_message(history, config)
-                except ProviderEmptyContentError as exc:
-                    if responses is None:
-                        raise
-                    responses.empty += 1
-                    if responses.first_empty is None:
-                        responses.first_empty = exc
-                    # A completed empty reply cannot be graded. Continue the
-                    # planned probes so one empty reply cannot erase good ones.
-                    continue
+                response = await provider.send_message(history, config)
                 history.append(ChatMessage(role="assistant", content=response))
 
                 if not step.score:
@@ -465,10 +471,11 @@ class BaseTest(ABC):
                         plan.test_id,
                         "execute_conversation requires an analytic judge pipeline",
                     )
-            except JudgePipelineRequiredError:
-                # Missing analytic grading is a configuration error. An empty
-                # native reply follows the per-step ProviderError path below:
-                # record unscorable evidence and continue the conversation.
+            except (JudgePipelineRequiredError, ProviderEmptyContentError):
+                # Both propagate to BaseTest.execute: JudgePipelineRequiredError
+                # → ERROR (misconfig), ProviderEmptyContentError → INCONCLUSIVE
+                # (unscorable). Do not swallow into a per-step "error" evidence
+                # item or the outer status mapping is lost.
                 raise
             except ProviderError as exc:
                 # A transport/provider failure (a bad model id 404ing on every
