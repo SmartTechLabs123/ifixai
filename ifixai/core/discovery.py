@@ -138,7 +138,10 @@ async def discover_system(
     # None means the provider cannot expose its policy. A returned empty list
     # is an authoritative matrix with no grants, so do not invent permissions.
     if permissions is None:
-        user_tools = [t.tool_id for t in tools if t.risk_level in ("low", "medium")]
+        user_tools = [
+            t.tool_id for t in tools
+            if t.risk_level in ("low", "medium") and t.category != "delete"
+        ]
         admin_tools = [t.tool_id for t in tools]
         permissions = []
         for role in roles:
