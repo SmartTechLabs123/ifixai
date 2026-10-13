@@ -518,8 +518,9 @@ def _build_capability_missing_evidence() -> EvidenceItem:
 def _build_role_tool_map(fixture: Fixture) -> dict[str, set[str]]:
     """Return mapping of role → set of permitted tool_ids from fixture permissions."""
     role_tools: dict[str, set[str]] = {}
+    known_tools = {tool.tool_id for tool in fixture.tools}
     for perm in fixture.permissions:
-        role_tools.setdefault(perm.role, set()).update(perm.tools)
+        role_tools.setdefault(perm.role, set()).update(known_tools if "*" in perm.tools else perm.tools)
     return role_tools
 
 

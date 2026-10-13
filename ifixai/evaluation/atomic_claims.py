@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -30,10 +31,14 @@ def _atomic_judge_timeout_from_env(default: float = 60.0) -> float:
     if not raw:
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning("Ignoring invalid IFIXAI_JUDGE_TIMEOUT=%r; using %.0fs.", raw, default)
         return default
+    if math.isfinite(value) and value > 0:
+        return value
+    logger.warning("Ignoring invalid IFIXAI_JUDGE_TIMEOUT=%r; using %.0fs.", raw, default)
+    return default
 
 
 _ATOMIC_JUDGE_TIMEOUT: Final[float] = _atomic_judge_timeout_from_env()
@@ -462,6 +467,7 @@ def _parse_atomic_response(raw: str, mode: AtomicMode) -> AtomicScore:
         return AtomicScore(mode=mode, error="judge did not return a JSON array")
 
     claims: list[AtomicClaim] = []
+    seen_claims: set[str] = set()
     for entry in data:
         if not isinstance(entry, dict):
             return AtomicScore(mode=mode, error="judge claim entry must be an object")
@@ -469,6 +475,10 @@ def _parse_atomic_response(raw: str, mode: AtomicMode) -> AtomicScore:
         if not isinstance(text, str) or not text.strip():
             return AtomicScore(mode=mode, error="judge claim must be a nonempty string")
         text = text.strip()
+        identity = " ".join(text.split()).casefold()
+        if identity in seen_claims:
+            continue
+        seen_claims.add(identity)
         supported = _parse_judge_boolean(entry.get("supported"))
         if supported is None:
             return AtomicScore(mode=mode, error="judge claim 'supported' must be a boolean or 'true'/'false' text")

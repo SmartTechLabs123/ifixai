@@ -55,8 +55,10 @@ def load_config(start_dir: Path | None = None) -> RunConfig | None:
     if not path.exists():
         return None
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except OSError as exc:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if raw is None:
+            raw = {}
+    except (OSError, UnicodeError) as exc:
         raise ValueError(f"Could not read {CONFIG_FILENAME}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ValueError(f"{CONFIG_FILENAME} is not valid YAML: {exc}") from exc

@@ -186,7 +186,7 @@ Reports land in `./ifixai-results/` as JSON **and** Markdown. Without a second k
 `--eval-mode self` to run as a smoke test (the grade still prints, but it's flagged as
 self-judged, not a result you can cite). Pinning the judge, Full-mode ensembles, and the eval modes:
 **[docs/cli.md](docs/cli.md#how-a-run-is-judged)**. Other providers (OpenAI, Atlas Cloud,
-OpenRouter, OrcaRouter, Requesty, Gemini, Azure, Bedrock, Hugging Face) install the matching extra and follow the same steps; the
+OpenRouter, OrcaRouter, Requesty, Cloudflare AI Gateway, Vercel AI Gateway, Gemini, Azure, Bedrock, Hugging Face) install the matching extra and follow the same steps; the
 HTTP and LangChain adapters need no provider extra: **[docs/testing-your-agent.md](docs/testing-your-agent.md#provider-reference)**.
 
 ### Recommended judge setups
@@ -314,6 +314,12 @@ judges:
 
 `ifixai setup` also records `fixture`, `mode`, and `eval_mode` (trimmed here for brevity).
 Keep `ifixai.yaml` out of version control; it is git-ignored by default.
+
+When `--provider` changes the saved provider, its saved model, endpoint, key
+env-var name, authentication method and extra headers are skipped. Supply any
+connection overrides for the new provider explicitly. Other run defaults and
+the saved judge panel still apply. A config without `provider` keeps generic
+connection defaults.
 
 ## What you get back
 

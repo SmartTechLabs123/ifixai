@@ -12,17 +12,25 @@ from ifixai._version import VERSION as IFIXAI_VERSION
 from ifixai.cli import ui
 from ifixai.cli._branding import print_startup_banner
 from ifixai.cli.config_file import CONFIG_FILENAME, JudgeSpec, RunConfig, write_config
-from ifixai.cli.init import PROVIDER_ENV_KEYS, detect_available_providers
+from ifixai.cli.init import (
+    PROVIDER_COMPANION_ENV_KEYS,
+    PROVIDER_ENV_KEYS,
+    detect_available_providers,
+)
 from ifixai.cli.model_catalog import default_model, suggestions
 from ifixai.core.fixture_loader import list_fixture_names, load_fixture
 from ifixai.harness.suites import DEFAULT_SUITE, suite_catalog
 from ifixai.providers.minimax import DEFAULT_BASE_URL, REGIONAL_ENDPOINTS
+from ifixai.providers.resolver import resolve_credential
 
 _PROVIDER_DESCRIPTIONS: dict[str, str] = {
     "openrouter": "One key → many models (OpenAI, Anthropic, Google, Llama…)",
     "orcarouter": "OpenAI-compatible gateway — many models, one key",
     "requesty": "Requesty gateway — one key → 400+ models (OpenAI, Anthropic, Google…)",
+    "cloudflare": "Cloudflare AI Gateway — one token → Workers AI plus OpenAI, Anthropic, Google…",
+    "vercel": "Vercel AI Gateway — one key → hundreds of models (OpenAI, Anthropic, Google…)",
     "openai": "OpenAI API — GPT-4o / o-series",
+    "atlascloud": "AtlasCloud OpenAI-compatible gateway",
     "anthropic": "Anthropic API — Claude family",
     "gemini": "Google Gemini",
     "azure": "Azure OpenAI deployment",
@@ -50,7 +58,10 @@ _ALL_PROVIDERS = [
     "openrouter",
     "orcarouter",
     "requesty",
+    "cloudflare",
+    "vercel",
     "openai",
+    "atlascloud",
     "anthropic",
     "gemini",
     "azure",
@@ -112,14 +123,17 @@ def _pick_model(provider: str, *, role: str) -> str | None:
 def _missing_keys(selected: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
     """For each (role, provider) chosen, return (role, provider, env_var) whose key
     is not set in the environment. De-duplicated by env var so a shared key is
-    reported once, giving the user one clean export list."""
+    reported once, giving the user one clean export list. A provider's companion
+    settings (e.g. the Cloudflare account ID) are listed right after its key."""
     missing: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for role, prov in selected:
-        env = PROVIDER_ENV_KEYS.get(prov)
-        if env and env not in seen and not os.environ.get(env):
-            seen.add(env)
-            missing.append((role, prov, env))
+        primary = None if resolve_credential(prov, os.environ) else PROVIDER_ENV_KEYS.get(prov)
+        required = (primary, *PROVIDER_COMPANION_ENV_KEYS.get(prov, ()))
+        for env in required:
+            if env and env not in seen and not os.environ.get(env):
+                seen.add(env)
+                missing.append((role, prov, env))
     return missing
 
 
@@ -176,7 +190,10 @@ def setup(ctx: click.Context) -> None:
         default="http",
         descriptions=provider_desc,
     )
-    api_key_env = PROVIDER_ENV_KEYS.get(provider)
+    api_key_env = next(
+        (env_var for name, env_var in available if name == provider),
+        PROVIDER_ENV_KEYS.get(provider),
+    )
 
     model = _pick_model(provider, role="system under test")
 
@@ -453,7 +470,7 @@ def setup(ctx: click.Context) -> None:
     click.echo()
 
     if ui.confirm("Run iFixAi now?", default=not missing):
-        cmd = [sys.argv[0], "run"]
+        cmd = [sys.executable, "-m", "ifixai.cli.main", "run"]
         if provider == "mock":
             cmd += ["-k", "unused"]
         if missing:
@@ -465,7 +482,9 @@ def setup(ctx: click.Context) -> None:
                 )
             )
         click.echo()
-        subprocess.run(cmd)
+        result = subprocess.run(cmd)
+        if result.returncode:
+            raise SystemExit(result.returncode)
     else:
         click.echo(click.style("When you're ready:", bold=True))
         click.echo(click.style("  ifixai run", fg="cyan"))
