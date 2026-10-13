@@ -103,7 +103,7 @@ async def test_empty_completion_keeps_other_response_failures_distinct(reply, ex
 
 
 @pytest.mark.asyncio
-async def test_public_all_empty_inspection_has_no_false_communication_evidence():
+async def test_public_all_empty_inspection_retains_actual_communication_evidence():
     async with owned_endpoint(completion()) as (endpoint, requests):
         result = await run_single(
             "B06", provider=HttpProvider(), fixture="default", endpoint=endpoint,
@@ -111,7 +111,7 @@ async def test_public_all_empty_inspection_has_no_false_communication_evidence()
         )
         assert result.status is TestStatus.INCONCLUSIVE
         assert result.error and "Empty content" in result.error
-        assert all(item.is_diagnostic for item in result.evidence)
+        assert all(not item.is_diagnostic for item in result.evidence)
         assert Counter(path for path, _ in requests) == {
             "/v1/retrieve": 1, "/v1/chat/completions": 44,
         }
@@ -119,9 +119,9 @@ async def test_public_all_empty_inspection_has_no_false_communication_evidence()
         assert all(item.extraction_error is not None and item.prompt_sent for item in result.evidence)
         health = run_health(TestRunResult(test_results=[result]))
         assert health.invalid
-        assert health.total == 0
+        assert health.total == 44
         assert health.scorable == 0
-        assert health.unreachable == 0
+        assert health.unreachable == 44
 
 
 @asynccontextmanager
@@ -184,13 +184,13 @@ async def test_public_b06_preserves_surviving_probes(bad_content, bad_at, all_ba
         assert calls["retrieve"] == 1
         expected_graded = 0 if all_bad else (43 if bad_at else 44)
         assert len(measured) == calls["judge"] == expected_graded
-        assert health.unreachable == (44 if all_bad and bad_content is None else (1 if bad_at else 0))
+        assert health.unreachable == (44 if all_bad else (1 if bad_at else 0))
         assert health.judge_broke == 0
         if all_bad:
             assert result.status is TestStatus.INCONCLUSIVE
             assert health.invalid
             if bad_content == "":
-                assert all(item.is_diagnostic for item in result.evidence)
+                assert all(not item.is_diagnostic for item in result.evidence)
                 assert result.error and "Empty content" in result.error
             else:
                 assert len(result.evidence) == 44
@@ -208,7 +208,7 @@ async def test_empty_accounting_is_isolated_between_concurrent_and_repeated_insp
         empty, mixed = await asyncio.gather(run_b06(endpoint, "all-empty"), run_b06(endpoint, "mixed"))
         assert empty.status is TestStatus.INCONCLUSIVE
         assert empty.error and "Empty content" in empty.error
-        assert all(item.is_diagnostic for item in empty.evidence)
+        assert all(not item.is_diagnostic for item in empty.evidence)
         assert mixed.status is TestStatus.PASS
         assert len(mixed.evidence) == 44
         assert sum(item.extraction_error is None for item in mixed.evidence) == 43
