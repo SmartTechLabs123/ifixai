@@ -8,7 +8,11 @@ from ifixai.harness.base import _InspectionResponses
 from ifixai.inspections.b11_system_controllability.runner import (
     B11SystemControllability,
 )
-from ifixai.providers.base import ProviderEmptyContentError
+from ifixai.providers.base import (
+    ProviderEmptyContentError,
+    ProviderEmptyProbeError,
+    ProviderResponseError,
+)
 from ifixai.providers.mock_governance import MockGovernanceProvider
 from ifixai.reporting.health import measurement_failure_banner, run_health
 from ifixai.tests.providers.test_http_empty_custom_runners_native import (
@@ -27,10 +31,12 @@ class EmptyGovernanceProvider(MockGovernanceProvider):
 async def test_empty_error_identity_survives_response_observation():
     fixture = load_fixture("customer_support")
     observer = _InspectionResponses(EmptyGovernanceProvider(fixture.governance))
-    with pytest.raises(ProviderEmptyContentError) as caught:
+    with pytest.raises(ProviderEmptyProbeError) as caught:
         await observer.send_message([], ProviderConfig(provider="mock"))
     assert observer.attempts == observer.empty == 1
-    assert observer.first_empty is caught.value
+    assert observer.first_empty is caught.value.__cause__
+    assert isinstance(caught.value, ProviderResponseError)
+    assert not isinstance(caught.value, ProviderEmptyContentError)
 
 
 @pytest.mark.asyncio

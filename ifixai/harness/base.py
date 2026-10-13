@@ -12,6 +12,7 @@ from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.providers.base import (
     ChatProvider,
     ProviderEmptyContentError,
+    ProviderEmptyProbeError,
     ProviderError,
     ProviderRateLimitError,
 )
@@ -68,9 +69,11 @@ class _InspectionResponses:
             self.empty += 1
             if self.first_empty is None:
                 self.first_empty = exc
-            # Preserve the typed error so runners can apply their bounded
-            # empty-reply retry before recording an unscorable measurement.
-            raise
+            # Keep a catchable empty-probe type for bounded retries without
+            # triggering a runner's whole-inspection empty-content boundary.
+            raise ProviderEmptyProbeError(
+                provider=exc.provider, endpoint=exc.endpoint, details=exc.details,
+            ) from exc
 
 
 def build_system_message(
