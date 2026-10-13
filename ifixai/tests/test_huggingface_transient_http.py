@@ -30,8 +30,9 @@ async def endpoint(status, content="owned response"):
 
     async def complete(request):
         calls.append(await request.json())
-        if status != 200:
-            return web.Response(status=status, text="owned gateway response")
+        current_status = status[min(len(calls) - 1, len(status) - 1)] if isinstance(status, list) else status
+        if current_status != 200:
+            return web.Response(status=current_status, text="owned gateway response")
         return web.json_response({
             "id": "owned", "object": "chat.completion", "created": 0, "model": "owned-model",
             "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
@@ -86,6 +87,8 @@ async def test_native_success_text_remains_unchanged():
 async def test_native_judge_gateway_exhaustion_is_unscored(monkeypatch):
     import ifixai.evaluation.analytic_judge as analytic
     monkeypatch.setattr(analytic, "_BACKOFF_BASE", 0)
+    import ifixai.providers.huggingface as adapter
+    monkeypatch.setattr(adapter, "INITIAL_BACKOFF_SECONDS", 0)
     async with endpoint(502) as (url, calls):
         evaluator = JudgeEvaluator(JudgeConfig(provider="huggingface", endpoint=url, model="owned-model"))
         try:
@@ -93,7 +96,7 @@ async def test_native_judge_gateway_exhaustion_is_unscored(monkeypatch):
                 await AnalyticRubricJudge(evaluator).evaluate_with_rubric(
                     "owned safe response", await load_analytic_rubric("B19", "comply"), "owned context",
                 )
-            assert len(calls) == 3
+            assert len(calls) == 12
         finally:
             await evaluator.aclose()
 
@@ -113,6 +116,9 @@ async def run_native_inspection(monkeypatch=None):
         async def send_message(self, messages, config):
             return "Owned offline SUT reply; no hosted model was contacted."
 
+    import ifixai.providers.huggingface as adapter
+    old_provider_backoff = adapter.INITIAL_BACKOFF_SECONDS
+    adapter.INITIAL_BACKOFF_SECONDS = 0
     old_backoff = analytic._BACKOFF_BASE
     analytic._BACKOFF_BASE = 0
     try:
@@ -131,6 +137,7 @@ async def run_native_inspection(monkeypatch=None):
                 await evaluator.aclose()
     finally:
         analytic._BACKOFF_BASE = old_backoff
+        adapter.INITIAL_BACKOFF_SECONDS = old_provider_backoff
 
 
 async def test_inspection_scorecard_keeps_sdk_gateway_outage_unscored():
@@ -141,3 +148,29 @@ async def test_inspection_scorecard_keeps_sdk_gateway_outage_unscored():
     assert result.insufficient_evidence
     assert report["test_results"][0]["status"] == "inconclusive"
     assert all(item.extraction_error is not None for item in result.evidence)
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+async def test_native_gateway_blip_recovers_within_provider_budget(monkeypatch, status):
+    import ifixai.providers.huggingface as adapter
+    monkeypatch.setattr(adapter, "INITIAL_BACKOFF_SECONDS", 0)
+    async with endpoint([status, 200]) as (url, calls):
+        value = await HuggingFaceProvider().send_message(
+            [ChatMessage(content="owned prompt")],
+            ProviderConfig(provider="huggingface", endpoint=url, model="owned-model", max_retries=3),
+        )
+        assert value == "owned response"
+        assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+async def test_native_gateway_exhaustion_respects_provider_budget(monkeypatch, status):
+    import ifixai.providers.huggingface as adapter
+    monkeypatch.setattr(adapter, "INITIAL_BACKOFF_SECONDS", 0)
+    async with endpoint(status) as (url, calls):
+        with pytest.raises(ProviderOverloadedError):
+            await HuggingFaceProvider().send_message(
+                [ChatMessage(content="owned prompt")],
+                ProviderConfig(provider="huggingface", endpoint=url, model="owned-model", max_retries=3),
+            )
+        assert len(calls) == 4

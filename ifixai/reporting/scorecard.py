@@ -288,7 +288,7 @@ def b32_not_applicable_warning(
 # Requesty, Cloudflare AI Gateway or Vercel AI Gateway) is recognized as
 # independent instead of mislabeled "self-judge".
 _AGGREGATOR_PROVIDERS: Final[frozenset[str]] = frozenset(
-    {"openrouter", "orcarouter", "requesty", "cloudflare", "vercel", "atlascloud", "litellm", "http", "langchain"}
+    {"openrouter", "orcarouter", "requesty", "cloudflare", "vercel", "atlascloud", "litellm", "http", "langchain", "huggingface"}
 )
 
 # Namespaces that sit in front of the author, as in the Workers AI ids
@@ -334,7 +334,23 @@ _MODEL_FAMILY_VENDORS: Final[dict[str, str]] = {
 
 def grading_vendor(provider: str, model: str | None) -> str:
     p = (provider or "").lower()
-    if p in _AGGREGATOR_PROVIDERS and model and "/" in model:
+    if p == "bedrock" and model:
+        # Native foundation-model IDs declare the creator before a dot, with
+        # an optional cross-region prefix. Only named foundation models and
+        # system inference profiles in ARNs carry that identity; application
+        # profiles and custom model ARNs are opaque and must remain unresolved.
+        identifier = model.lower()
+        if identifier.startswith("arn:"):
+            resource = identifier.split(":", 5)[-1]
+            if resource.startswith(("foundation-model/", "inference-profile/")):
+                identifier = resource.partition("/")[2]
+            else:
+                identifier = ""
+        parts = identifier.split(".")
+        if parts[0] in {"us", "eu", "apac", "global"}:
+            parts = parts[1:]
+        raw = parts[0] if len(parts) > 1 else p
+    elif p in _AGGREGATOR_PROVIDERS and model and "/" in model:
         raw, _, rest = model.lower().partition("/")
         while raw in CATALOG_NAMESPACE_PREFIXES and "/" in rest:
             raw, _, rest = rest.partition("/")
@@ -673,7 +689,7 @@ def build_test_results_section(
             "error": br.error,
             "regulatory_mappings": get_test_regulatory_mappings(br.test_id, frameworks),
         }
-        if is_error and br.error_message:
+        if br.error_message:
             br_dict["error_message"] = br.error_message
         br_dict["evaluation_path"] = _dominant_evaluation_path(br)
         if br.confidence_interval:
@@ -1068,15 +1084,15 @@ def render_regulatory_compliance(
 
     lines = [
         "## Regulatory Compliance Summary\n",
-        "| Framework | Version | Tests Mapped | Passing | Coverage |",
-        "|---|---|---|---|---|",
+        "| Framework | Version | Inspected / mapped | Passing | Observed pass rate | Inspection coverage |",
+        "|---|---|---|---|---|---|",
     ]
 
     for item in summary:
         lines.append(
             f"| {item['name']} | {item['version']} "
-            f"| {item['tests_mapped']} | {item['tests_passing']} "
-            f"| {item['coverage_pct']} |"
+            f"| {item['tests_mapped']}/{item['tests_mapped_total']} | {item['tests_passing']} "
+            f"| {item['coverage_pct']} | {item['inspection_coverage_pct']} |"
         )
 
     return "\n".join(lines)
@@ -1087,7 +1103,7 @@ def render_consistency_warnings(result: TestRunResult) -> str:
         return ""
     lines = [
         "## Consistency Warnings\n",
-        "> Cross-hook inconsistencies detected. Affected benchmark scores are capped at 50%.\n",
+        "> Cross-hook verification findings are listed below. Confirmed inconsistencies cap affected inspection scores at 50%; incomplete checks retain completed inspection scores.\n",
     ]
     for warning in result.validation_warnings:
         lines.append(f"- {warning}")

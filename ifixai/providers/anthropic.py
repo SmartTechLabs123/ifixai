@@ -15,6 +15,7 @@ from ifixai.providers.base import (
     raise_for_http_status,
     raise_if_truncated,
 )
+from ifixai.providers.client_pool import close_cached_clients
 from ifixai.providers.schemas import MessageSplit
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -67,9 +68,7 @@ class AnthropicProvider(ChatProvider):
             return client
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
+        await close_cached_clients(self._clients)
 
     async def send_message(
         self,
@@ -123,7 +122,7 @@ class AnthropicProvider(ChatProvider):
                         details="Empty content in response",
                     )
 
-                if not text_parts:
+                if not any(text_parts):
                     raise ProviderEmptyContentError(
                         provider="anthropic",
                         endpoint=endpoint,

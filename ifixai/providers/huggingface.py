@@ -147,6 +147,10 @@ class HuggingFaceProvider(ChatProvider):
                     ) from exc
 
                 if status_code in RETRYABLE_HTTP_STATUS_CODES:
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(backoff)
+                        backoff *= BACKOFF_MULTIPLIER
+                        continue
                     raise ProviderOverloadedError(
                         provider="huggingface",
                         endpoint=endpoint,

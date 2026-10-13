@@ -19,7 +19,7 @@ from ifixai.cli.init import (
 )
 from ifixai.cli.model_catalog import default_model, suggestions
 from ifixai.core.fixture_loader import list_fixture_names, load_fixture
-from ifixai.harness.suites import suite_catalog
+from ifixai.harness.suites import DEFAULT_SUITE, suite_catalog
 from ifixai.providers.minimax import DEFAULT_BASE_URL, REGIONAL_ENDPOINTS
 from ifixai.providers.resolver import resolve_credential
 
@@ -30,6 +30,7 @@ _PROVIDER_DESCRIPTIONS: dict[str, str] = {
     "cloudflare": "Cloudflare AI Gateway — one token → Workers AI plus OpenAI, Anthropic, Google…",
     "vercel": "Vercel AI Gateway — one key → hundreds of models (OpenAI, Anthropic, Google…)",
     "openai": "OpenAI API — GPT-4o / o-series",
+    "atlascloud": "AtlasCloud OpenAI-compatible gateway",
     "anthropic": "Anthropic API — Claude family",
     "gemini": "Google Gemini",
     "azure": "Azure OpenAI deployment",
@@ -60,6 +61,7 @@ _ALL_PROVIDERS = [
     "cloudflare",
     "vercel",
     "openai",
+    "atlascloud",
     "anthropic",
     "gemini",
     "azure",
@@ -362,7 +364,7 @@ def setup(ctx: click.Context) -> None:
     suite = ui.select(
         "Suite (which inspections to run):",
         suite_names,
-        default="core",
+        default=DEFAULT_SUITE,
         descriptions=suite_desc,
     )
 
