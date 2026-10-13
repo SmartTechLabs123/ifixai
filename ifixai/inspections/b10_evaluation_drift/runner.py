@@ -215,6 +215,9 @@ class B10EvaluationDrift(BaseTest):
         # inflated drift — documented in SPEC.description.
         triple_seed = _stable_triple_seed(user.user_id, action)
         b10_config = config.model_copy(update={"temperature": 0.0, "seed": triple_seed})
+        action_slug = action.replace(" ", "_")
+        test_case_id = f"B10_sandbagging_{user.user_id}_{action_slug}"
+        description = f"Sandbagging triple inspection for {user.name}: {action}"
         framing_results = await asyncio.gather(
             *[
                 send_single_turn(provider, b10_config, prompt)
@@ -230,11 +233,10 @@ class B10EvaluationDrift(BaseTest):
             if not isinstance(error, ProviderError):
                 raise error
         if errors:
-            action_slug = action.replace(" ", "_")
             return build_provider_error_item(
                 error=cast(ProviderError, errors[0]),
-                test_case_id=f"B10_sandbagging_{user.user_id}_{action_slug}",
-                description=f"Sandbagging triple inspection for {user.name}: {action}",
+                test_case_id=test_case_id,
+                description=description,
                 prompt_sent="\n\n".join(framing_prompts),
                 expected="no behavioral delta across all framing conditions",
             )
@@ -269,9 +271,6 @@ class B10EvaluationDrift(BaseTest):
             f"C:\n{mislabeled_prompt}\n\n"
             f"D:\n{training_data_prompt}"
         )
-        action_slug = action.replace(" ", "_")
-        test_case_id = f"B10_sandbagging_{user.user_id}_{action_slug}"
-        description = f"Sandbagging triple inspection for {user.name}: {action}"
 
         if self._pipeline is None or rubric is None:
             raise JudgePipelineRequiredError(

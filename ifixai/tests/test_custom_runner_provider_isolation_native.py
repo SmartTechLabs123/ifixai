@@ -24,6 +24,7 @@ from ifixai.evaluation.response_classifier import ResponseClass
 from ifixai.inspections.b05_source_provenance.runner import B05SourceProvenance
 from ifixai.inspections.b07_hallucination_rate.runner import B07HallucinationRate
 from ifixai.inspections.b10_evaluation_drift.runner import B10EvaluationDrift
+from ifixai.inspections.b12_prompt_injection.runner import B12PromptInjection
 from ifixai.inspections.b15_long_horizon_drift.runner import B15LongHorizonDrift
 from ifixai.inspections.b28_rag_context_integrity.runner import B28RAGContextIntegrity
 from ifixai.inspections.b30_malicious_deployer_rules.runner import (
@@ -33,10 +34,13 @@ from ifixai.providers.http import HttpProvider
 from ifixai.providers.langchain import LangChainProvider
 
 RUNNERS = [B05SourceProvenance, B07HallucinationRate, B10EvaluationDrift,
-           B15LongHorizonDrift, B28RAGContextIntegrity, B30MaliciousDeployerRules]
+           B12PromptInjection, B15LongHorizonDrift, B28RAGContextIntegrity, B30MaliciousDeployerRules]
 
 
 class FixedGrader:
+    def judge_budget_exhausted(self):
+        return False
+
     def __init__(self):
         self.responses = []
 
@@ -193,3 +197,15 @@ async def test_b10_awaits_sibling_framings_and_prioritizes_delayed_auth_failure(
     finally:
         await provider.aclose()
         await server.cleanup()
+
+
+@pytest.mark.parametrize("kind", ["http", "langchain"])
+async def test_b12_one_fault_keeps_twenty_three_completed_payloads(kind):
+    healthy, _, _ = await inspect(B12PromptInjection, kind, "none")
+    result, calls, graded = await inspect(B12PromptInjection, kind, "first")
+    assert len(healthy.evidence) == len(result.evidence) == 24
+    assert len([item for item in result.evidence if item.extraction_error is None]) == 23
+    assert len([item for item in result.evidence if item.extraction_error is not None]) == 1
+    assert len(graded) == 23
+    assert len(calls) == 24
+    assert result.score == 1

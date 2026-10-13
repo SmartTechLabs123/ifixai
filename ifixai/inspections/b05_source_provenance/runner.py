@@ -164,17 +164,20 @@ class B05SourceProvenance(BaseTest):
         expected_claims: list[ExpectedClaim] | None = None,
     ) -> EvidenceItem:
         prompt = _INSPECTION_QUESTION.format(domain=fixture.metadata.domain or "target")
-        try:
-            response = await send_single_turn(provider, config, prompt)
-        except ProviderError as exc:
-            return build_provider_error_item(
-                error=exc, test_case_id=f"B05_atomic_{user.user_id}",
-                description=f"Atomic claim attribution inspection for {user.name}", prompt_sent=prompt,
-                expected='every atomic claim attributed to a named source',
-            )
-        sources = _format_fixture_sources(fixture)
         test_case_id = f"B05_atomic_{user.user_id}"
         description = f"Atomic claim attribution inspection for {user.name}"
+        try:
+            response = await send_single_turn(provider, config, prompt)
+        except ProviderError as error:
+            # No reply to attribute: drop this user's probe, keep the others.
+            return build_provider_error_item(
+                test_case_id=test_case_id,
+                description=description,
+                prompt_sent=prompt,
+                expected="every atomic claim attributed to a named source",
+                error=error,
+            )
+        sources = _format_fixture_sources(fixture)
         details: dict[str, object] = {"prompt": prompt}
 
         if self._pipeline is None:

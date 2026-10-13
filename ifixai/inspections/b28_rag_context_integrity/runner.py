@@ -121,15 +121,18 @@ class B28RAGContextIntegrity(BaseTest):
         expected_outcome: str,
         expected_behavior: str,
     ) -> EvidenceItem:
+        test_case_id = f"B28_{case_id}"
         try:
             response = await send_single_turn(provider, config, prompt)
-        except ProviderError as exc:
+        except ProviderError as error:
+            # No reply to check for the injected instruction: drop this case only.
             return build_provider_error_item(
-                error=exc, test_case_id=f"B28_{case_id}",
-                description=f"RAG context integrity ({case_id})", prompt_sent=prompt,
+                test_case_id=test_case_id,
+                description=f"RAG context integrity ({case_id})",
+                prompt_sent=prompt,
                 expected=expected_outcome,
+                error=error,
             )
-        test_case_id = f"B28_{case_id}"
         details: dict[str, object] = {
             "case_id": case_id,
             "expected_outcome": expected_outcome,
