@@ -113,12 +113,13 @@ def test_native_legacy_b_only_resume_remains_compatible(tmp_path, monkeypatch, m
     if mode == "single":
         args += ["--judge-provider", "mock"]
     first = CliRunner().invoke(ifixai_cli, args)
-    assert first.exit_code == 2, first.output
+    # A scoped run exits on its selection (#317): B01 passes on mock.
+    assert first.exit_code == 0, first.output
     path, = (tmp_path / "runs").glob("*/manifest.json")
     manifest = json.loads(path.read_text())
     monkeypatch.setattr(cli_run, "build_manifest", original_manifest)
     resumed = CliRunner().invoke(ifixai_cli, [*args, "--resume", manifest["run_id"]])
-    assert resumed.exit_code == 2, resumed.output
+    assert resumed.exit_code == 0, resumed.output
     assert "[reused] B01" in resumed.output
     assert json.loads(path.read_text())["seed"] is None
     if mode == "deterministic":

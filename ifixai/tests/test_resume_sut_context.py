@@ -74,7 +74,7 @@ def test_native_cli_resume_checks_sut_context(tmp_path, monkeypatch, owned_endpo
     ]
     first = CliRunner().invoke(ifixai_cli, [*common, "--endpoint", base + "/first/v1",
                                            "--system-prompt", "Original policy"])
-    assert first.exit_code == 2, first.output
+    assert first.exit_code == 0, first.output
     assert requests and all(path.startswith("/first/v1/") for path, _ in requests)
     manifests = list((tmp_path / "runs").glob("*/manifest.json"))
     assert len(manifests) == 1
@@ -96,7 +96,7 @@ def test_native_cli_resume_checks_sut_context(tmp_path, monkeypatch, owned_endpo
         "--system-prompt", prompt, "--resume", manifest["run_id"], *sampling])
     assert len(inspection_requests()) == before, "Resume must not rerun completed inspections"
     if change in {"unchanged", "trailing-slash"}:
-        assert resumed.exit_code == 2, resumed.output
+        assert resumed.exit_code == 0, resumed.output
         assert "[reused] B07" in resumed.output
     else:
         assert resumed.exit_code == 1, resumed.output

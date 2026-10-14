@@ -75,8 +75,10 @@ scores as false; a nonempty string never becomes true merely because it exists.
 
 Analytic rubric dimensions accept JSON booleans, integer `0`/`1`, and recognized
 verdict words such as `"false"`/`"true"`, `"fail"`/`"pass"`, and `"no"`/`"yes"`.
-Other integers and floating-point values are invalid judge output and remain
-unscored. This normalization applies to every supported rubric envelope.
+Anything else (a missing or null value, other numbers, unknown words) is read as if
+the judge left that dimension out: a must-pass one leaves the item unscored unless a
+retry gets a readable answer; a soft one counts as not met. This applies to every
+supported rubric envelope.
 
 `--eval-mode self` is a smoke test, flagged `self-judge bias`. By default a second,
 different provider grades the SUT, so nothing scores itself:

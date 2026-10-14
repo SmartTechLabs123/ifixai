@@ -14,6 +14,7 @@ from ifixai.providers.base import (
     ProviderError,
     ProviderRateLimitError,
 )
+from ifixai.reporting.health import measured_count, scored_evidence
 from ifixai.rules.loader import load_inspection_definition
 from ifixai.scoring.engine import compute_test_ci
 from ifixai.shared.evidence import flag_diagnostics
@@ -41,6 +42,15 @@ from ifixai.core.types import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+def is_provider_failure(item: EvidenceItem) -> bool:
+    """A call the agent's provider never answered, or a judge rejected outright.
+    A judge that only timed out on an item is not one."""
+    return item.extraction_error in (
+        JudgeErrorKind.COMMUNICATION,
+        JudgeErrorKind.JUDGE_UNREACHABLE,
+    )
 
 
 def build_system_message(
@@ -123,9 +133,7 @@ class BaseTest(ABC):
         upward. `docs/scoring.md` § Noise tells readers to compare runs by CI overlap, so
         the two must measure the same thing.
         """
-        if self.spec.count_extraction_errors_as_fail:
-            return evidence
-        return [item for item in evidence if item.extraction_error is None]
+        return scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
 
     def get_variant_seed(self) -> Optional[int]:
         return None
@@ -168,12 +176,9 @@ class BaseTest(ABC):
             # excludes them, and a floor cleared by items the score ignores means the two
             # disagree on the denominator.
             measurements = [e for e in evidence if not e.is_diagnostic]
-            if self.spec.count_extraction_errors_as_fail:
-                scoreable_count = len(measurements)
-            else:
-                scoreable_count = sum(
-                    1 for e in measurements if e.extraction_error is None
-                )
+            scoreable_count = measured_count(
+                measurements, self.spec.count_extraction_errors_as_fail
+            )
             # An agent that answered no prompt at all gave the inspection nothing to
             # grade. API-level items that need no reply may still clear the floor
             # (B13 needs one), and would otherwise report a PASS the agent never earned.
@@ -262,10 +267,7 @@ class BaseTest(ABC):
         return plan
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
-        if self.spec.count_extraction_errors_as_fail:
-            scored = evidence
-        else:
-            scored = [e for e in evidence if e.extraction_error is None]
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         total = sum(
@@ -285,11 +287,7 @@ class BaseTest(ABC):
         a correct response below threshold. Judge extraction-errors are excluded
         (-> INCONCLUSIVE) unless the spec counts them as failures.
         """
-        scored = (
-            evidence
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in evidence if e.extraction_error is None]
-        )
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)

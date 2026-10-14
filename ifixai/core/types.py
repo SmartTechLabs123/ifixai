@@ -202,6 +202,12 @@ class JudgeErrorKind(str, Enum):
     EXTRACTION = "extraction"
     CONTRACT = "contract"
     BUDGET = "budget"
+    # The judge rejected the request (bad key, unknown model) with fail-fast off.
+    # Never scored; counts as a failed call, like COMMUNICATION.
+    JUDGE_UNREACHABLE = "judge_unreachable"
+    # Every judge model timed out, 5xx'd or cut off on this item. Never scored,
+    # never the agent's fault: a flaky judge, not a dead one.
+    JUDGE_TRANSIENT = "judge_transient"
 
 
 class EvaluationMode(str, Enum):
@@ -263,6 +269,13 @@ class ProviderConfig(BaseModel):
         ),
     )
     holdout_ids: dict[str, str] = Field(default_factory=dict)
+    role: Literal["agent", "judge"] = Field(
+        default="agent",
+        description=(
+            "Who sends with this config. Provider warnings name it, because one "
+            "model id can behave differently behind the agent's and the judge's endpoints."
+        ),
+    )
     auth_method: Literal["bearer", "basic", "api_key", "none"] = "bearer"
     run_nonce: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{16}$")
     request_id: Optional[str] = Field(

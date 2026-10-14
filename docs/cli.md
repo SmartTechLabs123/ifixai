@@ -67,7 +67,7 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 | `--output`, `-o` | `./ifixai-results/` | Report directory. |
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--name`, `--version` | provider name, `1.0` | System name and version label in reports. |
-| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). |
+| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). A run flagged RUN INVALID exits `2` whatever its score. A scoped (`-b`) or strategic run that leaves out B01, B08 or P01 has no overall score: it exits `0` if every selected scored inspection passed, `2` if any failed, errored or was inconclusive, and `--min-score` doesn't apply. Any other run with no overall score exits `2`. A partial run exits `1`. |
 | `--quiet`, `-q` | off | Suppress banner and summary; stdout still carries scores. |
 
 ### Execution and reliability
@@ -163,6 +163,7 @@ The SUT's own `--model` is dropped from the chain: a fallback must never turn a 
 Cost and time controls, so a dead judge cannot drain a key or stall a run:
 
 - Judge calls ask OpenRouter for **no reasoning tokens**. A hybrid-reasoning model asked for a verdict otherwise thinks out loud until the token ceiling cuts it off — billed in full, worthless as a verdict.
-- A **truncated** (cut-off) reply is never re-sent to the same model. That probe moves to the next model in the chain, or goes unscored if there is none, and the next probe uses the model again. Three cut-offs in a row from one model, with no verdict between, retire it.
-- A model that fails is **retired for the rest of the run**. The chain is not re-walked from the dead primary on every grade. Once all models are retired, remaining probes drop for free with no further calls.
+- A **truncated** (cut-off) reply is never re-sent to the same model. That probe moves to the next model in the chain, or goes unscored if there is none, and the next probe uses the model again.
+- Known reasoning judges (o1/o3/o4, gpt-5\*, \*-r1\*, deepseek-reasoner, \*thinking\*, gemini-2.5-pro, gemini-3\*, qwq, grok-\*-mini, gpt-oss\*) get 4096 more tokens on every call, room to think before the verdict.
+- A model that fails **3 items in a row** is **retired for the rest of the run**; a verdict resets the count. The chain is not re-walked from the dead primary on every grade. Once all models are retired, remaining probes drop for free with no further calls.
 - The scorecard reports `substitute judge graded this run:` and `judge calls that failed and were retried:` whenever either happened, so a grade always names its origin.

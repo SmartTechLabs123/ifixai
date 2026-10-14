@@ -16,10 +16,13 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 import click
+import yaml
+from click.core import ParameterSource
+from pydantic import ValidationError
 
 from ifixai import __version__ as IFIXAI_VERSION
 from ifixai import telemetry
-from ifixai.api import _aclose_provider
+from ifixai.api import FROM_FIXTURE, FixtureGovernance, _aclose_provider
 from ifixai.cli import ui
 from ifixai.cli._branding import (
     print_startup_banner,
@@ -59,6 +62,7 @@ from ifixai.core.types import (
     ProviderConfig,
     RunMode,
     TestResult,
+    TestStatus,
 )
 from ifixai.evaluation.checkpoint import load_checkpoint
 from ifixai.evaluation.manifest import (
@@ -98,9 +102,15 @@ from ifixai.quick_build import (
 )
 from ifixai.reporting.artifact import render_artifact
 from ifixai.reporting.health import (
+    gating_results,
     judge_health_note,
     measurement_failure_banner,
     run_health,
+)
+from ifixai.reporting.scorecard import (
+    DEFAULT_TEMPERATURE_WARNINGS,
+    absent_score_reason,
+    scoped_gate_decides,
 )
 from ifixai.scoring.category_weights import STRATEGIC_TEST_IDS
 from ifixai.utils.fixture_digest import compute_fixture_digest
@@ -216,8 +226,6 @@ def _resolve_concurrency(flag_value: int | None, no_parallel: bool) -> int:
 
 def _cfg_value(ctx: click.Context, name: str, current, cfg_value):
     """Use a saved default through its CLI type, preserving explicit flags."""
-    from click.core import ParameterSource
-
     if cfg_value is None:
         return current
     if ctx.get_parameter_source(name) == ParameterSource.DEFAULT:
@@ -251,18 +259,28 @@ def _parse_extra_headers(value: "str | dict | None") -> dict[str, str]:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
-def _skip_default_fixture_governance(
-    provider: "str | None", used_default_fixture: bool
-) -> bool:
-    """Whether to withhold the BUNDLED default fixture's governance from the SUT.
+_DEFAULT_FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "default" / "fixture.yaml"
+)
+_BUNDLED_FIXTURES_DIR = _DEFAULT_FIXTURE_PATH.parents[1]
 
-    True only when the SUT is a live ``http`` endpoint AND we auto-selected the
-    default fixture: composing a fake org's declared policy onto a real agent
-    would shadow the agent's own runtime control plane. A user-supplied fixture
-    with a ``governance:`` block, or an explicit ``--governance``, is always
-    honored (this predicate never fires for them).
+# Providers that reach a live agent endpoint, not a model.
+_REAL_AGENT_PROVIDERS = ("http", "langchain")
+
+
+def _skip_bundled_fixture_governance(provider: "str | None", fixture: str) -> bool:
+    """Whether to withhold a BUNDLED fixture's governance from the SUT.
+
+    True only when the SUT is a live agent endpoint (``http``, ``langchain``) AND
+    the fixture ships with iFixAi (the default or an example, by name or path):
+    composing a fake org's declared policy onto a real agent would shadow the
+    agent's own runtime control plane. A user-supplied fixture with a
+    ``governance:`` block, or an explicit ``--governance``, is always honored
+    (this predicate never fires for them).
     """
-    return (provider or "").lower() == "http" and used_default_fixture
+    if (provider or "").lower() not in _REAL_AGENT_PROVIDERS:
+        return False
+    return resolve_fixture_path(fixture).resolve().is_relative_to(_BUNDLED_FIXTURES_DIR)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -866,8 +884,6 @@ def run(
         click.echo(click.style(f"Config error: {exc}", fg="red"), err=True)
         sys.exit(1)
     if config_obj is not None:
-        from click.core import ParameterSource
-
         provider = _cfg_value(ctx, "provider", provider, config_obj.provider)
         # Connection defaults belong to the saved target. An explicit switch
         # must use the new provider's model, endpoint and credential defaults.
@@ -1284,6 +1300,9 @@ def run(
             err=True,
         )
     governance_source: str = "runtime"
+    # What the run wraps the SUT with: the --governance file, else the fixture's
+    # own block, else nothing (a real endpoint on a bundled fixture, below).
+    run_governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE
     if governance_path is not None:
         if (provider or "").lower() == "mock":
             click.echo(
@@ -1295,9 +1314,30 @@ def run(
                 )
             )
             sys.exit(1)
-        governance_fixture = GovernanceFixture.load(governance_path)
+        try:
+            governance_fixture = GovernanceFixture.load(governance_path)
+        except (ValueError, yaml.YAMLError) as exc:
+            # One line naming each bad field, e.g. "tools.0.tool_id: Field required".
+            detail = (
+                "; ".join(
+                    f"{'.'.join(map(str, e['loc'])) or 'top level'}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                if isinstance(exc, ValidationError)
+                else str(exc).splitlines()[0]
+            )
+            click.echo(
+                click.style(
+                    f"Error: --governance {governance_path} is not a usable "
+                    f"governance file: {detail}",
+                    fg="red",
+                )
+            )
+            sys.exit(1)
         resolved_provider = wrap_with_governance(resolved_provider, governance_fixture)
         governance_source = "wrap"
+        # The connection probe writes into this policy's audit log; the run gets its own.
+        run_governance = governance_fixture.model_copy(deep=True)
         click.echo(
             click.style(
                 f"Governance: wrapped {provider} with policies from "
@@ -1380,16 +1420,8 @@ def run(
             click.echo(f"  Capabilities: {', '.join(cap_parts)}")
 
     context_profile = None
-    used_default_fixture = False
     if fixture is None and run_mode == "standard":
-        default_fixture_path = (
-            Path(__file__).resolve().parent.parent
-            / "fixtures"
-            / "default"
-            / "fixture.yaml"
-        )
-        fixture = str(default_fixture_path)
-        used_default_fixture = True
+        fixture = str(_DEFAULT_FIXTURE_PATH)
         click.echo(
             click.style(
                 f"  Standard mode -- using default fixture: {fixture}",
@@ -1412,15 +1444,9 @@ def run(
         )
 
     if run_mode == "full":
-        default_fixture_path = (
-            Path(__file__).resolve().parent.parent
-            / "fixtures"
-            / "default"
-            / "fixture.yaml"
-        )
         if (
             fixture is not None
-            and resolve_fixture_path(fixture).resolve() == default_fixture_path.resolve()
+            and resolve_fixture_path(fixture).resolve() == _DEFAULT_FIXTURE_PATH
         ):
             click.echo(
                 click.style(
@@ -1601,12 +1627,12 @@ def run(
     grounding_mode = GroundingMode(grounding.lower())
     fixture_obj_for_grounding = load_fixture(fixture)
 
-    # A real deployed agent (--provider http) already carries its own system
+    # A real deployed agent (http, langchain) already carries its own system
     # prompt, tools, and guardrails. Injecting a fixture-derived governance
     # prompt on top (--grounding fixture) double-governs it -- you'd score the
     # agent PLUS a second rulebook that doesn't exist in production. Warn, but
     # respect the explicit choice.
-    is_real_agent = (provider or "").lower() == "http"
+    is_real_agent = (provider or "").lower() in _REAL_AGENT_PROVIDERS
     if is_real_agent and grounding_mode == GroundingMode.FIXTURE:
         click.echo(
             click.style(
@@ -1624,29 +1650,49 @@ def run(
     # provider here. Vanilla path leaves `governance_source == "runtime"`
     # so insufficient_evidence on governance inspections stays honest.
     #
-    # Exception: don't shadow a real agent with the BUNDLED default fixture's
-    # governance. When the SUT is a live endpoint and we auto-selected the
-    # default fixture, composing its `governance:` block would grade a fake
+    # Exception: don't shadow a real agent with a BUNDLED fixture's
+    # governance. When the SUT is a live endpoint and the fixture ships with
+    # iFixAi, composing its `governance:` block would grade a fake
     # org's declared policy instead of the agent's real control plane. Leave
     # governance_source == "runtime" so those inspections stay honest
     # insufficient_evidence; a user who wants declared governance can pass
     # --governance <policy.yaml> or their own fixture with a governance block.
-    shadow_default_governance = _skip_default_fixture_governance(
-        provider, used_default_fixture
-    )
-    if shadow_default_governance and fixture_obj_for_grounding.governance is not None:
+    shadow_bundled_governance = _skip_bundled_fixture_governance(provider, fixture)
+    if (
+        shadow_bundled_governance
+        and governance_source == "runtime"
+        and fixture_obj_for_grounding.governance is not None
+    ):
+        run_governance = None
         click.echo(
             click.style(
-                "Governance: real endpoint detected -- not composing the default "
+                "Governance: real endpoint detected -- not composing the built-in "
                 "fixture's governance onto your agent. Pass --governance "
                 "<policy.yaml> to score against your declared control plane.",
+                fg="cyan",
+            )
+        )
+    # Same for a real agent and a block that declares nothing: it would switch on
+    # an empty simulated control plane. Mock keeps composing it, as before.
+    empty_fixture_governance = (
+        is_real_agent
+        and fixture_obj_for_grounding.governance is not None
+        and not fixture_obj_for_grounding.governance.declares_anything()
+    )
+    if governance_source == "runtime" and empty_fixture_governance:
+        run_governance = None
+        click.echo(
+            click.style(
+                "Governance: the fixture's governance: block declares nothing to "
+                "simulate -- not composing it onto your agent.",
                 fg="cyan",
             )
         )
     if (
         governance_source == "runtime"
         and fixture_obj_for_grounding.governance is not None
-        and not shadow_default_governance
+        and not shadow_bundled_governance
+        and not empty_fixture_governance
     ):
         resolved_provider = wrap_with_governance(
             resolved_provider,
@@ -1880,6 +1926,7 @@ def run(
                 checkpoint_dir=Path(reliability_out),
                 checkpoint_run_id=manifest.run_id,
                 cached_results=cached_results,
+                governance=run_governance,
             )
         )
     except KeyboardInterrupt:
@@ -1957,7 +2004,8 @@ def run(
             f"errored={health.errored}/{health.n_inspections} inspections, "
             f"unreachable={health.unreachable}/{health.attempted_probes} attempted probes, "
             f"budget_skipped={health.budget_skipped}, "
-            f"judge_broke={health.judge_broke}, scorable={health.scorable}. "
+            f"judge_broke={health.judge_broke}, "
+            f"scorable={health.scorable}. "
             "Ignore the grade."
         )
     if health.judge_broke:
@@ -1998,7 +2046,12 @@ def run(
         grade_text = "n/a" if result.overall_score is None else result.grade.value
         click.echo(f"  Grade:            {grade_text}")
         click.echo(f"  Strategic Score:  {result.strategic_score:.1%}")
-        click.echo(f"  Passed:           {verdict}")
+        if result.overall_score is None:
+            reason = absent_score_reason(result)
+            click.echo("  Passed:           n/a")
+            click.echo(f"  {reason[:1].upper()}{reason[1:]}")
+        else:
+            click.echo(f"  Passed:           {verdict}")
         if result.mandatory_minimums_not_run:
             click.echo(
                 "  "
@@ -2038,6 +2091,9 @@ def run(
     jh_note = judge_health_note(health)
     if jh_note:
         click.echo(click.style(f"  {jh_note}", fg="yellow"))
+    for message in DEFAULT_TEMPERATURE_WARNINGS:
+        if message in result.warnings:
+            click.echo(click.style(f"  ⚠ {message}", fg="yellow"))
 
     _print_error_summary(result)
     click.echo()
@@ -2084,13 +2140,24 @@ def run(
         # non-zero so CI can never mistake it for a full result.
         sys.exit(1)
 
+    # The RUN INVALID banner above says why: a few surviving probes can still
+    # score above --min-score, and CI must not read that as a pass.
+    if health.invalid:
+        sys.exit(2)
+
     if result.overall_score is None:
-        click.echo(
-            click.style(
-                "Score: n/a (insufficient evidence across all inspections)",
+        click.echo(click.style(f"Score: n/a: {absent_score_reason(result)}", fg="yellow"))
+        if ctx.get_parameter_source("min_score") is not ParameterSource.DEFAULT:
+            click.echo(click.style(
+                f"--min-score {min_score:g} does not apply: there is no overall "
+                "score to compare it with.",
                 fg="yellow",
-            )
-        )
+            ))
+        if scoped_gate_decides(result):
+            # A scoped run withholds the headline by design, so gate on what
+            # was selected, each inspection against its own threshold.
+            gating = gating_results(result)
+            sys.exit(0 if all(r.status == TestStatus.PASS for r in gating) else 2)
         sys.exit(2)
     if result.overall_score < min_score:
         scored_categories = sum(

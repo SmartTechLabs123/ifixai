@@ -311,7 +311,8 @@ class ProviderOverloadedError(ProviderResponseError):
     pass
 
 
-RETRYABLE_HTTP_STATUS_CODES: frozenset[int] = frozenset({408, 500, 502, 503, 504})
+# 529 is Anthropic's "overloaded".
+RETRYABLE_HTTP_STATUS_CODES: frozenset[int] = frozenset({408, 500, 502, 503, 504, 529})
 
 
 # Upstream conditions that clear on their own. None of them means the provider
@@ -416,6 +417,10 @@ class ChatProvider(ABC):
         subclass holds an HTTP/SDK client pool.
         """
         return None
+
+    def accepts_temperature(self, model: str | None, endpoint: str | None) -> bool:
+        """Whether a request to `model` at `endpoint` carries the configured temperature."""
+        return True
 
     async def list_tools(
         self,

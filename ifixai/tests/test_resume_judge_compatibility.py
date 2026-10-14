@@ -60,5 +60,6 @@ def test_native_full_ensemble_with_same_sut_model_does_not_crash(tmp_path, monke
     args[args.index("single")] = "full"
     args[args.index("owned-judge-a")] = "owned-sut"
     result = CliRunner().invoke(ifixai_cli, [*args, "--judge-provider", "mock", "--judge-model", "owned-judge-b"])
-    assert result.exit_code == 2, (result.output, result.exception)
+    # A scoped run exits on its selection (#317): B07 passes on mock.
+    assert result.exit_code == 0, (result.output, result.exception)
     assert len(list((tmp_path / "runs").glob("*/manifest.json"))) == 1
