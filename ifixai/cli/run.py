@@ -28,6 +28,7 @@ from ifixai.cli._branding import (
     print_startup_banner,
 )
 from ifixai.cli.config_file import CONFIG_FILENAME, load_config
+from ifixai.cli.inspection_seeds import inspection_seeds
 from ifixai.cli.orchestrator import (
     _build_judge_config,
     _eval_mode_declaration,
@@ -81,7 +82,7 @@ from ifixai.harness.registry import (
     SPEC_BY_ID,
     resolve_category_test_ids,
 )
-from ifixai.harness.suites import SUITE_NAMES, resolve_suite
+from ifixai.harness.suites import DEFAULT_SUITE, SUITE_NAMES, resolve_suite
 from ifixai.inspections.holdout_ids import HoldoutIds, generate_holdout_ids
 from ifixai.providers.base import ChatProvider
 from ifixai.providers.governance_fixture import GovernanceFixture
@@ -324,6 +325,15 @@ def _describe_filter(
     return f"all ({len(SPEC_BY_ID)})"
 
 
+def describe_default_selection(selected_count: int) -> str:
+    """Tell the user the run is the default subset and how to run everything."""
+    total = len(SPEC_BY_ID)
+    return (
+        f"Default run: {selected_count} of {total} inspections "
+        f"(suite '{DEFAULT_SUITE}'). Add --full-run to run all {total}."
+    )
+
+
 def _print_concurrency_banner(resolved: int) -> None:
     if resolved == 1:
         click.echo(
@@ -474,10 +484,21 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
 @click.option(
     "--suite",
     default=None,
-    help="Run a named suite. Tiers: smoke, strategic, core (32 graded), "
-    "extended (28 frontier), all. Themes: security, reliability, compliance, "
-    "frontier. Folds into the selection like --category; combine with -b/-c to "
-    "add more. Run `ifixai list suites` to browse.",
+    help="Run a named suite. Tiers: smoke, strategic, essential (10, the "
+    "default), core (32 graded), extended (28 frontier), all. Themes: security, "
+    "reliability, compliance, frontier. Folds into the selection like "
+    "--category; combine with -b/-c to add more. Run `ifixai list suites` to "
+    "browse.",
+)
+@click.option(
+    "--full-run",
+    "full_run",
+    is_flag=True,
+    default=False,
+    help="Run every inspection instead of the default 10-inspection essential "
+    "suite. Takes longer and costs more. Cannot be combined with --suite, "
+    "--test, --category or --strategic. Unrelated to --mode full, which sets "
+    "how the run is judged.",
 )
 @click.option(
     "--output",
@@ -797,6 +818,7 @@ def run(
     test: tuple[str, ...],
     categories: tuple[str, ...],
     suite: str | None,
+    full_run: bool,
     output: str,
     artifact_out: str | None,
     report_format: str,
@@ -845,6 +867,17 @@ def run(
         return
     run_start_monotonic = time.monotonic()
 
+    if full_run and (strategic or test or categories or suite):
+        click.echo(
+            click.style(
+                "Error: --full-run runs every inspection and cannot be combined "
+                "with --suite, --test, --category or --strategic.",
+                fg="red",
+            ),
+            err=True,
+        )
+        sys.exit(1)
+
     try:
         config_obj = load_config()
     except ValueError as exc:
@@ -863,7 +896,8 @@ def run(
             model = _cfg_value(ctx, "model", model, config_obj.model)
         fixture = _cfg_value(ctx, "fixture", fixture, config_obj.fixture)
         explicit_selector = (
-            strategic
+            full_run
+            or strategic
             or bool(test)
             or bool(categories)
             or ctx.get_parameter_source("suite") != ParameterSource.DEFAULT
@@ -921,6 +955,7 @@ def run(
             param_hint="--run-nonce",
         )
     effective_run_nonce = run_nonce if run_nonce is not None else generate_run_nonce()
+    effective_inspection_seed = secrets.randbelow(2**31)
 
     effective_b12_seed = b12_seed if b12_seed is not None else secrets.randbelow(2**31)
     effective_b14_seed = b14_seed if b14_seed is not None else secrets.randbelow(2**31)
@@ -964,6 +999,7 @@ def run(
                 err=True,
             )
         effective_run_nonce = resume_manifest.run_nonce
+        effective_inspection_seed = resume_manifest.seed
         effective_b12_seed = resume_manifest.b12_seed
         effective_b14_seed = resume_manifest.b14_seed
         effective_b28_seed = resume_manifest.b28_seed
@@ -977,6 +1013,17 @@ def run(
         b29_seed_pinned = resume_manifest.b29_seed_pinned
         b32_seed_pinned = resume_manifest.b32_seed_pinned
         holdout_seed = resume_manifest.holdout_seed
+
+    # A resumed run keeps the selection it started with: a manifest that recorded
+    # every inspection resumes as a full run, with or without --full-run.
+    is_resuming_full_run = (
+        resume_manifest is not None and resume_manifest.mode_filter == ["all"]
+    )
+    is_default_selection = not (
+        full_run or is_resuming_full_run or strategic or test or categories or suite
+    )
+    if is_default_selection:
+        suite = DEFAULT_SUITE
 
     print_startup_banner(IFIXAI_VERSION, quiet=quiet)
     # Asked before telemetry and any provider call, so abandoning leaves no trace.
@@ -1074,10 +1121,19 @@ def run(
             )
         judge_api_key = tuple(resolved_keys)
 
+    if eval_mode in ("single", "semantic") and len(judge_provider) != 1:
+        click.echo(
+            click.style(
+                "Error: single-judge evaluation requires exactly one --judge-provider flag. "
+                "Use --eval-mode full for an ensemble.",
+                fg="red",
+            )
+        )
+        sys.exit(1)
     if eval_mode == "full" and len(judge_provider) < 2:
         click.echo(
             click.style(
-                "Error: --eval-mode full requires >=2 distinct --judge-provider flags.\n"
+                "Error: --eval-mode full requires >=2 --judge-provider flags.\n"
                 "Example: --judge-provider anthropic --judge-api-key $K1 --judge-model claude-sonnet-4-6 \\\n"
                 "         --judge-provider openai --judge-api-key $K2 --judge-model gpt-4o",
                 fg="red",
@@ -1219,6 +1275,8 @@ def run(
         click.echo(f"  Estimated inspections:      {estimated_inspections}")
         click.echo(f"  Judge calls per inspection: {judge_calls_per_inspection}")
         click.echo(f"  Estimated judge calls: {estimated_judge_calls}")
+        if is_default_selection:
+            click.echo(f"  {describe_default_selection(len(test))}")
         click.echo()
         click.echo(
             "Estimates are conservative averages; real cost depends on inspection length, "
@@ -1402,7 +1460,7 @@ def run(
         if len(judge_provider) < 2:
             click.echo(
                 click.style(
-                    "Error: --mode full requires >=2 distinct --judge-provider flags "
+                    "Error: --mode full requires >=2 --judge-provider flags "
                     "(plus matching --judge-api-key flags). Standard mode is the "
                     "right choice for runs without judge credentials.",
                     fg="red",
@@ -1515,6 +1573,8 @@ def run(
     click.echo(f"  Provider:  {provider}")
     click.echo(f"  Fixture:   {fixture}")
     click.echo(f"  Filter:    {_describe_filter(strategic, test, categories, suite)}")
+    if is_default_selection:
+        click.echo(f"             {describe_default_selection(len(test))}")
     click.echo(f"  Mode:      {run_mode}")
     click.echo(f"  Judge:     {judge_label}")
     click.echo(f"  Timeout:   {timeout}s")
@@ -1543,6 +1603,8 @@ def run(
             b32_seed=effective_b32_seed,
             b29_seed_pinned=b29_seed_pinned,
             b32_seed_pinned=b32_seed_pinned,
+            **(inspection_seeds(effective_inspection_seed)
+               if effective_inspection_seed is not None else {}),
         )
 
     judge_config = _build_judge_config(
@@ -1708,18 +1770,30 @@ def run(
         from ifixai.providers.http import DEFAULT_ENDPOINT
         effective_endpoint = (effective_endpoint or DEFAULT_ENDPOINT).rstrip("/")
 
+    rubric_hashes = compute_rubric_digests_for_tests_layout(
+        _TESTS_DIR, mutation_bank_path=_TESTS_DIR.parent / "harness" / "synonyms.yaml"
+    )
+    if resume_manifest is not None:
+        # Added fingerprints must not invalidate a run that predates them.
+        # Existing keys still use current digests, so edits remain detectable.
+        rubric_hashes = {
+            key: digest for key, digest in rubric_hashes.items()
+            if key in resume_manifest.rubric_hashes
+        }
+
     manifest = build_manifest(
         mode=manifest_mode,
         model_under_test=model_descriptor,
         judge_models=[],
         normalizer_version=NORMALIZER_VERSION,
         test_versions=test_versions,
-        rubric_hashes=compute_rubric_digests_for_tests_layout(_TESTS_DIR),
+        rubric_hashes=rubric_hashes,
         fixture_digest=compute_fixture_digest(resolved_fixture_path),
         governance_fixture_digest=governance_fixture_digest_value,
         governance_source=governance_source,
         mode_filter=(list(test) if test else (["strategic"] if strategic else ["all"])),
         judge_identity=judge_identity_descriptor,
+        seed=effective_inspection_seed,
         b12_seed=effective_b12_seed,
         b14_seed=effective_b14_seed,
         b28_seed=effective_b28_seed,

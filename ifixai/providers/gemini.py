@@ -9,10 +9,12 @@ from google.api_core import exceptions as google_exceptions
 
 from ifixai.core.types import ChatMessage, ProviderConfig
 from ifixai.providers.base import (
+    RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
     ProviderAuthError,
     ProviderConnectionError,
     ProviderEmptyContentError,
+    ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
@@ -183,6 +185,14 @@ class GeminiProvider(ChatProvider):
                         details=str(exc),
                     ) from exc
                 except google_exceptions.GoogleAPIError as exc:
+                    if getattr(exc, "code", None) in RETRYABLE_HTTP_STATUS_CODES:
+                        if attempt < attempts - 1:
+                            await asyncio.sleep(backoff)
+                            backoff *= BACKOFF_MULTIPLIER
+                            continue
+                        raise ProviderOverloadedError(
+                            provider="gemini", endpoint=endpoint, details=str(exc),
+                        ) from exc
                     raise ProviderResponseError(
                         provider="gemini",
                         endpoint=endpoint,

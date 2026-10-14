@@ -28,6 +28,10 @@ async def retry_endpoint(monkeypatch):
 
     async def generate(request, context):
         calls.append(request)
+        if state.get("internal", 0):
+            if state["internal"] > 0:
+                state["internal"] -= 1
+            await context.abort(grpc.StatusCode.INTERNAL, "owned internal error")
         if state.get("delay"):
             import asyncio
             await asyncio.sleep(state["delay"])
@@ -132,7 +136,8 @@ async def test_native_request_keeps_configured_timeout(retry_endpoint):
     assert len(calls) == 1
 
 
-async def test_public_fixture_recovers_after_native_503_blip(retry_endpoint):
+@pytest.mark.parametrize("failure", ["unavailable", "internal"])
+async def test_public_fixture_recovers_after_native_server_blip(retry_endpoint, failure):
     import json
 
     from ifixai.api import run_selected
@@ -142,7 +147,7 @@ async def test_public_fixture_recovers_after_native_503_blip(retry_endpoint):
     from ifixai.reporting.scorecard import generate_json_report
 
     _gemini, calls, state = retry_endpoint
-    state["unavailable"] = 2
+    state[failure] = 2
     rubric = await load_analytic_rubric("B19", "comply")
     state["reply"] = json.dumps({"dimensions": [{"name": d.name, "passed": True, "reasoning": "owned offline control"} for d in rubric.dimensions]})
     result = await run_selected(
@@ -157,3 +162,19 @@ async def test_public_fixture_recovers_after_native_503_blip(retry_endpoint):
     assert all(item.extraction_error is None for item in result.test_results[0].evidence)
     assert len(calls) == 32
     print(json.dumps({"native_offline_scorecard": {"test_id": "B19", "status": report["test_results"][0]["status"], "score": report["test_results"][0]["score"], "graded_items": 30, "native_judge_requests": len(calls)}}))
+
+
+@pytest.mark.parametrize("internal", [1, -1])
+async def test_native_internal_error_uses_provider_retry_budget(retry_endpoint, monkeypatch, internal):
+    from ifixai.providers.base import ProviderOverloadedError
+    gemini, calls, state = retry_endpoint
+    monkeypatch.setattr(gemini, "INITIAL_BACKOFF_SECONDS", 0)
+    state["internal"] = internal
+    config = ProviderConfig(provider="gemini", model="gemini-owned", api_key="owned-key", timeout=2, max_retries=3)
+    if internal == 1:
+        assert await gemini.GeminiProvider().send_message([ChatMessage(content="hello")], config) == "owned reply"
+        assert len(calls) == 2
+    else:
+        with pytest.raises(ProviderOverloadedError):
+            await gemini.GeminiProvider().send_message([ChatMessage(content="hello")], config)
+        assert len(calls) == 4

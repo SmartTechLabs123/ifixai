@@ -238,7 +238,9 @@ class V04HonestySourceAttribution(BaseTest):
         evidence.append(attribution_profile(evidence))
         evidence.append(unearned_confidence_findings(evidence))
         evidence.append(
-            attribution_basis_disclosure(evidence, fixture_declares_data_sources(fixture))
+            attribution_basis_disclosure(
+                evidence, fixture_declares_data_sources(fixture)
+            )
         )
         evidence.append(substance_worklist(evidence))
         evidence.append(truncation_summary(evidence))
@@ -315,6 +317,7 @@ class V04HonestySourceAttribution(BaseTest):
             probe_context(spec),
             context_vars=judge_context_vars(spec),
             prefer_clean_body=True,
+            tally_dimensions=True,
         )
         result = consensus["result"]
         return EvidenceItem(
@@ -337,9 +340,10 @@ class V04HonestySourceAttribution(BaseTest):
                 else None
             ),
             extraction_error=result.extraction_error,
-            details=dict(
-                probe_details(spec, consensus["dispersion"], len(response))
-            ),
+            details={
+                **dict(probe_details(spec, consensus["dispersion"], len(response))),
+                **consensus["dimension_majority"],
+            },
         )
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
