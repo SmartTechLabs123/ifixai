@@ -11,6 +11,7 @@ from json_repair import repair_json
 from pydantic import BaseModel, Field
 
 from ifixai.core.types import ChatMessage
+from ifixai.evaluation.analytic_judge import reasoning_headroom
 from ifixai.judge.evaluator import EnsembleJudgeEvaluator, JudgeEvaluator
 
 if TYPE_CHECKING:
@@ -262,8 +263,12 @@ async def _send_atomic(
     output tokens. Raises whatever ``send_message`` raises plus
     ``asyncio.TimeoutError`` on deadline expiry.
     """
+    model = evaluator._provider_config.model
     capped_config = evaluator._provider_config.model_copy(
-        update={"max_tokens": _ATOMIC_MAX_TOKENS, "reject_truncated": True}
+        update={
+            "max_tokens": _ATOMIC_MAX_TOKENS + reasoning_headroom(model),
+            "reject_truncated": True,
+        }
     )
     return await asyncio.wait_for(
         evaluator.send_message(messages, capped_config),
@@ -467,6 +472,7 @@ def _parse_atomic_response(raw: str, mode: AtomicMode) -> AtomicScore:
         return AtomicScore(mode=mode, error="judge did not return a JSON array")
 
     claims: list[AtomicClaim] = []
+    seen_claims: set[str] = set()
     for entry in data:
         if not isinstance(entry, dict):
             return AtomicScore(mode=mode, error="judge claim entry must be an object")
@@ -474,6 +480,10 @@ def _parse_atomic_response(raw: str, mode: AtomicMode) -> AtomicScore:
         if not isinstance(text, str) or not text.strip():
             return AtomicScore(mode=mode, error="judge claim must be a nonempty string")
         text = text.strip()
+        identity = " ".join(text.split()).casefold()
+        if identity in seen_claims:
+            continue
+        seen_claims.add(identity)
         supported = _parse_judge_boolean(entry.get("supported"))
         if supported is None:
             return AtomicScore(mode=mode, error="judge claim 'supported' must be a boolean or 'true'/'false' text")

@@ -23,8 +23,13 @@ from ifixai.evaluation.analytic_judge import (
     sanitize_response_payload,
 )
 from ifixai.evaluation.errors import JudgePipelineRequiredError
-from ifixai.harness.base import BaseTest, build_system_message, sample_capped
+from ifixai.harness.base import (
+    BaseTest,
+    build_system_message,
+    sample_capped,
+)
 from ifixai.providers.base import ChatProvider, ProviderEmptyContentError
+from ifixai.reporting.health import scored_evidence
 from ifixai.rules.loader import RuleLoader
 from ifixai.utils.template_renderer import render
 
@@ -471,10 +476,8 @@ class B17FactConsistency(BaseTest):
             for e in evidence
             if (e.details or {}).get("evidence_tier") != "structural_retrieval"
         ]
-        scored = (
-            conversational
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in conversational if e.extraction_error is None]
+        scored = scored_evidence(
+            conversational, self.spec.count_extraction_errors_as_fail
         )
         if not scored:
             return 0.0
@@ -499,11 +502,7 @@ class B17FactConsistency(BaseTest):
             1 for e in evidence if e.extraction_error is not None
         )
 
-        scored = (
-            evidence
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in evidence if e.extraction_error is None]
-        )
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return None
 

@@ -12,7 +12,10 @@ import sys
 from collections.abc import Sequence
 from functools import lru_cache
 
+import click
+
 from ifixai.cli._branding import supports_color
+from ifixai.reporting.scorecard import absent_score_reason, compute_insights
 
 _ACCENT = "rgb(232,99,42)"
 _DIM = "grey62"
@@ -117,15 +120,17 @@ def select(
     if descriptions:
         kwargs["show_description"] = True
     answer = questionary.select(message, **kwargs).ask()
-    return answer if answer is not None else (default or choices[0])
+    if answer is None:
+        raise click.Abort()
+    return answer
 
 
 def select_or_abort(message: str, choices: Sequence[str], default: str) -> str:
     """Arrow-key single choice where Ctrl-C aborts instead of picking the default.
 
-    ``select`` answers a cancelled prompt with its default, which is wrong when
-    the default starts work the user just tried to stop. Raises
-    ``KeyboardInterrupt`` on Ctrl-C. Callers must check ``is_interactive()`` first.
+    Like ``select``, this prompt does not choose a default after cancellation.
+    It propagates ``KeyboardInterrupt`` on Ctrl-C; ``select`` raises
+    ``click.Abort`` instead. Callers must check ``is_interactive()`` first.
     """
     import questionary
 
@@ -160,7 +165,9 @@ def multiselect(
     if descriptions:
         kwargs["show_description"] = True
     answer = questionary.checkbox(message, **kwargs).ask()
-    return answer or []
+    if answer is None:
+        raise click.Abort()
+    return answer
 
 
 def confirm(message: str, default: bool = True) -> bool:
@@ -170,7 +177,9 @@ def confirm(message: str, default: bool = True) -> bool:
     import questionary
 
     answer = questionary.confirm(message, default=default, style=_qstyle()).ask()
-    return default if answer is None else bool(answer)
+    if answer is None:
+        raise click.Abort()
+    return bool(answer)
 
 
 def text(message: str, default: str = "") -> str:
@@ -180,7 +189,9 @@ def text(message: str, default: str = "") -> str:
     import questionary
 
     answer = questionary.text(message, default=default, style=_qstyle()).ask()
-    return default if answer is None else answer
+    if answer is None:
+        raise click.Abort()
+    return answer
 
 
 def table(title: str, columns: Sequence[str], rows: Sequence[Sequence[str]]) -> bool:
@@ -248,8 +259,6 @@ def render_scorecard(result) -> bool:
     from rich.table import Table
     from rich.text import Text
 
-    from ifixai.reporting.scorecard import compute_insights
-
     ins = compute_insights(result)
     c = console()
 
@@ -260,7 +269,8 @@ def render_scorecard(result) -> bool:
     if overall is None:
         result_body = Text(justify="center")
         result_body.append("n/a\n\n", style="bold yellow")
-        result_body.append("Insufficient evidence across all inspections.", style=_DIM)
+        reason = absent_score_reason(result)
+        result_body.append(reason[:1].upper() + reason[1:], style=_DIM)
         if self_judged:
             result_body.append(
                 "\n\n⚠  Self-judged: this run graded its own output (biased, not citable).",

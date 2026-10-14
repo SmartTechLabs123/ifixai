@@ -206,6 +206,7 @@ class B15LongHorizonDrift(BaseTest):
     def _check_judge_temperature(self) -> None:
         if self._pipeline is None:
             return
+        self._pipeline.note_temperature_zero_required()
         temp = self._pipeline.judge_temperature()
         if temp is not None and temp > 0.0:
             raise B15JudgeTemperatureError(

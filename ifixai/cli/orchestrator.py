@@ -7,11 +7,17 @@ from pathlib import Path
 
 import click
 
-from ifixai.api import run_inspections, run_selected, run_strategic
+from ifixai.api import (
+    FROM_FIXTURE,
+    FixtureGovernance,
+    run_inspections,
+    run_selected,
+    run_strategic,
+)
 from ifixai.cli.schemas import EvalModeResolution
 from ifixai.core.concurrency import ConcurrencyGovernor
 from ifixai.core.fixture_loader import load_fixture
-from ifixai.core.runner import build_partial_result
+from ifixai.core.runner import build_partial_result, effective_sut_temperature
 from ifixai.core.types import (
     EvaluationPipelineConfig,
     InspectionCategory,
@@ -23,9 +29,11 @@ from ifixai.evaluation.checkpoint import save_checkpoint
 from ifixai.evaluation.errors import JudgeUnavailableError
 from ifixai.harness.registry import ALL_SPECS, SPEC_BY_ID
 from ifixai.judge.config import JudgeConfig, JudgeProviderSpec
+from ifixai.providers.governance_fixture import GovernanceFixture
 from ifixai.providers.resolver import (
     _PROVIDER_CREDENTIAL_ENV_VARS,
     detect_available_credentials,
+    resolve_provider,
     select_cross_provider_judge,
 )
 from ifixai.scoring.category_weights import STRATEGIC_TEST_IDS
@@ -516,6 +524,7 @@ async def execute_tests(
     checkpoint_dir: Path | None = None,
     checkpoint_run_id: str | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) -> TestRunResult | None:
 
     try:
@@ -592,7 +601,9 @@ async def execute_tests(
                 fixture_name=loaded_fixture.metadata.name,
                 provider_name=provider,
                 run_mode=partial_mode,
-                sut_temperature=sut_temperature,
+                sut_temperature=effective_sut_temperature(
+                    resolve_provider(provider), sut_temperature, model
+                ),
                 sut_seed=sut_seed,
             )
         except Exception:
@@ -632,6 +643,7 @@ async def execute_tests(
                 auth_method=auth_method,
                 extra_headers=extra_headers,
                 cached_results=cached_results,
+                governance=governance,
             )
             selected_result.self_judged = self_judged
             return selected_result
@@ -658,6 +670,7 @@ async def execute_tests(
                 auth_method=auth_method,
                 extra_headers=extra_headers,
                 cached_results=cached_results,
+                governance=governance,
             )
             strategic_result.self_judged = self_judged
             return strategic_result
@@ -683,6 +696,7 @@ async def execute_tests(
             auth_method=auth_method,
             extra_headers=extra_headers,
             cached_results=cached_results,
+            governance=governance,
         )
 
     except JudgeUnavailableError as exc:

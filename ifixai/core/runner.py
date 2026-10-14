@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from copy import copy
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -29,6 +30,7 @@ from ifixai.providers.base import ChatProvider, detect_capabilities
 from ifixai.reporting.gap_analysis import identify_gaps
 from ifixai.reporting.grading import score_to_grade
 from ifixai.reporting.scorecard import (
+    SUT_DEFAULT_TEMPERATURE_MESSAGE,
     advisory_inspection_warnings,
     attestation_inspection_warnings,
     b22_determinism_warning,
@@ -116,7 +118,9 @@ async def run_all(
 
     judge = _build_judge_evaluator(judge_config)
 
-    pipeline = _build_pipeline(pipeline_config, judge, sut_model=config.model)
+    pipeline = _build_pipeline(
+        pipeline_config, judge, sut_model=config.model, sut_provider=config.provider
+    )
 
     to_run, reused_results = _split_cached(INSPECTION_REGISTRY, cached_results)
     try:
@@ -134,20 +138,25 @@ async def run_all(
         )
         test_results = _merge_cached(reused_results, test_results)
 
+        consistency_warnings = []
         try:
             violations = await CrossHookValidator().run(provider, config, fixture)
-        except Exception:
+        except Exception as exc:
             _logger.exception("CrossHookValidator failed; skipping consistency checks")
             violations = []
+            consistency_warnings.append(
+                "Cross-hook consistency verification incomplete: "
+                f"{type(exc).__name__}. Completed inspection scores are retained; "
+                "the unavailable check does not establish consistency."
+            )
 
         if violations:
             test_results, consistency_capped = apply_consistency_cap(
                 test_results, violations
             )
-            consistency_warnings = [v.detail for v in violations]
+            consistency_warnings.extend(v.detail for v in violations)
         else:
             consistency_capped = False
-            consistency_warnings = []
 
         result = _build_result(
             test_results=test_results,
@@ -161,7 +170,9 @@ async def run_all(
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
-            sut_temperature=config.temperature,
+            sut_temperature=effective_sut_temperature(
+                provider, config.temperature, config.model
+            ),
             sut_seed=config.seed,
         )
         return result
@@ -188,7 +199,9 @@ async def run_strategic(
 
     judge = _build_judge_evaluator(judge_config)
 
-    pipeline = _build_pipeline(pipeline_config, judge, sut_model=config.model)
+    pipeline = _build_pipeline(
+        pipeline_config, judge, sut_model=config.model, sut_provider=config.provider
+    )
 
     strategic_inspections = {
         bid: inspection
@@ -213,20 +226,25 @@ async def run_strategic(
         )
         test_results = _merge_cached(reused_results, test_results)
 
+        consistency_warnings = []
         try:
             violations = await CrossHookValidator().run(provider, config, fixture)
-        except Exception:
+        except Exception as exc:
             _logger.exception("CrossHookValidator failed; skipping consistency checks")
             violations = []
+            consistency_warnings.append(
+                "Cross-hook consistency verification incomplete: "
+                f"{type(exc).__name__}. Completed inspection scores are retained; "
+                "the unavailable check does not establish consistency."
+            )
 
         if violations:
             test_results, consistency_capped = apply_consistency_cap(
                 test_results, violations
             )
-            consistency_warnings = [v.detail for v in violations]
+            consistency_warnings.extend(v.detail for v in violations)
         else:
             consistency_capped = False
-            consistency_warnings = []
 
         result = _build_result(
             test_results=test_results,
@@ -241,7 +259,9 @@ async def run_strategic(
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
-            sut_temperature=config.temperature,
+            sut_temperature=effective_sut_temperature(
+                provider, config.temperature, config.model
+            ),
             sut_seed=config.seed,
         )
         return result
@@ -282,7 +302,9 @@ async def run_selected(
 
     judge = _build_judge_evaluator(judge_config)
 
-    pipeline = _build_pipeline(pipeline_config, judge, sut_model=config.model)
+    pipeline = _build_pipeline(
+        pipeline_config, judge, sut_model=config.model, sut_provider=config.provider
+    )
 
     selected_inspections = {
         bid: inspection
@@ -307,20 +329,25 @@ async def run_selected(
         )
         test_results = _merge_cached(reused_results, test_results)
 
+        consistency_warnings = []
         try:
             violations = await CrossHookValidator().run(provider, config, fixture)
-        except Exception:
+        except Exception as exc:
             _logger.exception("CrossHookValidator failed; skipping consistency checks")
             violations = []
+            consistency_warnings.append(
+                "Cross-hook consistency verification incomplete: "
+                f"{type(exc).__name__}. Completed inspection scores are retained; "
+                "the unavailable check does not establish consistency."
+            )
 
         if violations:
             test_results, consistency_capped = apply_consistency_cap(
                 test_results, violations
             )
-            consistency_warnings = [v.detail for v in violations]
+            consistency_warnings.extend(v.detail for v in violations)
         else:
             consistency_capped = False
-            consistency_warnings = []
 
         result = _build_result(
             test_results=test_results,
@@ -335,7 +362,9 @@ async def run_selected(
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
-            sut_temperature=config.temperature,
+            sut_temperature=effective_sut_temperature(
+                provider, config.temperature, config.model
+            ),
             sut_seed=config.seed,
         )
         return result
@@ -360,12 +389,17 @@ async def run_single(
             f"Unknown test: {test_id}. Available: {sorted(INSPECTION_REGISTRY.keys())}"
         )
 
+    # Registry entries are prototypes; execution stores per-run state on each instance.
+    inspection = copy(inspection)
+
     if capabilities is None:
         capabilities = await detect_capabilities(provider, config)
 
     judge = _build_judge_evaluator(judge_config)
 
-    pipeline = _build_pipeline(pipeline_config, judge, sut_model=config.model)
+    pipeline = _build_pipeline(
+        pipeline_config, judge, sut_model=config.model, sut_provider=config.provider
+    )
 
     try:
         return await inspection.execute(
@@ -407,6 +441,13 @@ def _merge_cached(
     return sorted([*reused_results, *fresh_results], key=lambda r: r.test_id)
 
 
+def effective_sut_temperature(
+    provider: ChatProvider, temperature: float, model: str | None
+) -> float | None:
+    """The agent's sampling temperature; None when its model takes none (its default)."""
+    return temperature if provider.accepts_temperature(model) else None
+
+
 _ABORT_REASON_MAX_LEN = 160
 
 
@@ -431,7 +472,7 @@ def build_partial_result(
     fixture_name: str,
     provider_name: str,
     run_mode: str,
-    sut_temperature: float = 0.0,
+    sut_temperature: float | None = 0.0,
     sut_seed: int | None = None,
 ) -> TestRunResult:
     """Scorecard for whatever finished before an aborted run stopped.
@@ -527,6 +568,7 @@ async def _run_sequential(
     for index, (test_id, inspection) in enumerate(inspections.items(), start=1):
         spec = spec_map.get(test_id)
         try:
+            inspection = copy(inspection)
             result = await inspection.execute(
                 provider,
                 config,
@@ -574,6 +616,7 @@ async def _execute_single_inspection(
 ) -> TestResult:
     async with governor.acquire():
         try:
+            inspection = copy(inspection)
             return await inspection.execute(  # type: ignore[union-attr]
                 provider,
                 config,
@@ -662,20 +705,25 @@ def _build_pipeline(
     pipeline_config: EvaluationPipelineConfig | None,
     judge: JudgeEvaluator | EnsembleJudgeEvaluator | None,
     sut_model: str | None = None,
+    sut_provider: str | None = None,
 ) -> EvaluationPipeline | None:
     """Wire the judge into an evaluation pipeline.
 
-    `sut_model` is passed down so the judge's fallback chain can never
-    substitute the system under test's own model for a failing judge.
+    SUT model and provider identify native and namespaced aliases so the judge's
+    fallback chain does not silently substitute the system under test's model.
     """
     if pipeline_config is None:
         return None
 
     analytic_judge: AnalyticRubricJudge | EnsembleAnalyticRubricJudge | None = None
     if isinstance(judge, EnsembleJudgeEvaluator):
-        analytic_judge = EnsembleAnalyticRubricJudge(judge, sut_model=sut_model)
+        analytic_judge = EnsembleAnalyticRubricJudge(
+            judge, sut_model=sut_model, sut_provider=sut_provider
+        )
     elif isinstance(judge, JudgeEvaluator):
-        analytic_judge = AnalyticRubricJudge(judge, sut_model=sut_model)
+        analytic_judge = AnalyticRubricJudge(
+            judge, sut_model=sut_model, sut_provider=sut_provider
+        )
 
     return EvaluationPipeline(
         config=pipeline_config,
@@ -695,7 +743,7 @@ def _build_result(
     warnings: list[str] | None = None,
     consistency_warnings: list[str] | None = None,
     consistency_capped: bool = False,
-    sut_temperature: float = 0.0,
+    sut_temperature: float | None = 0.0,
     sut_seed: int | None = None,
     selected_ids: set[str] | None = None,
 ) -> TestRunResult:
@@ -765,6 +813,9 @@ def _build_result(
         if msg not in seen:
             seen.add(msg)
             combined_warnings.append(msg)
+    # Only B22 reads the agent's sampling, so the warning rides with it.
+    if sut_temperature is None and any(r.test_id == "B22" for r in test_results):
+        combined_warnings.append(SUT_DEFAULT_TEMPERATURE_MESSAGE)
     b22_msg = b22_determinism_warning(test_results, sut_temperature, sut_seed)
     if b22_msg is not None and b22_msg not in seen:
         combined_warnings.append(b22_msg)

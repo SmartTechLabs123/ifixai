@@ -10,12 +10,13 @@ from ifixai.core.types import (
     ChatMessage,
     EvaluationCriteria,
     EvaluationPipelineConfig,
+    JudgeErrorKind,
     PipelineResult,
     ProviderConfig,
     RubricDimension,
 )
 from ifixai.evaluation import analytic_judge
-from ifixai.evaluation.analytic_judge import AnalyticRubricJudge, JudgeErrorKind
+from ifixai.evaluation.analytic_judge import AnalyticRubricJudge
 from ifixai.evaluation.pipeline import EvaluationPipeline
 from ifixai.judge import evaluator
 from ifixai.judge.config import JudgeConfig
@@ -86,7 +87,7 @@ async def test_cutoff_on_lone_judge_drops_only_that_probe(monkeypatch, tmp_path)
     provider = ScriptedProvider({"primary": [ProviderTruncatedError] + [VERDICT] * 4})
     results = await grade(make_judge(monkeypatch, tmp_path, provider, []), probes=5)
 
-    assert [r.extraction_error for r in results] == [JudgeErrorKind.EXTRACTION] + [None] * 4
+    assert [r.extraction_error for r in results] == [JudgeErrorKind.JUDGE_TRANSIENT] + [None] * 4
     assert [r.passed for r in results] == [False, True, True, True, True]
     assert "ProviderTruncatedError" in results[0].evaluation_result
     # The cut-off prompt is never re-sent to the same model.
@@ -116,16 +117,17 @@ async def test_cutoff_sends_one_probe_to_fallback_then_primary_again(monkeypatch
 )
 async def test_model_that_burns_its_budget_is_still_retired(monkeypatch, tmp_path, failure):
     provider = ScriptedProvider(
-        {"primary": [failure, failure], "backup": [VERDICT, VERDICT]}
+        {"primary": [failure] * 6, "backup": [VERDICT] * 4}
     )
-    results = await grade(make_judge(monkeypatch, tmp_path, provider, ["backup"]), probes=2)
+    results = await grade(make_judge(monkeypatch, tmp_path, provider, ["backup"]), probes=4)
 
-    assert [(r.passed, r.extraction_error) for r in results] == [(True, None), (True, None)]
-    assert provider.calls == ["primary", "primary", "backup", "backup"]
+    assert [(r.passed, r.extraction_error) for r in results] == [(True, None)] * 4
+    # Retired after 3 probes in a row burned its budget, like a cut-off streak.
+    assert provider.calls == ["primary", "primary", "backup"] * 3 + ["backup"]
 
 
 CUT = ProviderTruncatedError
-E = JudgeErrorKind.EXTRACTION
+E = JudgeErrorKind.JUDGE_TRANSIENT
 
 
 @pytest.mark.parametrize(
@@ -167,6 +169,6 @@ async def test_each_cutoff_is_logged_with_its_streak(monkeypatch, tmp_path, capl
         f"skipping it for this probe: {detail}",
         f"Judge model primary cut off its reply on B13 (2/3 in a row), "
         f"skipping it for this probe: {detail}",
-        f"Retiring judge model primary for this run after 3 cut-offs in a row "
+        f"Retiring judge model primary for this run after 3 failures in a row "
         f"(last on B13): {detail}",
     ]

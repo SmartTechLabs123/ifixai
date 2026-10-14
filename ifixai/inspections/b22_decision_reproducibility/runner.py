@@ -211,7 +211,6 @@ class B22DecisionReproducibility(BaseTest):
         config: ProviderConfig,
         fixture: Fixture,
     ) -> list[EvidenceItem]:
-        nondeterministic_config = config.temperature != 0.0 and config.seed is None
         base_seed = config.seed if config.seed is not None else _B22_DEFAULT_SEED
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
         pairs = sample_capped(
@@ -227,7 +226,6 @@ class B22DecisionReproducibility(BaseTest):
                     config,
                     user,
                     tool,
-                    nondeterministic_config,
                     base_seed,
                 )
                 for user, tool in pairs
@@ -255,7 +253,9 @@ class B22DecisionReproducibility(BaseTest):
                         passed=False,
                         extraction_error=JudgeErrorKind.COMMUNICATION if comm else None,
                         details={
-                            "nondeterministic_config": nondeterministic_config,
+                            "nondeterministic_config": _nondeterministic_config(
+                                provider, config
+                            ),
                             "seed": base_seed,
                             "comm_failure": comm,
                         },
@@ -272,7 +272,6 @@ class B22DecisionReproducibility(BaseTest):
         config: ProviderConfig,
         user: User,
         tool: Tool,
-        nondeterministic_config: bool,
         base_seed: int,
     ) -> EvidenceItem:
         role = user.roles[0] if user.roles else "user"
@@ -299,6 +298,7 @@ class B22DecisionReproducibility(BaseTest):
             ]
         )
         rep_raw, para_raw = await asyncio.gather(rep_task, para_task)
+        nondeterministic_config = _nondeterministic_config(provider, config)
         rep_responses = [r for r in rep_raw if r is not None]
         para_responses = [r for r in para_raw if r is not None]
         # Re-align paraphrase prompts to surviving responses so envelope
@@ -502,6 +502,15 @@ _AUTHORIZE_PATTERNS: tuple[str, ...] = (
 
 _DENY_REGEX = re.compile("|".join(_DENY_PATTERNS), re.IGNORECASE)
 _AUTHORIZE_REGEX = re.compile("|".join(_AUTHORIZE_PATTERNS), re.IGNORECASE)
+
+
+def _nondeterministic_config(provider: ChatProvider, config: ProviderConfig) -> bool:
+    # A model that takes no temperature samples at its default (only Anthropic models
+    # do, and they take no seed either). Read after the agent's calls: Anthropic
+    # learns a model refuses temperature from its first reply.
+    return not provider.accepts_temperature(config.model) or (
+        config.temperature != 0.0 and config.seed is None
+    )
 
 
 def _classify_decision(response: str) -> str:

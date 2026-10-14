@@ -4,7 +4,7 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Optional, TypeVar
+from typing import TYPE_CHECKING, Optional, TypedDict, TypeVar
 
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
@@ -14,6 +14,7 @@ from ifixai.providers.base import (
     ProviderError,
     ProviderRateLimitError,
 )
+from ifixai.reporting.health import measured_count, scored_evidence
 from ifixai.rules.loader import load_inspection_definition
 from ifixai.scoring.engine import compute_test_ci
 from ifixai.shared.evidence import flag_diagnostics
@@ -31,6 +32,7 @@ from ifixai.core.types import (
     EvidenceItem,
     Fixture,
     InspectionSpec,
+    InspectionStep,
     JudgeErrorKind,
     ProviderCapabilities,
     ProviderConfig,
@@ -40,6 +42,15 @@ from ifixai.core.types import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+def is_provider_failure(item: EvidenceItem) -> bool:
+    """A call the agent's provider never answered, or a judge rejected outright.
+    A judge that only timed out on an item is not one."""
+    return item.extraction_error in (
+        JudgeErrorKind.COMMUNICATION,
+        JudgeErrorKind.JUDGE_UNREACHABLE,
+    )
 
 
 def build_system_message(
@@ -122,9 +133,7 @@ class BaseTest(ABC):
         upward. `docs/scoring.md` § Noise tells readers to compare runs by CI overlap, so
         the two must measure the same thing.
         """
-        if self.spec.count_extraction_errors_as_fail:
-            return evidence
-        return [item for item in evidence if item.extraction_error is None]
+        return scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
 
     def get_variant_seed(self) -> Optional[int]:
         return None
@@ -167,13 +176,16 @@ class BaseTest(ABC):
             # excludes them, and a floor cleared by items the score ignores means the two
             # disagree on the denominator.
             measurements = [e for e in evidence if not e.is_diagnostic]
-            if self.spec.count_extraction_errors_as_fail:
-                scoreable_count = len(measurements)
-            else:
-                scoreable_count = sum(
-                    1 for e in measurements if e.extraction_error is None
-                )
-            insufficient = scoreable_count < self.spec.min_evidence_items
+            scoreable_count = measured_count(
+                measurements, self.spec.count_extraction_errors_as_fail
+            )
+            # An agent that answered no prompt at all gave the inspection nothing to
+            # grade. API-level items that need no reply may still clear the floor
+            # (B13 needs one), and would otherwise report a PASS the agent never earned.
+            insufficient = (
+                scoreable_count < self.spec.min_evidence_items
+                or has_no_answered_prompt(measurements)
+            )
             meets_threshold = score >= self.spec.threshold
             if insufficient:
                 status = TestStatus.INCONCLUSIVE
@@ -246,28 +258,16 @@ class BaseTest(ABC):
             )
 
     def load_inspection_data(self) -> ConversationPlan | None:
-        try:
-            plan = load_inspection_definition(self.spec.test_id)
-        except Exception as exc:  # noqa: BLE001 — YAML load is best-effort; fall back to hardcoded logic
-            _logger.warning(
-                "%s: failed to load YAML inspection: %s — using hardcoded logic",
+        plan = load_inspection_definition(self.spec.test_id)
+        if plan is None:
+            _logger.debug(
+                "%s: no YAML inspection definition, using hardcoded logic",
                 self.spec.test_id,
-                exc,
             )
-            return None
-        else:
-            if plan is None:
-                _logger.debug(
-                    "%s: no YAML inspection definition, using hardcoded logic",
-                    self.spec.test_id,
-                )
-            return plan
+        return plan
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
-        if self.spec.count_extraction_errors_as_fail:
-            scored = evidence
-        else:
-            scored = [e for e in evidence if e.extraction_error is None]
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         total = sum(
@@ -287,11 +287,7 @@ class BaseTest(ABC):
         a correct response below threshold. Judge extraction-errors are excluded
         (-> INCONCLUSIVE) unless the spec counts them as failures.
         """
-        scored = (
-            evidence
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in evidence if e.extraction_error is None]
-        )
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)
@@ -363,7 +359,7 @@ class BaseTest(ABC):
         case_label = template_vars.get("case_id") or template_vars.get(
             "role", "default"
         )
-        for step in plan.steps:
+        for position, step in enumerate(plan.steps):
             prompt = render(step.prompt_template, merged_vars)
             history.append(ChatMessage(role="user", content=prompt))
 
@@ -425,11 +421,10 @@ class BaseTest(ABC):
                         plan.test_id,
                         "execute_conversation requires an analytic judge pipeline",
                     )
-            except (JudgePipelineRequiredError, ProviderEmptyContentError):
-                # Both propagate to BaseTest.execute: JudgePipelineRequiredError
-                # → ERROR (misconfig), ProviderEmptyContentError → INCONCLUSIVE
-                # (unscorable). Do not swallow into a per-step "error" evidence
-                # item or the outer status mapping is lost.
+            except JudgePipelineRequiredError:
+                # Propagates to BaseTest.execute → ERROR (misconfig). Do not
+                # swallow into a per-step "error" evidence item or the outer
+                # status mapping is lost.
                 raise
             except ProviderError as exc:
                 # A transport/provider failure (a bad model id 404ing on every
@@ -439,22 +434,28 @@ class BaseTest(ABC):
                 # (→ INCONCLUSIVE), mirroring b27's per-call handling. This is
                 # also the honest signal the run-health gate reads to flag a dead
                 # SUT as a measurement failure instead of a real grade.
-                evidence.append(
-                    EvidenceItem(
-                        test_case_id=f"{plan.test_id}_step{step.step_id}_{case_label}",
-                        description=f"Step {step.step_id}: provider error (unreachable)",
-                        prompt_sent=prompt,
-                        expected=step.evaluation.expected_outcome,
-                        expected_behavior=step.evaluation.expected_outcome,
-                        actual=f"error: {exc}",
-                        actual_response=f"error: {exc}",
-                        evaluation_result="error",
-                        passed=False,
-                        extraction_error=JudgeErrorKind.COMMUNICATION,
-                        step_number=step.step_id,
-                        details={"error": str(exc), "comm_failure": True},
+                #
+                # An empty reply (ProviderEmptyContentError) lands here too: it
+                # costs this one step, not every step already graded. A reasoning
+                # model that spends its token budget thinking returns one now and
+                # then, and re-raising it discarded hundreds of scored probes.
+                #
+                # The history now ends on a prompt with no reply. Sending the next
+                # step on top of it would grade a conversation the plan never
+                # described, so the remaining steps are recorded as not sent and
+                # this conversation ends here.
+                evidence.extend(
+                    build_unanswered_step_items(
+                        plan.steps[position:],
+                        UnansweredTurn(
+                            test_id=plan.test_id,
+                            case_label=case_label,
+                            template_vars=merged_vars,
+                            error=exc,
+                        ),
                     )
                 )
+                break
             except Exception as exc:  # noqa: BLE001 — top-level inspection guard: any failure becomes a failed TestResult, never aborts the run
                 evidence.append(
                     EvidenceItem(
@@ -506,6 +507,75 @@ class BaseTest(ABC):
             context=context,
             context_vars=context_vars,
         )
+
+
+class UnansweredTurn(TypedDict):
+    """The turn of one conversation that got no usable reply from the agent."""
+
+    test_id: str
+    case_label: str
+    template_vars: dict[str, str]
+    error: ProviderError
+
+
+def build_unanswered_step_items(
+    steps: list[InspectionStep], turn: UnansweredTurn
+) -> list[EvidenceItem]:
+    """Record the unanswered step and every later step of the plan as unscorable.
+
+    ``steps`` starts with the step the agent did not answer; the rest were never sent.
+    One item per step keeps the number of attempted probes what it was when each step
+    was sent and failed on its own, which is the denominator the run-health gate
+    measures an unreachable agent against.
+    """
+    unanswered_step = steps[0]
+    error = turn["error"]
+    failure = (
+        "empty reply (unscorable)"
+        if isinstance(error, ProviderEmptyContentError)
+        else "provider error (unreachable)"
+    )
+    items: list[EvidenceItem] = []
+    for step in steps:
+        outcome = (
+            failure
+            if step is unanswered_step
+            else f"not sent, step {unanswered_step.step_id} got no usable reply"
+        )
+        items.append(
+            EvidenceItem(
+                test_case_id=f"{turn['test_id']}_step{step.step_id}_{turn['case_label']}",
+                description=f"Step {step.step_id}: {outcome}",
+                prompt_sent=render(step.prompt_template, turn["template_vars"]),
+                expected=step.evaluation.expected_outcome,
+                expected_behavior=step.evaluation.expected_outcome,
+                actual=f"error: {error}",
+                actual_response=f"error: {error}",
+                evaluation_result="error",
+                passed=False,
+                extraction_error=JudgeErrorKind.COMMUNICATION,
+                step_number=step.step_id,
+                details={
+                    "error": str(error),
+                    "comm_failure": True,
+                    "unanswered_step": unanswered_step.step_id,
+                },
+            )
+        )
+    return items
+
+
+def has_no_answered_prompt(evidence: list[EvidenceItem]) -> bool:
+    """True when the agent was sent at least one prompt and answered none of them.
+
+    An item with a ``prompt_sent`` records a prompt that went to the agent; one whose
+    details carry ``comm_failure`` records that no usable reply came back (an empty
+    reply, a failed call). When every prompted item is of that kind, the inspection has
+    nothing the agent said to grade, whatever API-level items sit beside them. A reply
+    the judge could not grade is still an answer and does not count here.
+    """
+    prompted = [item for item in evidence if item.prompt_sent]
+    return bool(prompted) and all(item.details.get("comm_failure") for item in prompted)
 
 
 async def send_single_turn(

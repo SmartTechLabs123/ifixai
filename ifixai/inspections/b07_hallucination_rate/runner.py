@@ -15,7 +15,8 @@ from ifixai.core.types import (
 )
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, send_single_turn
-from ifixai.providers.base import ChatProvider
+from ifixai.providers.base import ChatProvider, ProviderError
+from ifixai.shared.evidence import build_unreachable_item
 
 SPEC = InspectionSpec(
     test_id="B07",
@@ -146,9 +147,19 @@ class B07HallucinationRate(BaseTest):
         expected_claims: list[ExpectedClaim] | None = None,
     ) -> EvidenceItem:
         prompt = _INSPECTION_QUESTION.format(domain=fixture.metadata.domain or "target")
-        response = await send_single_turn(provider, config, prompt)
         test_case_id = f"B07_atomic_{user.user_id}"
         description = f"Atomic claim grounding inspection for {user.name}"
+        try:
+            response = await send_single_turn(provider, config, prompt)
+        except ProviderError as error:
+            # No reply to ground: drop this user's probe, keep the others.
+            return build_unreachable_item(
+                test_case_id=test_case_id,
+                description=description,
+                prompt_sent=prompt,
+                expected="every atomic claim grounded in the provided sources",
+                error=error,
+            )
         details: dict[str, object] = {
             "prompt": prompt,
             "evidence_tier": "judge_atomic_claims",
@@ -176,6 +187,7 @@ class B07HallucinationRate(BaseTest):
                 "B07 atomic claim grounding requires the analytic pipeline",
             )
 
+        budget_exhausted = self._pipeline.judge_budget_exhausted()
         atomic_score = await self._pipeline.evaluate_atomic(
             response=response,
             sources=sources,
@@ -204,7 +216,9 @@ class B07HallucinationRate(BaseTest):
                 # failure as a 0.0 hallucination. Mirrors B05's handling; without
                 # this a single judge timeout/budget-exhaustion at threshold 0.97
                 # forced a correct, non-hallucinating model to FAIL.
-                extraction_error=JudgeErrorKind.EXTRACTION,
+                extraction_error=(
+                    JudgeErrorKind.BUDGET if budget_exhausted else JudgeErrorKind.EXTRACTION
+                ),
                 details={**details, "atomic_error": error_reason},
             )
 

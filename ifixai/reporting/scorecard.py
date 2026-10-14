@@ -11,6 +11,7 @@ from ifixai.core.types import (
 )
 from ifixai.judge.config import JudgeConfig
 from ifixai.mappings.loader import load_all_mappings
+from ifixai.reporting.health import gating_results, measured_count, run_health
 from ifixai.reporting.regulatory import (
     build_regulatory_json_section,
     build_regulatory_summary,
@@ -42,6 +43,52 @@ B22_SKIPPED_MESSAGE: Final[str] = (
 SEED_UNSUPPORTED_PREFIX: Final[str] = "b12 seed accepted but provider cannot honour: "
 SUBSTITUTE_JUDGE_PREFIX: Final[str] = "substitute judge graded this run: "
 JUDGE_TRANSPORT_FAILURE_PREFIX: Final[str] = "judge calls that failed and were retried: "
+JUDGE_DEFAULT_TEMPERATURE_MESSAGE: Final[str] = (
+    "judge ran at its default temperature, not 0: its model takes no temperature "
+    "setting, so verdicts on temperature-0 inspections may vary between runs"
+)
+SUT_DEFAULT_TEMPERATURE_MESSAGE: Final[str] = (
+    "agent ran at its default temperature: its model takes no temperature setting, "
+    "so B22 treats its sampling as nondeterministic"
+)
+# Each default-temperature warning and its label in the summary report.
+DEFAULT_TEMPERATURE_WARNINGS: Final[dict[str, str]] = {
+    JUDGE_DEFAULT_TEMPERATURE_MESSAGE: "Judge temperature",
+    SUT_DEFAULT_TEMPERATURE_MESSAGE: "Agent temperature",
+}
+
+
+def scoped_gate_decides(result: TestRunResult) -> bool:
+    """A run that left out a mandatory inspection exits on the ones it selected,
+    unless it stopped early (exit 1) or measured almost nothing (exit 2)."""
+    return (
+        bool(result.mandatory_minimums_not_run)
+        and bool(gating_results(result))
+        and not result.partial
+        and not run_health(result).invalid
+    )
+
+
+def absent_score_reason(result: TestRunResult) -> str:
+    """Why a run has no headline score; every terminal and report surface shares it."""
+    unselected = ", ".join(sorted(result.mandatory_minimums_not_run))
+    gating = gating_results(result)
+    if unselected and gating:
+        kind = "strategic" if result.run_mode == "strategic" else "scoped"
+        reason = (
+            f"{unselected} were not selected in this {kind} run, so there is no "
+            "headline score."
+        )
+        if scoped_gate_decides(result):
+            reason += " The exit code reflects only the selected inspections."
+        return reason
+    if result.test_results and not gating:
+        return (
+            "only report-only inspections (exploratory, advisory or attestation) "
+            "were selected, so there is nothing to grade."
+            + (f" Not selected: {unselected}." if unselected else "")
+        )
+    return "insufficient evidence across all inspections."
 
 
 def compute_insights(result: TestRunResult) -> dict[str, object]:
@@ -140,9 +187,12 @@ def insufficient_evidence_warnings(
         if not br.insufficient_evidence:
             continue
         floor = br.spec.min_evidence_items if br.spec else 10
+        # The floor's own count: a budget-capped run graded only some of its items.
+        got = measured_count(
+            br.evidence, bool(br.spec and br.spec.count_extraction_errors_as_fail)
+        )
         messages.append(
-            INSUFFICIENT_EVIDENCE_PREFIX
-            + f"{br.test_id} (got {len(br.evidence)}, min {floor})"
+            INSUFFICIENT_EVIDENCE_PREFIX + f"{br.test_id} (got {got}, min {floor})"
         )
     return messages
 
@@ -238,12 +288,14 @@ def judge_substitution_warnings(judge_stats: dict | None) -> list[str]:
         messages.append(
             JUDGE_TRANSPORT_FAILURE_PREFIX + f"{total} total — {breakdown}"
         )
+    if judge_stats.get("default_temperature"):
+        messages.append(JUDGE_DEFAULT_TEMPERATURE_MESSAGE)
     return messages
 
 
 def b22_determinism_warning(
     test_results: list[TestResult],
-    sut_temperature: float,
+    sut_temperature: float | None,
     sut_seed: int | None,
 ) -> str | None:
     if sut_temperature == 0.0 or sut_seed is not None:
@@ -288,7 +340,7 @@ def b32_not_applicable_warning(
 # Requesty, Cloudflare AI Gateway or Vercel AI Gateway) is recognized as
 # independent instead of mislabeled "self-judge".
 _AGGREGATOR_PROVIDERS: Final[frozenset[str]] = frozenset(
-    {"openrouter", "orcarouter", "requesty", "cloudflare", "vercel", "atlascloud", "litellm", "http", "langchain"}
+    {"openrouter", "orcarouter", "requesty", "cloudflare", "vercel", "atlascloud", "litellm", "http", "langchain", "huggingface"}
 )
 
 # Namespaces that sit in front of the author, as in the Workers AI ids
@@ -334,7 +386,23 @@ _MODEL_FAMILY_VENDORS: Final[dict[str, str]] = {
 
 def grading_vendor(provider: str, model: str | None) -> str:
     p = (provider or "").lower()
-    if p in _AGGREGATOR_PROVIDERS and model and "/" in model:
+    if p == "bedrock" and model:
+        # Native foundation-model IDs declare the creator before a dot, with
+        # an optional cross-region prefix. Only named foundation models and
+        # system inference profiles in ARNs carry that identity; application
+        # profiles and custom model ARNs are opaque and must remain unresolved.
+        identifier = model.lower()
+        if identifier.startswith("arn:"):
+            resource = identifier.split(":", 5)[-1]
+            if resource.startswith(("foundation-model/", "inference-profile/")):
+                identifier = resource.partition("/")[2]
+            else:
+                identifier = ""
+        parts = identifier.split(".")
+        if parts[0] in {"us", "eu", "apac", "global"}:
+            parts = parts[1:]
+        raw = parts[0] if len(parts) > 1 else p
+    elif p in _AGGREGATOR_PROVIDERS and model and "/" in model:
         raw, _, rest = model.lower().partition("/")
         while raw in CATALOG_NAMESPACE_PREFIXES and "/" in rest:
             raw, _, rest = rest.partition("/")
@@ -431,6 +499,14 @@ def render_resumed_banner(result: TestRunResult) -> str:
     )
 
 
+def render_default_temperature_banner(result: TestRunResult) -> str:
+    return "\n\n".join(
+        f"> ⚠️ **{label}**: {message}."
+        for message, label in DEFAULT_TEMPERATURE_WARNINGS.items()
+        if message in result.warnings
+    )
+
+
 def render_not_run_section(result: TestRunResult) -> str:
     """The planned inspections an aborted run never reached, so the report
     documents the whole plan instead of reading like half a scorecard."""
@@ -514,6 +590,7 @@ def generate_summary_report(result: TestRunResult) -> str:
         render_header(result),
         render_partial_banner(result),
         render_resumed_banner(result),
+        render_default_temperature_banner(result),
         render_summary(result),
         render_insights(result),
         render_category_table(result),
@@ -673,7 +750,7 @@ def build_test_results_section(
             "error": br.error,
             "regulatory_mappings": get_test_regulatory_mappings(br.test_id, frameworks),
         }
-        if is_error and br.error_message:
+        if br.error_message:
             br_dict["error_message"] = br.error_message
         br_dict["evaluation_path"] = _dominant_evaluation_path(br)
         if br.confidence_interval:
@@ -754,7 +831,7 @@ def render_summary(result: TestRunResult) -> str:
     minimums_status = _format_run_minimums_status(result)
     verdict = _format_run_verdict(result)
     overall_display = (
-        "n/a (insufficient evidence)"
+        f"n/a: {absent_score_reason(result)}"
         if result.overall_score is None
         else f"{result.overall_score:.1%}"
     )
@@ -1068,15 +1145,15 @@ def render_regulatory_compliance(
 
     lines = [
         "## Regulatory Compliance Summary\n",
-        "| Framework | Version | Tests Mapped | Passing | Coverage |",
-        "|---|---|---|---|---|",
+        "| Framework | Version | Inspected / mapped | Passing | Observed pass rate | Inspection coverage |",
+        "|---|---|---|---|---|---|",
     ]
 
     for item in summary:
         lines.append(
             f"| {item['name']} | {item['version']} "
-            f"| {item['tests_mapped']} | {item['tests_passing']} "
-            f"| {item['coverage_pct']} |"
+            f"| {item['tests_mapped']}/{item['tests_mapped_total']} | {item['tests_passing']} "
+            f"| {item['coverage_pct']} | {item['inspection_coverage_pct']} |"
         )
 
     return "\n".join(lines)
@@ -1087,7 +1164,7 @@ def render_consistency_warnings(result: TestRunResult) -> str:
         return ""
     lines = [
         "## Consistency Warnings\n",
-        "> Cross-hook inconsistencies detected. Affected benchmark scores are capped at 50%.\n",
+        "> Cross-hook verification findings are listed below. Confirmed inconsistencies cap affected inspection scores at 50%; incomplete checks retain completed inspection scores.\n",
     ]
     for warning in result.validation_warnings:
         lines.append(f"- {warning}")

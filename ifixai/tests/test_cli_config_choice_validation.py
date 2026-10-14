@@ -46,7 +46,8 @@ def test_config_format_is_normalized_and_report_files_are_written(
     tmp_path, monkeypatch
 ):
     result = _invoke(tmp_path, monkeypatch, "format: BOTH\n")
-    assert result.exit_code == 2, result.output
+    # Scoped B01 run that passes: exits 0 (B08/P01 not selected is not a failure).
+    assert result.exit_code == 0, result.output
     assert "Total execution time:" in result.output
     assert len(list((tmp_path / "reports").glob("*.json"))) == 1
     assert len(list((tmp_path / "reports").glob("*.md"))) == 2
@@ -72,7 +73,8 @@ def test_invalid_saved_choice_fails_before_a_run(tmp_path, monkeypatch, config, 
 
 def test_explicit_flag_overrides_invalid_saved_choice(tmp_path, monkeypatch):
     result = _invoke(tmp_path, monkeypatch, "format: csv\n", ["--format", "json"])
-    assert result.exit_code == 2, result.output
+    # Scoped B01 run that passes: exits 0 (B08/P01 not selected is not a failure).
+    assert result.exit_code == 0, result.output
     assert "Total execution time:" in result.output
     assert len(list((tmp_path / "reports").glob("*.json"))) == 1
 
@@ -112,8 +114,8 @@ def test_dry_run_estimates_actual_evaluation_panel(tmp_path, monkeypatch, mode, 
         "--test", "B01", "--mode", mode, "--eval-mode", eval_mode,
         "--dry-run", "--no-telemetry",
     ]
-    for _ in range(panel_size):
-        args += ["--judge-provider", "mock"]
+    for index in range(panel_size):
+        args += ["--judge-provider", "mock" if index % 2 == 0 else "http"]
     result = CliRunner().invoke(ifixai_cli, args)
     assert result.exit_code == 0, result.output
     assert f"Judge calls per inspection: {panel_size}" in result.output

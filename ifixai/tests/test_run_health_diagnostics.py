@@ -10,15 +10,17 @@ from ifixai.core.types import (
     ProviderConfig,
     TestResult,
     TestRunResult,
+    TestStatus,
 )
 from ifixai.evaluation.pipeline import EvaluationPipeline
-from ifixai.harness.registry import create_inspection
+from ifixai.harness.registry import ALL_SPECS, create_inspection
 from ifixai.providers.base import ChatProvider
 from ifixai.reporting.health import (
     judge_health_note,
     measurement_failure_banner,
     run_health,
 )
+from ifixai.reporting.scorecard import scoped_gate_decides
 from ifixai.shared.evidence import flag_diagnostics
 
 
@@ -121,3 +123,75 @@ def test_error_under_declared_diagnostic_prefix_remains_a_measurement():
     health = _health(evidence)
     assert health.total == health.judge_broke == 1
     assert health.invalid
+
+
+def _result(test_id, status, evidence=()):
+    spec = create_inspection(test_id).spec
+    return TestResult(test_id=test_id, spec=spec, status=status, evidence=list(evidence))
+
+
+def test_a_crashed_report_only_inspection_does_not_invalidate_a_scoped_run():
+    # -b B16 -b P19: B16 passes, P19 (exploratory) crashes.
+    run = TestRunResult(
+        test_results=[
+            _result("B16", TestStatus.PASS, [EvidenceItem(test_case_id=f"b16-{n}", passed=True) for n in range(10)]),
+            _result("P19", TestStatus.ERROR),
+        ],
+        mandatory_minimums_not_run=["B01", "B08", "P01"],
+    )
+    health = run_health(run)
+    assert (health.n_inspections, health.errored, health.invalid) == (1, 0, False)
+    assert scoped_gate_decides(run)
+
+
+def test_a_full_run_counts_report_only_inspections():
+    # All 60 inspections, 18 of the 35 scored ones crash: 18/60 is under half, so the run
+    # stays valid, and a V-series judge timeout still shows in the judge health note.
+    scored = [s.test_id for s in ALL_SPECS if not (s.is_exploratory or s.is_advisory or s.is_attestation)]
+    crashed = set(scored[:18])
+    run = TestRunResult(
+        test_results=[
+            _result(s.test_id, TestStatus.ERROR)
+            if s.test_id in crashed
+            else _result(s.test_id, TestStatus.PASS, [EvidenceItem(test_case_id=s.test_id, passed=True)])
+            for s in ALL_SPECS
+        ]
+    )
+    run.test_results[-1].evidence.append(
+        EvidenceItem(test_case_id="v10-timeout", extraction_error=JudgeErrorKind.JUDGE_TRANSIENT)
+    )
+    health = run_health(run)
+    assert (len(scored), run.test_results[-1].test_id) == (35, "V10")
+    assert (health.n_inspections, health.errored, health.judge_broke, health.invalid) == (60, 18, 1, False)
+    assert measurement_failure_banner(health) is None
+
+
+def test_a_run_of_only_report_only_inspections_still_counts_them():
+    health = run_health(TestRunResult(test_results=[_result("P19", TestStatus.ERROR)]))
+    assert (health.n_inspections, health.errored, health.invalid) == (1, 1, True)
+
+
+def test_a_flaky_judge_counts_in_the_judge_health_note():
+    health = _health(
+        [
+            EvidenceItem(test_case_id="graded", passed=True),
+            EvidenceItem(test_case_id="timed-out", extraction_error=JudgeErrorKind.JUDGE_TRANSIENT),
+        ]
+    )
+    assert (health.judge_broke, health.unreachable, health.judge_attempts) == (1, 0, 2)
+    assert not health.invalid
+    assert "returned 1 unusable verdict(s)" in judge_health_note(health)
+
+
+@pytest.mark.parametrize(
+    ("kind", "says"),
+    [
+        (JudgeErrorKind.JUDGE_TRANSIENT, "a broken grader, not a model problem"),
+        (JudgeErrorKind.JUDGE_UNREACHABLE, "Check the judge's model id / key / endpoint"),
+    ],
+)
+def test_a_run_invalid_because_of_the_judge_blames_the_judge(kind, says):
+    health = _health([EvidenceItem(test_case_id=f"p{n}", extraction_error=kind) for n in range(3)])
+    banner = measurement_failure_banner(health)
+    assert says in banner
+    assert "agent under test" not in banner
