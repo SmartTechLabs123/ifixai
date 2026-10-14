@@ -5,15 +5,17 @@ import anthropic
 
 from ifixai.core.types import ChatMessage, ProviderConfig
 from ifixai.providers.base import (
+    RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
     ProviderAuthError,
     ProviderConnectionError,
     ProviderEmptyContentError,
     ProviderRateLimitError,
-    ProviderResponseError,
     ProviderTimeoutError,
+    raise_for_http_status,
     raise_if_truncated,
 )
+from ifixai.providers.client_pool import close_cached_clients
 from ifixai.providers.schemas import MessageSplit
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -66,9 +68,7 @@ class AnthropicProvider(ChatProvider):
             return client
 
     async def aclose(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
+        await close_cached_clients(self._clients)
 
     async def send_message(
         self,
@@ -122,7 +122,7 @@ class AnthropicProvider(ChatProvider):
                         details="Empty content in response",
                     )
 
-                if not text_parts:
+                if not any(text_parts):
                     raise ProviderEmptyContentError(
                         provider="anthropic",
                         endpoint=endpoint,
@@ -159,11 +159,12 @@ class AnthropicProvider(ChatProvider):
                     details=str(exc),
                 ) from exc
             except anthropic.APIError as exc:
-                raise ProviderResponseError(
-                    provider="anthropic",
-                    endpoint=endpoint,
-                    details=str(exc),
-                ) from exc
+                if (getattr(exc, "status_code", None) in RETRYABLE_HTTP_STATUS_CODES
+                        or getattr(exc, "status_code", None) == 529) and attempt < attempts - 1:
+                    await asyncio.sleep(backoff)
+                    backoff *= BACKOFF_MULTIPLIER
+                    continue
+                raise_for_http_status("anthropic", endpoint, exc)
 
         raise ProviderRateLimitError(
             provider="anthropic",
@@ -201,13 +202,13 @@ async def _create_message(
 def _split_system_and_messages(
     messages: list[ChatMessage],
 ) -> MessageSplit:
-    system_text = ""
+    system_parts: list[str] = []
     conversation: list[dict[str, str]] = []
 
     for msg in messages:
         if msg.role == "system":
-            system_text = msg.content
+            system_parts.append(msg.content)
         else:
             conversation.append({"role": msg.role, "content": msg.content})
 
-    return MessageSplit(system_text=system_text, messages=conversation)
+    return MessageSplit(system_text="\n".join(system_parts), messages=conversation)

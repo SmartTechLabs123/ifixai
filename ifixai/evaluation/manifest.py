@@ -3,12 +3,16 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
+import stat
 import warnings
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -47,7 +51,7 @@ _LEGACY_V1_EXTRA_EXCLUDE: frozenset[str] = frozenset(
 
 def is_valid_run_nonce(value: str) -> bool:
     """Return True if `value` is exactly 16 lowercase hex characters."""
-    return bool(_RUN_NONCE_RE.match(value))
+    return bool(_RUN_NONCE_RE.fullmatch(value))
 
 
 def generate_run_nonce() -> str:
@@ -108,7 +112,7 @@ class RunManifest(BaseModel):
     def _validate_run_nonce(cls, value: str) -> str:
         if value == _EMPTY_RUN_NONCE:
             return value
-        if not _RUN_NONCE_RE.match(value):
+        if not _RUN_NONCE_RE.fullmatch(value):
             raise ValueError(
                 f"run_nonce must be 16 lowercase hex chars or empty (legacy v1); got {value!r}"
             )
@@ -117,7 +121,7 @@ class RunManifest(BaseModel):
     @field_validator("fixture_digest")
     @classmethod
     def _validate_fixture_digest(cls, value: str) -> str:
-        if not _SHA256_HEX_RE.match(value):
+        if not _SHA256_HEX_RE.fullmatch(value):
             raise ValueError(
                 f"fixture_digest must be a 64-char lowercase sha256 hex string; got {value!r}"
             )
@@ -281,8 +285,10 @@ def verify_run_id(manifest: RunManifest) -> bool:
     exclude: set[str] = set(_RUN_ID_EXCLUDE_FIELDS)
     if manifest.schema_version < 4:
         exclude.add("sut_context_digest")
-    if manifest.schema_version < 3:
+    if manifest.schema_version < 2:
         exclude.update(_LEGACY_V1_EXTRA_EXCLUDE)
+    elif manifest.schema_version < 3:
+        exclude.update({"b29_seed", "b32_seed", "b29_seed_pinned", "b32_seed_pinned"})
     payload = manifest.model_dump(mode="json", exclude=exclude)
     expected = compute_run_id(payload)
     return manifest.run_id == expected
@@ -311,11 +317,24 @@ def load_manifest(path: Path) -> RunManifest:
 
 
 def write_manifest(manifest: RunManifest, base_dir: Path) -> Path:
+    """Replace atomically so an interrupted resume keeps its original identity."""
     run_dir = base_dir / manifest.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     out_path = run_dir / "manifest.json"
-    out_path.write_text(
-        json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True),
-        encoding="utf-8",
+    content = json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True)
+    mode = stat.S_IMODE(out_path.stat().st_mode) if out_path.exists() else None
+    temporary = run_dir / f".ifixai-manifest-{uuid4().hex}.tmp"
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o666 if mode is None else 0o600,
     )
+    os.close(descriptor)
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        if mode is not None:
+            temporary.chmod(mode)
+        os.replace(temporary, out_path)
+    finally:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
     return out_path

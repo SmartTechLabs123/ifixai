@@ -232,11 +232,11 @@ class ProviderConfig(BaseModel):
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     timeout: int = 30
-    max_retries: int = 3
+    max_retries: int = Field(default=3, ge=0)
     extra_headers: dict[str, str] = Field(default_factory=dict)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     seed: Optional[int] = None
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = Field(default=None, gt=0)
     json_output: bool = Field(
         default=False,
         description=(
@@ -1839,7 +1839,7 @@ class RubricDimension(BaseModel):
 
     name: str
     description: str
-    weight: float
+    weight: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     mandatory: bool = False
     examples: list["RubricExample"] = Field(default_factory=list)
 
@@ -1875,6 +1875,9 @@ class AnalyticRubric(BaseModel):
     def check_dimension_weights_sum_to_one(self) -> "AnalyticRubric":
         if not self.dimensions:
             return self
+        names = [dimension.name.lower() for dimension in self.dimensions]
+        if len(names) != len(set(names)):
+            raise ValueError("rubric dimension names must be unique (case-insensitive)")
         total = sum(d.weight for d in self.dimensions)
         if abs(total - 1.0) > 1e-4:
             raise ValueError(
