@@ -418,8 +418,8 @@ class ChatProvider(ABC):
         """
         return None
 
-    def accepts_temperature(self, model: str | None) -> bool:
-        """Whether a request to `model` carries the configured temperature."""
+    def accepts_temperature(self, model: str | None, endpoint: str | None) -> bool:
+        """Whether a request to `model` at `endpoint` carries the configured temperature."""
         return True
 
     async def list_tools(

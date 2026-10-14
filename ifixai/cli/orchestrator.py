@@ -602,7 +602,7 @@ async def execute_tests(
                 provider_name=provider,
                 run_mode=partial_mode,
                 sut_temperature=effective_sut_temperature(
-                    resolve_provider(provider), sut_temperature, model
+                    resolve_provider(provider), sut_temperature, model, endpoint
                 ),
                 sut_seed=sut_seed,
             )

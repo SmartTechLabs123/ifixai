@@ -33,6 +33,7 @@ class JudgeEvaluator:
             endpoint=config.endpoint,
             timeout=config.timeout,
             temperature=config.temperature,
+            role="judge",
         )
         self._call_count = 0
         self._cap_reached = False
@@ -118,7 +119,9 @@ class JudgeEvaluator:
             "judge_transport_failures": dict(self._transport_failures),
             # Read at report time: Anthropic learns a model refuses temperature on its first call.
             "default_temperature": self._temperature_required
-            and not self._provider.accepts_temperature(self._provider_config.model),
+            and not self._provider.accepts_temperature(
+                self._provider_config.model, self._provider_config.endpoint
+            ),
         }
 
     async def aclose(self) -> None:

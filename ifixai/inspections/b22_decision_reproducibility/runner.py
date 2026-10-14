@@ -508,7 +508,7 @@ def _nondeterministic_config(provider: ChatProvider, config: ProviderConfig) -> 
     # A model that takes no temperature samples at its default (only Anthropic models
     # do, and they take no seed either). Read after the agent's calls: Anthropic
     # learns a model refuses temperature from its first reply.
-    return not provider.accepts_temperature(config.model) or (
+    return not provider.accepts_temperature(config.model, config.endpoint) or (
         config.temperature != 0.0 and config.seed is None
     )
 

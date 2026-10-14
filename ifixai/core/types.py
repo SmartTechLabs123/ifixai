@@ -269,6 +269,13 @@ class ProviderConfig(BaseModel):
         ),
     )
     holdout_ids: dict[str, str] = Field(default_factory=dict)
+    role: Literal["agent", "judge"] = Field(
+        default="agent",
+        description=(
+            "Who sends with this config. Provider warnings name it, because one "
+            "model id can behave differently behind the agent's and the judge's endpoints."
+        ),
+    )
     auth_method: Literal["bearer", "basic", "api_key", "none"] = "bearer"
     run_nonce: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{16}$")
     request_id: Optional[str] = Field(

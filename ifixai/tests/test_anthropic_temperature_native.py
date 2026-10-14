@@ -77,6 +77,7 @@ def message(model: str) -> dict:
 @pytest.fixture
 def api(monkeypatch) -> Iterator[ThreadingHTTPServer]:
     monkeypatch.setattr(adapter, "_NO_TEMPERATURE_MODELS", set())
+    monkeypatch.setattr(adapter, "_DEFAULT_TEMPERATURE_WARNED", set())
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeMessagesApi)
     server.bodies = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -128,7 +129,7 @@ async def test_model_that_rejects_temperature_retries_once_then_skips_it(api, ca
         await judge.aclose()
     assert ["temperature" in b for b in api.bodies] == [True, False, False, False]
     assert [r.getMessage() for r in caplog.records] == [
-        f"{REJECTS} rejects temperature; it runs at the model's default temperature"
+        f"agent model {REJECTS} rejects temperature; the agent runs at the model's default temperature"
     ]
 
 

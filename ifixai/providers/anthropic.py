@@ -30,6 +30,12 @@ _logger = logging.getLogger(__name__)
 # Endpoint/model pairs whose API rejected temperature. Process-wide so the SUT,
 # judge and connection check share learned support only for the same API.
 _NO_TEMPERATURE_MODELS: set[tuple[str, str]] = set()
+# The API root each configured endpoint sends to (None: wherever the SDK sends by
+# default), kept when its client is made so a provider that sent nothing can look.
+_API_ROOTS: dict[str | None, str] = {}
+# (API root, model, role) already warned about. The agent and the judge can share an
+# endpoint and model, so each role that loses temperature is named once.
+_DEFAULT_TEMPERATURE_WARNED: set[tuple[str, str, str]] = set()
 
 
 class AnthropicProvider(ChatProvider):
@@ -65,14 +71,16 @@ class AnthropicProvider(ChatProvider):
                 max_retries=0,
             )
             self._clients[key] = client
+            _API_ROOTS[config.endpoint] = _api_root(client)
             return client
 
     async def aclose(self) -> None:
         await close_cached_clients(self._clients)
 
-    def accepts_temperature(self, model: str | None) -> bool:
-        # As far as this run knows: a model joins _NO_TEMPERATURE_MODELS on its first 400.
-        return (model or DEFAULT_MODEL) not in _NO_TEMPERATURE_MODELS
+    def accepts_temperature(self, model: str | None, endpoint: str | None) -> bool:
+        # As far as this run knows: a pair joins _NO_TEMPERATURE_MODELS on its first 400.
+        root = _API_ROOTS.get(endpoint)
+        return root is None or (root, model or DEFAULT_MODEL) not in _NO_TEMPERATURE_MODELS
 
     async def send_message(
         self,
@@ -105,6 +113,7 @@ class AnthropicProvider(ChatProvider):
                 # the underlying SDK call cannot pin it.
 
                 response = await _create_message(client, kwargs, config.temperature)
+                _warn_once_at_default_temperature(_api_root(client), model, config.role)
 
                 content_blocks = response.content
                 text_parts = [
@@ -185,7 +194,7 @@ async def _create_message(
     # SDK 1.x dropped the temperature kwarg, so it rides in extra_body. Newer
     # models 400 on any temperature: retry once without it and remember the model.
     model = kwargs["model"]
-    capability_key = (str(client.base_url).rstrip("/"), model)
+    capability_key = (_api_root(client), model)
     if capability_key not in _NO_TEMPERATURE_MODELS:
         try:
             return await client.messages.create(
@@ -195,13 +204,25 @@ async def _create_message(
             # Outside 0..1 the 400 is our bad value, not a model that refuses temperature.
             if not 0 <= temperature <= 1 or "temperature" not in str(exc).lower():
                 raise
-            if capability_key not in _NO_TEMPERATURE_MODELS:
-                _NO_TEMPERATURE_MODELS.add(capability_key)
-                _logger.warning(
-                    "%s rejects temperature; it runs at the model's default temperature",
-                    model,
-                )
+            _NO_TEMPERATURE_MODELS.add(capability_key)
     return await client.messages.create(**kwargs)
+
+
+def _warn_once_at_default_temperature(root: str, model: str, role: str) -> None:
+    warned_key = (root, model, role)
+    if (root, model) not in _NO_TEMPERATURE_MODELS or warned_key in _DEFAULT_TEMPERATURE_WARNED:
+        return
+    _DEFAULT_TEMPERATURE_WARNED.add(warned_key)
+    _logger.warning(
+        "%s model %s rejects temperature; the %s runs at the model's default temperature",
+        role,
+        model,
+        role,
+    )
+
+
+def _api_root(client: anthropic.AsyncAnthropic) -> str:
+    return str(client.base_url).rstrip("/")
 
 
 def _split_system_and_messages(

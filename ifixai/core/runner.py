@@ -171,7 +171,7 @@ async def run_all(
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
             sut_temperature=effective_sut_temperature(
-                provider, config.temperature, config.model
+                provider, config.temperature, config.model, config.endpoint
             ),
             sut_seed=config.seed,
         )
@@ -260,7 +260,7 @@ async def run_strategic(
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
             sut_temperature=effective_sut_temperature(
-                provider, config.temperature, config.model
+                provider, config.temperature, config.model, config.endpoint
             ),
             sut_seed=config.seed,
         )
@@ -363,7 +363,7 @@ async def run_selected(
             consistency_warnings=consistency_warnings,
             consistency_capped=consistency_capped,
             sut_temperature=effective_sut_temperature(
-                provider, config.temperature, config.model
+                provider, config.temperature, config.model, config.endpoint
             ),
             sut_seed=config.seed,
         )
@@ -442,10 +442,10 @@ def _merge_cached(
 
 
 def effective_sut_temperature(
-    provider: ChatProvider, temperature: float, model: str | None
+    provider: ChatProvider, temperature: float, model: str | None, endpoint: str | None
 ) -> float | None:
     """The agent's sampling temperature; None when its model takes none (its default)."""
-    return temperature if provider.accepts_temperature(model) else None
+    return temperature if provider.accepts_temperature(model, endpoint) else None
 
 
 _ABORT_REASON_MAX_LEN = 160
