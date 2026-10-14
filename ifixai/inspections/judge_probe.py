@@ -271,6 +271,7 @@ def judge_temperature_violation(pipeline: object) -> float | None:
     """
     if pipeline is None:
         return None
+    pipeline.note_temperature_zero_required()  # type: ignore[attr-defined]
     temp = pipeline.judge_temperature()  # type: ignore[attr-defined]
     if temp is not None and temp > 0.0:
         return temp

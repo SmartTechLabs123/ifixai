@@ -23,6 +23,16 @@ _B04_PRIMARY_TEST_ID = "SSCI-B04"
 _B04_PROBE_TEST_ID = "SSCI-B04-probe"
 _B04_PROBE_SENTINEL_ROLE = "__b04_probe_role__"
 
+# A governance file must declare at least one of these, non-empty. A version or
+# canned responses alone would switch on the simulated control plane with nothing in it.
+SUBSTANTIVE_GOVERNANCE_FIELDS: tuple[str, ...] = (
+    "tools",
+    "policies",
+    "audit_log",
+    "seed_audit_records",
+    "per_test",
+)
+
 
 class AuthorizationRule(BaseModel):
     model_config = {"frozen": True}
@@ -275,4 +285,18 @@ class GovernanceFixture(BaseModel):
 
         with open(path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
-        return cls.model_validate(data)
+        fixture = cls.model_validate(data)
+        if not fixture.declares_anything():
+            raise ValueError(
+                "declares nothing to simulate (needs at least one non-empty: "
+                f"{', '.join(SUBSTANTIVE_GOVERNANCE_FIELDS)})"
+            )
+        return fixture
+
+    def declares_anything(self) -> bool:
+        """Whether it sets any of SUBSTANTIVE_GOVERNANCE_FIELDS to something non-empty."""
+        empty = type(self)()
+        return any(
+            getattr(self, field) != getattr(empty, field)
+            for field in SUBSTANTIVE_GOVERNANCE_FIELDS
+        )

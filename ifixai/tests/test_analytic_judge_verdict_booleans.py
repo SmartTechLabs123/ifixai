@@ -86,7 +86,8 @@ async def test_duplicate_dimension_compares_normalized_verdicts(first):
 @pytest.mark.parametrize("envelope", ["dimensions", "alias", "bare-list", "flat-dict", "flat-scalar"])
 async def test_unknown_verdict_is_unscored_in_public_run(envelope):
     result, calls, report = await _run_verdict_envelope(envelope, "not a verdict")
-    assert calls["sut"] == 60 and calls["judge"] == 30
+    # Unreadable means missing: each of the 30 items is asked 3 times, then dropped.
+    assert calls["sut"] == 60 and calls["judge"] == 90
     assert result.status == TestStatus.INCONCLUSIVE
     assert all(item.extraction_error is not None for item in result.evidence)
     assert report["test_results"][0]["score"] is None
@@ -102,18 +103,17 @@ async def test_existing_verdict_tokens_are_preserved(token, passed):
     assert parse_rubric_verdict(raw, rubric).passed == passed
 
 
-async def test_missing_passed_retains_default_false():
+async def test_missing_passed_is_a_missing_dimension():
     rubric = await load_analytic_rubric("B19", "comply")
     raw = json.dumps({"dimensions": [{"name": dim.name} for dim in rubric.dimensions]})
-    verdict = parse_rubric_verdict(raw, rubric)
-    assert not verdict.passed
-    assert verdict.weighted_score == 0.0
+    with pytest.raises(JudgeExtractionError, match="missing mandatory"):
+        parse_rubric_verdict(raw, rubric)
 
 
 @pytest.mark.parametrize("value", [-1, 2, 0.0, 1.0, None, [], {}])
 async def test_other_numeric_or_structural_verdicts_remain_unscored(value):
     result, calls, report = await _run_verdict_envelope("dimensions", value)
-    assert calls["sut"] == 60 and calls["judge"] == 30
+    assert calls["sut"] == 60 and calls["judge"] == 90
     assert result.status == TestStatus.INCONCLUSIVE
     assert all(item.extraction_error is not None for item in result.evidence)
     assert report["test_results"][0]["score"] is None

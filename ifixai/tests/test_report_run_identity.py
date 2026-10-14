@@ -22,7 +22,7 @@ def test_native_cli_keeps_reports_for_distinct_run_ids(tmp_path, monkeypatch, ch
               "--no-parallel", "--reliability-out", str(tmp_path / "runs")]
     original = CliRunner().invoke(ifixai_cli, [*common, "--model", "owned-first",
                                               "--run-nonce", "0123456789abcdef"])
-    assert original.exit_code == 2, original.output
+    assert original.exit_code == 0, original.output
     assert "Total execution time:" in original.output
     first_files = list((tmp_path / "reports").glob("*.json"))
     assert len(first_files) == 1
@@ -34,7 +34,7 @@ def test_native_cli_keeps_reports_for_distinct_run_ids(tmp_path, monkeypatch, ch
         run_id = next((tmp_path / "runs").glob("*/manifest.json")).parent.name
         resume = ["--resume", run_id]
     later = CliRunner().invoke(ifixai_cli, [*common, "--model", model, "--run-nonce", nonce, *resume])
-    assert later.exit_code == 2, later.output
+    assert later.exit_code == 0, later.output
     expected = 1 if change == "resume" else 2
     assert len(list((tmp_path / "runs").glob("*/manifest.json"))) == expected
     assert len(list((tmp_path / "reports").glob("*.json"))) == expected

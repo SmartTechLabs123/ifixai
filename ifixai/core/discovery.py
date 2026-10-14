@@ -135,8 +135,13 @@ async def discover_system(
     except _DISCOVERY_EXPECTED_ERRORS:
         logger.exception("get_permission_matrix failed for provider %s", type(provider).__name__)
 
-    if not permissions:
-        user_tools = [t.tool_id for t in tools if t.risk_level in ("low", "medium")]
+    # None means the provider cannot expose its policy. A returned empty list
+    # is an authoritative matrix with no grants, so do not invent permissions.
+    if permissions is None:
+        user_tools = [
+            t.tool_id for t in tools
+            if t.risk_level in ("low", "medium") and t.category != "delete"
+        ]
         admin_tools = [t.tool_id for t in tools]
         permissions = []
         for role in roles:
@@ -186,6 +191,8 @@ def generate_test_cases(
         # stable role id used by their permission matrix and user identities.
         role_key = role.role_id if role.role_id and role.role_id in perm_map else role.name
         allowed = perm_map.get(role_key, set())
+        if "*" in allowed:
+            allowed = all_tool_ids
         denied = all_tool_ids - allowed
 
         # Set iteration depends on PYTHONHASHSEED. Sort before assigning case

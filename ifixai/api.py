@@ -1,4 +1,5 @@
 import logging
+from enum import Enum
 
 from ifixai._version import VERSION as __version__  # noqa: F401
 from ifixai.core.concurrency import ConcurrencyGovernor
@@ -28,10 +29,20 @@ from ifixai.harness.registry import ALL_SPECS
 from ifixai.inspections.holdout_ids import generate_holdout_ids
 from ifixai.judge.config import JudgeConfig
 from ifixai.providers.base import ChatProvider
+from ifixai.providers.governance_fixture import GovernanceFixture
 from ifixai.providers.resolver import resolve_provider, wrap_with_governance
 from ifixai.reporting.comparison import compare_scorecards as _compare_scorecards
 
 _logger = logging.getLogger(__name__)
+
+
+class FixtureGovernance(Enum):
+    """`governance` left unset: compose the fixture's own block (library default)."""
+
+    FROM_FIXTURE = "from_fixture"
+
+
+FROM_FIXTURE = FixtureGovernance.FROM_FIXTURE
 
 
 def _resolve_fixture(fixture: str | Fixture) -> Fixture:
@@ -43,6 +54,7 @@ def _resolve_fixture(fixture: str | Fixture) -> Fixture:
 def _resolve_provider_with_governance(
     provider: str | ChatProvider,
     fixture_obj: Fixture,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) -> ChatProvider:
     """Resolve a provider and compose the fixture's governance bundle on it.
 
@@ -51,10 +63,15 @@ def _resolve_provider_with_governance(
     every governance test is reported as INCONCLUSIVE. wrap_with_governance
     is idempotent: calling it on an already-wrapped instance just refreshes
     the bound governance fixture.
+
+    `governance` overrides the fixture's block: the CLI passes its own decision
+    (None keeps a real endpoint off a bundled fixture's simulated hooks).
     """
     provider_obj = resolve_provider(provider)
-    if fixture_obj.governance is not None:
-        provider_obj = wrap_with_governance(provider_obj, fixture_obj.governance)
+    if governance is FROM_FIXTURE:
+        governance = fixture_obj.governance
+    if governance is not None:
+        provider_obj = wrap_with_governance(provider_obj, governance)
     return provider_obj
 
 
@@ -132,9 +149,10 @@ async def run_inspections(
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestRunResult:
     fixture_obj = _resolve_fixture(fixture)
-    provider_obj = _resolve_provider_with_governance(provider, fixture_obj)
+    provider_obj = _resolve_provider_with_governance(provider, fixture_obj, governance)
     try:
         return await run_all(
             provider=provider_obj,
@@ -188,9 +206,10 @@ async def run_strategic(
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestRunResult:
     fixture_obj = _resolve_fixture(fixture)
-    provider_obj = _resolve_provider_with_governance(provider, fixture_obj)
+    provider_obj = _resolve_provider_with_governance(provider, fixture_obj, governance)
     try:
         return await _run_strategic(
             provider=provider_obj,
@@ -245,9 +264,10 @@ async def run_selected(
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestRunResult:
     fixture_obj = _resolve_fixture(fixture)
-    provider_obj = _resolve_provider_with_governance(provider, fixture_obj)
+    provider_obj = _resolve_provider_with_governance(provider, fixture_obj, governance)
     try:
         return await _run_selected(
             test_ids=test_ids,
@@ -298,9 +318,10 @@ async def run_single(
     holdout_ids: dict[str, str] | None = None,
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestResult:
     fixture_obj = _resolve_fixture(fixture)
-    provider_obj = _resolve_provider_with_governance(provider, fixture_obj)
+    provider_obj = _resolve_provider_with_governance(provider, fixture_obj, governance)
     try:
         return await _run_single(
             test_id=test_id,

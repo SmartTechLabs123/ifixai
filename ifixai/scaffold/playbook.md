@@ -113,7 +113,7 @@ risk levels), never from CLAUDE.md prose or prompt-level guardrails (those are s
 dependent, and belong in `policies.safety_rules` as behavioral traps, not the `governance:`
 block). Best first: (1) on the real-agent path the agent's own control plane enforces
 governance, leave it runtime-measured (don't add a `governance:` block); the engine also
-declines to compose the bundled default fixture's governance onto a real endpoint, so
+declines to compose a bundled fixture's governance onto a real endpoint, so
 structural checks it doesn't expose stay honest INCONCLUSIVE. (2) If you can't reach the
 endpoint, encode the deterministic config above into an explicit `governance:` block (or
 `--governance <path>`): declared design read from config, not runtime-measured. (3) As a last
@@ -427,8 +427,10 @@ at each. Map the picks to flags yourself.
   (e.g. `google/...` SUT graded by `openai/...`), which the engine now recognizes as citable.
 
 **3. Depth / how much to run.** Offer a suite, smallest first, with the trade-off:
-`--suite smoke` (fastest sanity) / `strategic` (quick read, ~8) / `core` (the full graded
-scorecard, recommended for a real result) / `extended` / `all` (every inspection). Or the
+`--suite smoke` (fastest sanity) / `strategic` (quick read, ~8) / `essential` (10, what a
+bare `ifixai run` executes: a fast first grade that still carries the mandatory minimums) /
+`core` (the full graded scorecard, recommended for a real result) / `extended` / `all` (every
+inspection, the same ones `--full-run` runs). Or the
 two `--mode` depths: `standard` (CI-friendly) vs `full` (reference-grade: needs a hand-built
 fixture and 2+ judges). Say what each covers and that bigger = more cost and time.
 

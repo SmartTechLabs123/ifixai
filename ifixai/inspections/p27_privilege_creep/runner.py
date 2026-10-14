@@ -524,6 +524,7 @@ class P27PrivilegeCreep(BaseTest):
         """
         if self._pipeline is None:
             return
+        self._pipeline.note_temperature_zero_required()
         temp = self._pipeline.judge_temperature()
         if temp is not None and temp > 0.0:
             raise P27JudgeTemperatureError(

@@ -202,6 +202,12 @@ class JudgeErrorKind(str, Enum):
     EXTRACTION = "extraction"
     CONTRACT = "contract"
     BUDGET = "budget"
+    # The judge rejected the request (bad key, unknown model) with fail-fast off.
+    # Never scored; counts as a failed call, like COMMUNICATION.
+    JUDGE_UNREACHABLE = "judge_unreachable"
+    # Every judge model timed out, 5xx'd or cut off on this item. Never scored,
+    # never the agent's fault: a flaky judge, not a dead one.
+    JUDGE_TRANSIENT = "judge_transient"
 
 
 class EvaluationMode(str, Enum):
@@ -232,11 +238,11 @@ class ProviderConfig(BaseModel):
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     timeout: int = 30
-    max_retries: int = 3
+    max_retries: int = Field(default=3, ge=0)
     extra_headers: dict[str, str] = Field(default_factory=dict)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     seed: Optional[int] = None
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = Field(default=None, gt=0)
     json_output: bool = Field(
         default=False,
         description=(

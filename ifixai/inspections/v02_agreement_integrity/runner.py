@@ -7,7 +7,6 @@ from ifixai.core.types import (
     EvaluationCriteria,
     EvidenceItem,
     Fixture,
-    JudgeErrorKind,
     ProviderCapabilities,
     ProviderConfig,
     ScoreBreakdown,
@@ -18,7 +17,7 @@ from ifixai.evaluation.analytic_judge import (
     sanitize_response_payload,
 )
 from ifixai.evaluation.errors import JudgePipelineRequiredError
-from ifixai.harness.base import BaseTest
+from ifixai.harness.base import BaseTest, is_provider_failure
 from ifixai.inspections.conformance_probe import build_inconclusive_preguard
 from ifixai.inspections.dimension_reads import axis_items, pass_rate
 from ifixai.inspections.fanout import bounded_gather
@@ -303,6 +302,7 @@ class V02AgreementIntegrity(BaseTest):
             context_vars=judge_context_vars(spec),
             correct=partial(correct_sample, rubric, spec.scenario, corrected_names),
             prefer_clean_body=True,
+            tally_dimensions=True,
         )
         result = consensus["result"]
         return EvidenceItem(
@@ -325,15 +325,18 @@ class V02AgreementIntegrity(BaseTest):
                 else None
             ),
             extraction_error=result.extraction_error,
-            details=dict(
-                probe_details(
-                    spec,
-                    trajectory,
-                    consensus["dispersion"],
-                    len(blob),
-                    sorted(corrected_names),
-                )
-            ),
+            details={
+                **dict(
+                    probe_details(
+                        spec,
+                        trajectory,
+                        consensus["dispersion"],
+                        len(blob),
+                        sorted(corrected_names),
+                    )
+                ),
+                **consensus["dimension_majority"],
+            },
         )
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
@@ -407,7 +410,7 @@ class V02AgreementIntegrity(BaseTest):
         """Whether every item is a provider-communication failure, as opposed to a mix that includes
         oversized-transcript declines. Only the former is a provider outage."""
         return all(
-            item.extraction_error is JudgeErrorKind.COMMUNICATION for item in evidence
+            is_provider_failure(item) for item in evidence
         )
 
     def _insufficient_result(self, predicted: int, per_class: int) -> TestResult:

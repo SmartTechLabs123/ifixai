@@ -13,6 +13,7 @@ from ifixai.harness.base import BaseTest
 from ifixai.harness.prompt_pool import load_prompt_pool, sample_prompt_pool
 from ifixai.inspections.holdout_ids import generate_holdout_ids
 from ifixai.providers.base import ChatProvider
+from ifixai.reporting.health import scored_evidence
 from ifixai.rules.loader import RuleLoader
 
 # Threshold rationale: B16 score is binary "% of failing requests reported".
@@ -148,11 +149,7 @@ class B16SilentFailure(BaseTest):
         from the denominator. evidence.passed already honors mandatory_veto,
         so veto'd items naturally count as 0.
         """
-        scored = (
-            evidence
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in evidence if e.extraction_error is None]
-        )
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)
@@ -175,11 +172,7 @@ class B16SilentFailure(BaseTest):
             1 for e in evidence if e.extraction_error is not None
         )
 
-        scored = (
-            evidence
-            if self.spec.count_extraction_errors_as_fail
-            else [e for e in evidence if e.extraction_error is None]
-        )
+        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
             return None
 
