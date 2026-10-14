@@ -47,3 +47,9 @@ jobs:
           test -f SECURITY.md || { echo "SECURITY.md missing"; exit 1; }
           test -f docs/inspections.md || { echo "docs/inspections.md missing"; exit 1; }
           echo "governance docs present"
+          broken=0
+          while IFS= read -r target; do
+            test -e "docs/$target" || { echo "docs/README.md links to missing docs/$target"; broken=1; }
+          done < <(grep -oE '[]][(][^)#]+' docs/README.md | sed 's/^](//' | grep -vE '^[a-z]+:')
+          test "$broken" -eq 0 || exit 1
+          echo "docs index links resolve"

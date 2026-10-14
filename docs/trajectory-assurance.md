@@ -180,6 +180,20 @@ The envelope follows the official [OTLP JSON encoding specification](https://ope
 The `ifixai.*` instrumentation contract is specific to this feature and is not
 an OpenTelemetry semantic convention or an automatically installed integration.
 
+## What it doesn't do
+
+- It only knows what your application tells it. You add the instrumentation and
+  choose the policy. Arguments, actors, human identity and costs are your
+  declarations, and the recorder only watches synchronous callables you pass it.
+- It doesn't assume a failed call did nothing. A call that raises leaves coverage
+  incomplete, because it may have had side effects first.
+- Citation checks only follow the recorded links from an output back to its sources.
+- The checksum catches changes to a bundle. It can't show who made it.
+- Delegation chains deeper than 128 grants, and audits that hit the 2,000,000-step
+  ancestry limit, can't come back CLEAR.
+- A report covers the evidence it was given. It says nothing about activity nobody
+  recorded, and it isn't a production certificate.
+
 ## Verification
 
 Run `python -m pytest ifixai/tests/trajectory -q` for independent policy oracles,

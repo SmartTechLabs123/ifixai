@@ -81,6 +81,15 @@ Supply bindings for every action in the retained witness. Each synchronous calla
 
 `MATCHED` means this local implementation matched this particular witness. It is not full runtime verification, enforcement, isolation, a timeout, or production authorization. Supplied callables can have side effects before raising. Costs are declared units, not observed billing. Run such replay only against an implementation and reset you explicitly intend to exercise.
 
+## What it doesn't do
+
+- Results hold only for the model you declare. Leave out state the business depends on and the search can't see it.
+- `VERIFIED` isn't proof that the deployment is safe or fair, that goals are reached on every path, or that one tenant can't act on another's data.
+- Search grows exponentially with facts and budget counters. Hard limits stop it, and a search that stops early is never `VERIFIED`.
+- Replaying a witness on your code checks that one path on that one local setup. It can miss side effects the model doesn't describe.
+- Callables you pass in run with whatever access they already have.
+- The smallest repair means the fewest rule removals within the search you asked for. It doesn't mean it's the best policy for your business.
+
 ## Validate changes
 
 ```sh
