@@ -361,3 +361,15 @@ def list_tests() -> list[InspectionSpec]:
 
 def list_fixtures() -> list[str]:
     return list_fixture_names()
+
+
+# Experiments preserve native scorecards; their gate is independent of grades.
+from ifixai.experiments import (  # noqa: E402,F401
+    ExperimentArm,
+    ExperimentBundle,
+    ExperimentPlan,
+    ExperimentPolicy,
+    analyze_experiment,
+    load_experiment,
+    run_experiment,
+)

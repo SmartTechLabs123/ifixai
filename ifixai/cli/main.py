@@ -6,6 +6,7 @@ import click
 
 from ifixai._version import VERSION
 from ifixai.cli.compare import compare
+from ifixai.cli.experiment import experiment
 from ifixai.cli.init import init, load_dotenv_file
 from ifixai.cli.list_cmd import list_group
 from ifixai.cli.run import run
@@ -27,6 +28,7 @@ ifixai_cli.add_command(run)
 ifixai_cli.add_command(list_group, name="list")
 ifixai_cli.add_command(validate)
 ifixai_cli.add_command(compare)
+ifixai_cli.add_command(experiment)
 
 
 def _ensure_utf8_stdout() -> None:

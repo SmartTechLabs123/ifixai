@@ -305,6 +305,10 @@ score, instead of marking them `insufficient_evidence` (it couldn't see enough o
 agent to judge; these are reported but don't count for or against your grade). Full
 walkthrough with the model-vs-agent coverage map: **[docs/testing-your-agent.md](docs/testing-your-agent.md)**.
 
+## Test a proposed agent change
+
+Run a [paired assurance experiment](docs/experiments.md) to compare a declared intervention across repeated, matched audits. The workflow preserves native scorecards, exposes case regressions and lost coverage, reports simultaneous uncertainty bounds, and saves a replayable private evidence bundle with a standalone HTML report.
+
 ## Reusable config
 
 `ifixai setup` writes `ifixai.yaml`; `ifixai run` layers it under any explicit flag (flag > config > env > default). It stores the key env-var name, never the secret:
