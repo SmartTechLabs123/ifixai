@@ -11,7 +11,52 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from ifixai.core.types import JudgeErrorKind, TestRunResult, TestStatus
+from ifixai.core.types import (
+    EvidenceItem,
+    JudgeErrorKind,
+    TestResult,
+    TestRunResult,
+    TestStatus,
+)
+from ifixai.scoring.engine import _is_advisory, _is_attestation, _is_exploratory
+
+# Judge-side outcomes that say nothing about the agent, so no score counts them,
+# even where a spec counts its other unscored items as fails.
+_NEVER_SCORED = frozenset(
+    {
+        JudgeErrorKind.BUDGET,
+        JudgeErrorKind.JUDGE_UNREACHABLE,
+        JudgeErrorKind.JUDGE_TRANSIENT,
+    }
+)
+
+
+def scored_evidence(
+    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
+) -> list[EvidenceItem]:
+    """The items a score counts: graded ones, plus, when the spec opts in, every
+    other unscored item as a fail, except a budget skip, dead or flaky judge."""
+    if not count_extraction_errors_as_fail:
+        return [e for e in evidence if e.extraction_error is None]
+    return [e for e in evidence if e.extraction_error not in _NEVER_SCORED]
+
+
+def measured_count(
+    evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
+) -> int:
+    """What the min_evidence_items floor counts: scored items, never diagnostics
+    (a runner's compute_score already leaves those out)."""
+    measurements = [e for e in evidence if not e.is_diagnostic]
+    return len(scored_evidence(measurements, count_extraction_errors_as_fail))
+
+
+def gating_results(result: TestRunResult) -> list[TestResult]:
+    """The selected inspections that can gate a run: report-only ones never do."""
+    return [
+        r
+        for r in result.test_results
+        if not (_is_exploratory(r) or _is_advisory(r) or _is_attestation(r))
+    ]
 
 
 class _RunHealth(NamedTuple):
@@ -22,6 +67,7 @@ class _RunHealth(NamedTuple):
     unreachable: int  # a model call failed to communicate (agent OR judge)
     judge_broke: int  # the judge replied but the verdict was unusable
     budget_skipped: int = 0  # no judge call was made after the run budget ran out
+    judge_down: int = 0  # of `unreachable`, the ones where the judge rejected the call
 
     @property
     def attempted_probes(self) -> int:
@@ -67,9 +113,18 @@ def run_health(result: TestRunResult) -> _RunHealth:
     COMMUNICATION is a failed model call on either seam (agent under test or
     judge); CONTRACT/EXTRACTION mean the judge answered but the verdict was
     unusable — unambiguously a grader-health problem. BUDGET means no judge
-    call was made, so it is neither a transport nor a verdict failure."""
-    errored = total = scorable = unreachable = judge_broke = budget_skipped = 0
-    for br in result.test_results:
+    call was made, so it is neither a transport nor a verdict failure.
+    JUDGE_TRANSIENT (the judge timed out on an item) is a flaky grader;
+    JUDGE_UNREACHABLE (the judge rejected the call) is a failed call, but on
+    the judge's side.
+
+    A scoped run exits on the inspections it selected, so a crashed report-only
+    one can't invalidate it; a full run counts every inspection."""
+    errored = total = scorable = unreachable = judge_broke = budget_skipped = judge_down = 0
+    results = result.test_results
+    if result.mandatory_minimums_not_run:
+        results = gating_results(result) or results
+    for br in results:
         if br.status == TestStatus.ERROR:
             errored += 1
         for ev in br.evidence:
@@ -81,13 +136,18 @@ def run_health(result: TestRunResult) -> _RunHealth:
                 scorable += 1
             elif kind == JudgeErrorKind.COMMUNICATION:
                 unreachable += 1
-            elif kind in (JudgeErrorKind.CONTRACT, JudgeErrorKind.EXTRACTION):
+            elif kind in (JudgeErrorKind.CONTRACT, JudgeErrorKind.EXTRACTION, JudgeErrorKind.JUDGE_TRANSIENT):
                 judge_broke += 1
             elif kind == JudgeErrorKind.BUDGET:
                 budget_skipped += 1
+            elif kind == JudgeErrorKind.JUDGE_UNREACHABLE:
+                unreachable += 1
+                judge_down += 1
             else:
                 unreachable += 1
-    return _RunHealth(len(result.test_results), errored, total, scorable, unreachable, judge_broke, budget_skipped)
+    return _RunHealth(
+        len(results), errored, total, scorable, unreachable, judge_broke, budget_skipped, judge_down
+    )
 
 
 def measurement_failure_banner(health: _RunHealth) -> str | None:
@@ -121,6 +181,12 @@ def measurement_failure_banner(health: _RunHealth) -> str | None:
             f"{health.errored} of {health.n_inspections} inspections crashed before "
             "producing any evidence (the agent under test or its configuration "
             "errored out). Check the model id / key / endpoint and re-run."
+        )
+    elif health.unreachable and health.judge_down == health.unreachable:
+        cause = (
+            f"the judge rejected its calls on {health.judge_down} of {health.attempted_probes} "
+            "attempted probes, so they went ungraded. Check the judge's model id / key / "
+            "endpoint and re-run."
         )
     else:
         cause = (

@@ -9,10 +9,12 @@ from google.api_core import exceptions as google_exceptions
 
 from ifixai.core.types import ChatMessage, ProviderConfig
 from ifixai.providers.base import (
+    RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
     ProviderAuthError,
     ProviderConnectionError,
     ProviderEmptyContentError,
+    ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
@@ -92,7 +94,12 @@ class GeminiProvider(ChatProvider):
                     for format_attempt in range(2):
                         try:
                             response = await asyncio.wait_for(
-                                model.generate_content_async(contents),
+                                model.generate_content_async(
+                                    contents,
+                                    request_options=genai.types.RequestOptions(
+                                        retry=None, timeout=float(config.timeout)
+                                    ),
+                                ),
                                 timeout=float(config.timeout),
                             )
                             break
@@ -107,6 +114,7 @@ class GeminiProvider(ChatProvider):
                                 **model_kwargs,
                             )
                             setattr(model, "_async_client", native_client)
+
 
                     if not response.candidates:
                         raise ProviderResponseError(
@@ -167,12 +175,24 @@ class GeminiProvider(ChatProvider):
                         details=str(exc),
                     ) from exc
                 except google_exceptions.ServiceUnavailable as exc:
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(backoff)
+                        backoff *= BACKOFF_MULTIPLIER
+                        continue
                     raise ProviderConnectionError(
                         provider="gemini",
                         endpoint=endpoint,
                         details=str(exc),
                     ) from exc
                 except google_exceptions.GoogleAPIError as exc:
+                    if getattr(exc, "code", None) in RETRYABLE_HTTP_STATUS_CODES:
+                        if attempt < attempts - 1:
+                            await asyncio.sleep(backoff)
+                            backoff *= BACKOFF_MULTIPLIER
+                            continue
+                        raise ProviderOverloadedError(
+                            provider="gemini", endpoint=endpoint, details=str(exc),
+                        ) from exc
                     raise ProviderResponseError(
                         provider="gemini",
                         endpoint=endpoint,
@@ -189,12 +209,12 @@ class GeminiProvider(ChatProvider):
 def _format_messages(
     messages: list[ChatMessage],
 ) -> GeminiMessages:
-    system_instruction = ""
+    system_instructions: list[str] = []
     contents: list[dict] = []
 
     for msg in messages:
         if msg.role == "system":
-            system_instruction = msg.content
+            system_instructions.append(msg.content)
         else:
             gemini_role = "model" if msg.role == "assistant" else "user"
             contents.append(
@@ -204,7 +224,7 @@ def _format_messages(
                 }
             )
 
-    return GeminiMessages(system_instruction=system_instruction, contents=contents)
+    return GeminiMessages(system_instruction="\n".join(system_instructions), contents=contents)
 
 
 def _json_mode_unsupported(exc: google_exceptions.InvalidArgument) -> bool:

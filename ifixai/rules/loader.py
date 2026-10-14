@@ -34,7 +34,7 @@ class RuleLoader:
         if not self.rules_dir.exists():
             return plans
 
-        for yaml_path in sorted(self.rules_dir.glob("b*/definition.yaml")):
+        for yaml_path in sorted(self.rules_dir.glob("*/definition.yaml")):
             raw = self._read_yaml(yaml_path)
             bid = raw.get("test_id", yaml_path.parent.name)
             if bid in plans:
@@ -109,13 +109,13 @@ def load_inspection_definition(test_id: str) -> ConversationPlan | None:
     if _DEFAULT_LOADER is None:
         _DEFAULT_LOADER = RuleLoader()
 
-    plan = _DEFAULT_LOADER.load_rules(test_id)
-    if not plan.steps:
-        return None
-
     yaml_path = _DEFAULT_LOADER._find_rule_file(test_id)
-    if yaml_path is not None and _SCHEMA_PATH.exists():
-        raw = _DEFAULT_LOADER._read_yaml(yaml_path)
+    if yaml_path is None:
+        return None
+    raw = _DEFAULT_LOADER._read_yaml(yaml_path)
+    if "steps" not in raw or raw["steps"] == []:
+        return None
+    if _SCHEMA_PATH.exists():
         with open(_SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
         try:
@@ -125,4 +125,5 @@ def load_inspection_definition(test_id: str) -> ConversationPlan | None:
                 f"Schema validation failed for {test_id}: {exc.message}"
             ) from exc
 
-    return plan
+    plan = _DEFAULT_LOADER._parse_plan(raw, test_id)
+    return plan if plan.steps else None

@@ -16,15 +16,19 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 import click
+import yaml
+from click.core import ParameterSource
+from pydantic import ValidationError
 
 from ifixai import __version__ as IFIXAI_VERSION
 from ifixai import telemetry
-from ifixai.api import _aclose_provider
+from ifixai.api import FROM_FIXTURE, FixtureGovernance, _aclose_provider
 from ifixai.cli import ui
 from ifixai.cli._branding import (
     print_startup_banner,
 )
 from ifixai.cli.config_file import CONFIG_FILENAME, load_config
+from ifixai.cli.inspection_seeds import inspection_seeds
 from ifixai.cli.orchestrator import (
     _build_judge_config,
     _eval_mode_declaration,
@@ -58,6 +62,7 @@ from ifixai.core.types import (
     ProviderConfig,
     RunMode,
     TestResult,
+    TestStatus,
 )
 from ifixai.evaluation.checkpoint import load_checkpoint
 from ifixai.evaluation.manifest import (
@@ -77,7 +82,7 @@ from ifixai.harness.registry import (
     SPEC_BY_ID,
     resolve_category_test_ids,
 )
-from ifixai.harness.suites import SUITE_NAMES, resolve_suite
+from ifixai.harness.suites import DEFAULT_SUITE, SUITE_NAMES, resolve_suite
 from ifixai.inspections.holdout_ids import HoldoutIds, generate_holdout_ids
 from ifixai.providers.base import ChatProvider
 from ifixai.providers.governance_fixture import GovernanceFixture
@@ -97,9 +102,15 @@ from ifixai.quick_build import (
 )
 from ifixai.reporting.artifact import render_artifact
 from ifixai.reporting.health import (
+    gating_results,
     judge_health_note,
     measurement_failure_banner,
     run_health,
+)
+from ifixai.reporting.scorecard import (
+    DEFAULT_TEMPERATURE_WARNINGS,
+    absent_score_reason,
+    scoped_gate_decides,
 )
 from ifixai.scoring.category_weights import STRATEGIC_TEST_IDS
 from ifixai.utils.fixture_digest import compute_fixture_digest
@@ -215,8 +226,6 @@ def _resolve_concurrency(flag_value: int | None, no_parallel: bool) -> int:
 
 def _cfg_value(ctx: click.Context, name: str, current, cfg_value):
     """Use a saved default through its CLI type, preserving explicit flags."""
-    from click.core import ParameterSource
-
     if cfg_value is None:
         return current
     if ctx.get_parameter_source(name) == ParameterSource.DEFAULT:
@@ -250,18 +259,28 @@ def _parse_extra_headers(value: "str | dict | None") -> dict[str, str]:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
-def _skip_default_fixture_governance(
-    provider: "str | None", used_default_fixture: bool
-) -> bool:
-    """Whether to withhold the BUNDLED default fixture's governance from the SUT.
+_DEFAULT_FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "default" / "fixture.yaml"
+)
+_BUNDLED_FIXTURES_DIR = _DEFAULT_FIXTURE_PATH.parents[1]
 
-    True only when the SUT is a live ``http`` endpoint AND we auto-selected the
-    default fixture: composing a fake org's declared policy onto a real agent
-    would shadow the agent's own runtime control plane. A user-supplied fixture
-    with a ``governance:`` block, or an explicit ``--governance``, is always
-    honored (this predicate never fires for them).
+# Providers that reach a live agent endpoint, not a model.
+_REAL_AGENT_PROVIDERS = ("http", "langchain")
+
+
+def _skip_bundled_fixture_governance(provider: "str | None", fixture: str) -> bool:
+    """Whether to withhold a BUNDLED fixture's governance from the SUT.
+
+    True only when the SUT is a live agent endpoint (``http``, ``langchain``) AND
+    the fixture ships with iFixAi (the default or an example, by name or path):
+    composing a fake org's declared policy onto a real agent would shadow the
+    agent's own runtime control plane. A user-supplied fixture with a
+    ``governance:`` block, or an explicit ``--governance``, is always honored
+    (this predicate never fires for them).
     """
-    return (provider or "").lower() == "http" and used_default_fixture
+    if (provider or "").lower() not in _REAL_AGENT_PROVIDERS:
+        return False
+    return resolve_fixture_path(fixture).resolve().is_relative_to(_BUNDLED_FIXTURES_DIR)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -304,6 +323,15 @@ def _describe_filter(
     if test:
         return "selected (" + ", ".join(test) + ")"
     return f"all ({len(SPEC_BY_ID)})"
+
+
+def describe_default_selection(selected_count: int) -> str:
+    """Tell the user the run is the default subset and how to run everything."""
+    total = len(SPEC_BY_ID)
+    return (
+        f"Default run: {selected_count} of {total} inspections "
+        f"(suite '{DEFAULT_SUITE}'). Add --full-run to run all {total}."
+    )
 
 
 def _print_concurrency_banner(resolved: int) -> None:
@@ -456,10 +484,21 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
 @click.option(
     "--suite",
     default=None,
-    help="Run a named suite. Tiers: smoke, strategic, core (32 graded), "
-    "extended (28 frontier), all. Themes: security, reliability, compliance, "
-    "frontier. Folds into the selection like --category; combine with -b/-c to "
-    "add more. Run `ifixai list suites` to browse.",
+    help="Run a named suite. Tiers: smoke, strategic, essential (10, the "
+    "default), core (32 graded), extended (28 frontier), all. Themes: security, "
+    "reliability, compliance, frontier. Folds into the selection like "
+    "--category; combine with -b/-c to add more. Run `ifixai list suites` to "
+    "browse.",
+)
+@click.option(
+    "--full-run",
+    "full_run",
+    is_flag=True,
+    default=False,
+    help="Run every inspection instead of the default 10-inspection essential "
+    "suite. Takes longer and costs more. Cannot be combined with --suite, "
+    "--test, --category or --strategic. Unrelated to --mode full, which sets "
+    "how the run is judged.",
 )
 @click.option(
     "--output",
@@ -779,6 +818,7 @@ def run(
     test: tuple[str, ...],
     categories: tuple[str, ...],
     suite: str | None,
+    full_run: bool,
     output: str,
     artifact_out: str | None,
     report_format: str,
@@ -827,14 +867,23 @@ def run(
         return
     run_start_monotonic = time.monotonic()
 
+    if full_run and (strategic or test or categories or suite):
+        click.echo(
+            click.style(
+                "Error: --full-run runs every inspection and cannot be combined "
+                "with --suite, --test, --category or --strategic.",
+                fg="red",
+            ),
+            err=True,
+        )
+        sys.exit(1)
+
     try:
         config_obj = load_config()
     except ValueError as exc:
         click.echo(click.style(f"Config error: {exc}", fg="red"), err=True)
         sys.exit(1)
     if config_obj is not None:
-        from click.core import ParameterSource
-
         provider = _cfg_value(ctx, "provider", provider, config_obj.provider)
         # Connection defaults belong to the saved target. An explicit switch
         # must use the new provider's model, endpoint and credential defaults.
@@ -847,7 +896,8 @@ def run(
             model = _cfg_value(ctx, "model", model, config_obj.model)
         fixture = _cfg_value(ctx, "fixture", fixture, config_obj.fixture)
         explicit_selector = (
-            strategic
+            full_run
+            or strategic
             or bool(test)
             or bool(categories)
             or ctx.get_parameter_source("suite") != ParameterSource.DEFAULT
@@ -905,6 +955,7 @@ def run(
             param_hint="--run-nonce",
         )
     effective_run_nonce = run_nonce if run_nonce is not None else generate_run_nonce()
+    effective_inspection_seed = secrets.randbelow(2**31)
 
     effective_b12_seed = b12_seed if b12_seed is not None else secrets.randbelow(2**31)
     effective_b14_seed = b14_seed if b14_seed is not None else secrets.randbelow(2**31)
@@ -948,6 +999,7 @@ def run(
                 err=True,
             )
         effective_run_nonce = resume_manifest.run_nonce
+        effective_inspection_seed = resume_manifest.seed
         effective_b12_seed = resume_manifest.b12_seed
         effective_b14_seed = resume_manifest.b14_seed
         effective_b28_seed = resume_manifest.b28_seed
@@ -961,6 +1013,17 @@ def run(
         b29_seed_pinned = resume_manifest.b29_seed_pinned
         b32_seed_pinned = resume_manifest.b32_seed_pinned
         holdout_seed = resume_manifest.holdout_seed
+
+    # A resumed run keeps the selection it started with: a manifest that recorded
+    # every inspection resumes as a full run, with or without --full-run.
+    is_resuming_full_run = (
+        resume_manifest is not None and resume_manifest.mode_filter == ["all"]
+    )
+    is_default_selection = not (
+        full_run or is_resuming_full_run or strategic or test or categories or suite
+    )
+    if is_default_selection:
+        suite = DEFAULT_SUITE
 
     print_startup_banner(IFIXAI_VERSION, quiet=quiet)
     # Asked before telemetry and any provider call, so abandoning leaves no trace.
@@ -1058,10 +1121,19 @@ def run(
             )
         judge_api_key = tuple(resolved_keys)
 
+    if eval_mode in ("single", "semantic") and len(judge_provider) != 1:
+        click.echo(
+            click.style(
+                "Error: single-judge evaluation requires exactly one --judge-provider flag. "
+                "Use --eval-mode full for an ensemble.",
+                fg="red",
+            )
+        )
+        sys.exit(1)
     if eval_mode == "full" and len(judge_provider) < 2:
         click.echo(
             click.style(
-                "Error: --eval-mode full requires >=2 distinct --judge-provider flags.\n"
+                "Error: --eval-mode full requires >=2 --judge-provider flags.\n"
                 "Example: --judge-provider anthropic --judge-api-key $K1 --judge-model claude-sonnet-4-6 \\\n"
                 "         --judge-provider openai --judge-api-key $K2 --judge-model gpt-4o",
                 fg="red",
@@ -1203,6 +1275,8 @@ def run(
         click.echo(f"  Estimated inspections:      {estimated_inspections}")
         click.echo(f"  Judge calls per inspection: {judge_calls_per_inspection}")
         click.echo(f"  Estimated judge calls: {estimated_judge_calls}")
+        if is_default_selection:
+            click.echo(f"  {describe_default_selection(len(test))}")
         click.echo()
         click.echo(
             "Estimates are conservative averages; real cost depends on inspection length, "
@@ -1226,6 +1300,9 @@ def run(
             err=True,
         )
     governance_source: str = "runtime"
+    # What the run wraps the SUT with: the --governance file, else the fixture's
+    # own block, else nothing (a real endpoint on a bundled fixture, below).
+    run_governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE
     if governance_path is not None:
         if (provider or "").lower() == "mock":
             click.echo(
@@ -1237,9 +1314,30 @@ def run(
                 )
             )
             sys.exit(1)
-        governance_fixture = GovernanceFixture.load(governance_path)
+        try:
+            governance_fixture = GovernanceFixture.load(governance_path)
+        except (ValueError, yaml.YAMLError) as exc:
+            # One line naming each bad field, e.g. "tools.0.tool_id: Field required".
+            detail = (
+                "; ".join(
+                    f"{'.'.join(map(str, e['loc'])) or 'top level'}: {e['msg']}"
+                    for e in exc.errors()
+                )
+                if isinstance(exc, ValidationError)
+                else str(exc).splitlines()[0]
+            )
+            click.echo(
+                click.style(
+                    f"Error: --governance {governance_path} is not a usable "
+                    f"governance file: {detail}",
+                    fg="red",
+                )
+            )
+            sys.exit(1)
         resolved_provider = wrap_with_governance(resolved_provider, governance_fixture)
         governance_source = "wrap"
+        # The connection probe writes into this policy's audit log; the run gets its own.
+        run_governance = governance_fixture.model_copy(deep=True)
         click.echo(
             click.style(
                 f"Governance: wrapped {provider} with policies from "
@@ -1322,16 +1420,8 @@ def run(
             click.echo(f"  Capabilities: {', '.join(cap_parts)}")
 
     context_profile = None
-    used_default_fixture = False
     if fixture is None and run_mode == "standard":
-        default_fixture_path = (
-            Path(__file__).resolve().parent.parent
-            / "fixtures"
-            / "default"
-            / "fixture.yaml"
-        )
-        fixture = str(default_fixture_path)
-        used_default_fixture = True
+        fixture = str(_DEFAULT_FIXTURE_PATH)
         click.echo(
             click.style(
                 f"  Standard mode -- using default fixture: {fixture}",
@@ -1354,15 +1444,9 @@ def run(
         )
 
     if run_mode == "full":
-        default_fixture_path = (
-            Path(__file__).resolve().parent.parent
-            / "fixtures"
-            / "default"
-            / "fixture.yaml"
-        )
         if (
             fixture is not None
-            and resolve_fixture_path(fixture).resolve() == default_fixture_path.resolve()
+            and resolve_fixture_path(fixture).resolve() == _DEFAULT_FIXTURE_PATH
         ):
             click.echo(
                 click.style(
@@ -1376,7 +1460,7 @@ def run(
         if len(judge_provider) < 2:
             click.echo(
                 click.style(
-                    "Error: --mode full requires >=2 distinct --judge-provider flags "
+                    "Error: --mode full requires >=2 --judge-provider flags "
                     "(plus matching --judge-api-key flags). Standard mode is the "
                     "right choice for runs without judge credentials.",
                     fg="red",
@@ -1489,6 +1573,8 @@ def run(
     click.echo(f"  Provider:  {provider}")
     click.echo(f"  Fixture:   {fixture}")
     click.echo(f"  Filter:    {_describe_filter(strategic, test, categories, suite)}")
+    if is_default_selection:
+        click.echo(f"             {describe_default_selection(len(test))}")
     click.echo(f"  Mode:      {run_mode}")
     click.echo(f"  Judge:     {judge_label}")
     click.echo(f"  Timeout:   {timeout}s")
@@ -1517,6 +1603,8 @@ def run(
             b32_seed=effective_b32_seed,
             b29_seed_pinned=b29_seed_pinned,
             b32_seed_pinned=b32_seed_pinned,
+            **(inspection_seeds(effective_inspection_seed)
+               if effective_inspection_seed is not None else {}),
         )
 
     judge_config = _build_judge_config(
@@ -1539,12 +1627,12 @@ def run(
     grounding_mode = GroundingMode(grounding.lower())
     fixture_obj_for_grounding = load_fixture(fixture)
 
-    # A real deployed agent (--provider http) already carries its own system
+    # A real deployed agent (http, langchain) already carries its own system
     # prompt, tools, and guardrails. Injecting a fixture-derived governance
     # prompt on top (--grounding fixture) double-governs it -- you'd score the
     # agent PLUS a second rulebook that doesn't exist in production. Warn, but
     # respect the explicit choice.
-    is_real_agent = (provider or "").lower() == "http"
+    is_real_agent = (provider or "").lower() in _REAL_AGENT_PROVIDERS
     if is_real_agent and grounding_mode == GroundingMode.FIXTURE:
         click.echo(
             click.style(
@@ -1562,29 +1650,49 @@ def run(
     # provider here. Vanilla path leaves `governance_source == "runtime"`
     # so insufficient_evidence on governance inspections stays honest.
     #
-    # Exception: don't shadow a real agent with the BUNDLED default fixture's
-    # governance. When the SUT is a live endpoint and we auto-selected the
-    # default fixture, composing its `governance:` block would grade a fake
+    # Exception: don't shadow a real agent with a BUNDLED fixture's
+    # governance. When the SUT is a live endpoint and the fixture ships with
+    # iFixAi, composing its `governance:` block would grade a fake
     # org's declared policy instead of the agent's real control plane. Leave
     # governance_source == "runtime" so those inspections stay honest
     # insufficient_evidence; a user who wants declared governance can pass
     # --governance <policy.yaml> or their own fixture with a governance block.
-    shadow_default_governance = _skip_default_fixture_governance(
-        provider, used_default_fixture
-    )
-    if shadow_default_governance and fixture_obj_for_grounding.governance is not None:
+    shadow_bundled_governance = _skip_bundled_fixture_governance(provider, fixture)
+    if (
+        shadow_bundled_governance
+        and governance_source == "runtime"
+        and fixture_obj_for_grounding.governance is not None
+    ):
+        run_governance = None
         click.echo(
             click.style(
-                "Governance: real endpoint detected -- not composing the default "
+                "Governance: real endpoint detected -- not composing the built-in "
                 "fixture's governance onto your agent. Pass --governance "
                 "<policy.yaml> to score against your declared control plane.",
+                fg="cyan",
+            )
+        )
+    # Same for a real agent and a block that declares nothing: it would switch on
+    # an empty simulated control plane. Mock keeps composing it, as before.
+    empty_fixture_governance = (
+        is_real_agent
+        and fixture_obj_for_grounding.governance is not None
+        and not fixture_obj_for_grounding.governance.declares_anything()
+    )
+    if governance_source == "runtime" and empty_fixture_governance:
+        run_governance = None
+        click.echo(
+            click.style(
+                "Governance: the fixture's governance: block declares nothing to "
+                "simulate -- not composing it onto your agent.",
                 fg="cyan",
             )
         )
     if (
         governance_source == "runtime"
         and fixture_obj_for_grounding.governance is not None
-        and not shadow_default_governance
+        and not shadow_bundled_governance
+        and not empty_fixture_governance
     ):
         resolved_provider = wrap_with_governance(
             resolved_provider,
@@ -1662,18 +1770,30 @@ def run(
         from ifixai.providers.http import DEFAULT_ENDPOINT
         effective_endpoint = (effective_endpoint or DEFAULT_ENDPOINT).rstrip("/")
 
+    rubric_hashes = compute_rubric_digests_for_tests_layout(
+        _TESTS_DIR, mutation_bank_path=_TESTS_DIR.parent / "harness" / "synonyms.yaml"
+    )
+    if resume_manifest is not None:
+        # Added fingerprints must not invalidate a run that predates them.
+        # Existing keys still use current digests, so edits remain detectable.
+        rubric_hashes = {
+            key: digest for key, digest in rubric_hashes.items()
+            if key in resume_manifest.rubric_hashes
+        }
+
     manifest = build_manifest(
         mode=manifest_mode,
         model_under_test=model_descriptor,
         judge_models=[],
         normalizer_version=NORMALIZER_VERSION,
         test_versions=test_versions,
-        rubric_hashes=compute_rubric_digests_for_tests_layout(_TESTS_DIR),
+        rubric_hashes=rubric_hashes,
         fixture_digest=compute_fixture_digest(resolved_fixture_path),
         governance_fixture_digest=governance_fixture_digest_value,
         governance_source=governance_source,
         mode_filter=(list(test) if test else (["strategic"] if strategic else ["all"])),
         judge_identity=judge_identity_descriptor,
+        seed=effective_inspection_seed,
         b12_seed=effective_b12_seed,
         b14_seed=effective_b14_seed,
         b28_seed=effective_b28_seed,
@@ -1806,6 +1926,7 @@ def run(
                 checkpoint_dir=Path(reliability_out),
                 checkpoint_run_id=manifest.run_id,
                 cached_results=cached_results,
+                governance=run_governance,
             )
         )
     except KeyboardInterrupt:
@@ -1883,7 +2004,8 @@ def run(
             f"errored={health.errored}/{health.n_inspections} inspections, "
             f"unreachable={health.unreachable}/{health.attempted_probes} attempted probes, "
             f"budget_skipped={health.budget_skipped}, "
-            f"judge_broke={health.judge_broke}, scorable={health.scorable}. "
+            f"judge_broke={health.judge_broke}, "
+            f"scorable={health.scorable}. "
             "Ignore the grade."
         )
     if health.judge_broke:
@@ -1924,7 +2046,12 @@ def run(
         grade_text = "n/a" if result.overall_score is None else result.grade.value
         click.echo(f"  Grade:            {grade_text}")
         click.echo(f"  Strategic Score:  {result.strategic_score:.1%}")
-        click.echo(f"  Passed:           {verdict}")
+        if result.overall_score is None:
+            reason = absent_score_reason(result)
+            click.echo("  Passed:           n/a")
+            click.echo(f"  {reason[:1].upper()}{reason[1:]}")
+        else:
+            click.echo(f"  Passed:           {verdict}")
         if result.mandatory_minimums_not_run:
             click.echo(
                 "  "
@@ -1964,6 +2091,9 @@ def run(
     jh_note = judge_health_note(health)
     if jh_note:
         click.echo(click.style(f"  {jh_note}", fg="yellow"))
+    for message in DEFAULT_TEMPERATURE_WARNINGS:
+        if message in result.warnings:
+            click.echo(click.style(f"  ⚠ {message}", fg="yellow"))
 
     _print_error_summary(result)
     click.echo()
@@ -2010,13 +2140,24 @@ def run(
         # non-zero so CI can never mistake it for a full result.
         sys.exit(1)
 
+    # The RUN INVALID banner above says why: a few surviving probes can still
+    # score above --min-score, and CI must not read that as a pass.
+    if health.invalid:
+        sys.exit(2)
+
     if result.overall_score is None:
-        click.echo(
-            click.style(
-                "Score: n/a (insufficient evidence across all inspections)",
+        click.echo(click.style(f"Score: n/a: {absent_score_reason(result)}", fg="yellow"))
+        if ctx.get_parameter_source("min_score") is not ParameterSource.DEFAULT:
+            click.echo(click.style(
+                f"--min-score {min_score:g} does not apply: there is no overall "
+                "score to compare it with.",
                 fg="yellow",
-            )
-        )
+            ))
+        if scoped_gate_decides(result):
+            # A scoped run withholds the headline by design, so gate on what
+            # was selected, each inspection against its own threshold.
+            gating = gating_results(result)
+            sys.exit(0 if all(r.status == TestStatus.PASS for r in gating) else 2)
         sys.exit(2)
     if result.overall_score < min_score:
         scored_categories = sum(

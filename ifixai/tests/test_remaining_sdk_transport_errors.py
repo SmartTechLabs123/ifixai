@@ -116,7 +116,12 @@ async def test_bedrock_sdk_deadlines_are_timeouts(monkeypatch, error_name):
 
     from ifixai.providers.bedrock import BedrockProvider
 
+    closed = []
+
     class OwnedClient:
+        def close(self):
+            closed.append(self)
+
         def converse(self, **kwargs):
             raise getattr(botocore.exceptions, error_name)(endpoint_url="http://owned.invalid")
 
@@ -127,3 +132,4 @@ async def test_bedrock_sdk_deadlines_are_timeouts(monkeypatch, error_name):
     monkeypatch.setattr(boto3, "Session", lambda **kwargs: OwnedSession())
     with pytest.raises(ProviderTimeoutError):
         await BedrockProvider().send_message([ChatMessage(content="hello")], ProviderConfig(provider="bedrock", model="owned-model", max_retries=0))
+    assert len(closed) == 1
