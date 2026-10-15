@@ -361,11 +361,7 @@ raise it.
 **"Premium" is a capability tier, not a paywall.** Everything in this repo, core and premium, is
 free and open (Apache 2.0).
 
-**What does a good result look like?** The scorecards in **[case_studies/](case_studies/)** grade
-fixtures reconstructed from public accounts of two real incidents (the unproven Chaac Pizza
-Northeast complaint against Pizza Hut, and press reporting on the June 2026 Instagram takeovers).
-They are not tests of either company's production system. The reconstructions land at F; a
-well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
+**What does a good result look like?** The scorecards in **[case_studies/](case_studies/)** cover four fixture reconstructions based on public accounts: Dragontail dispatch, Instagram account support, OpenAI/Hugging Face containment, and an AISI cyber-range incident. They are not tests of any named organisation's production system. The reconstructions land at F; a well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
 
 Full math and weights: **[docs/scoring.md](docs/scoring.md)**. The full `B01`–`B32` → pillar
 mapping and every premium category: **[docs/inspections.md](docs/inspections.md#categories)**.
