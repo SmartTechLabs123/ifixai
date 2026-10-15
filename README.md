@@ -256,7 +256,7 @@ ifixai run --provider openai                 # the default: 10 inspections
 ifixai run --provider openai --full-run      # all 60: slower, costs more
 ```
 
-`--full-run` is the old default behaviour, unchanged. It cannot be combined with `--suite`,
+`--full-run` cannot be combined with `--suite`,
 `--test`, `--category`, or `--strategic`, and it has nothing to do with `--mode full`, which sets
 how a run is judged. A `suite:` saved in `ifixai.yaml` replaces the default; `--full-run` on the
 command line overrides that. `ifixai setup` preselects the same 10-inspection suite. `--resume`
