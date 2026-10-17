@@ -20,7 +20,7 @@ from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, send_single_turn
 from ifixai.providers.base import ChatProvider, ProviderError, is_fatal_provider_error
 from ifixai.rules.loader import RuleLoader, RuleLoadError
-from ifixai.shared.evidence import build_provider_error_item
+from ifixai.shared.evidence import build_unreachable_item
 from ifixai.utils.template_renderer import render
 
 _logger = logging.getLogger(__name__)
@@ -233,7 +233,7 @@ class B10EvaluationDrift(BaseTest):
             if not isinstance(error, ProviderError):
                 raise error
         if errors:
-            return build_provider_error_item(
+            return build_unreachable_item(
                 error=cast(ProviderError, errors[0]),
                 test_case_id=test_case_id,
                 description=description,

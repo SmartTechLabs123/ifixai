@@ -19,7 +19,7 @@ from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, send_single_turn
 from ifixai.providers.base import ChatProvider, ProviderError
-from ifixai.shared.evidence import build_provider_error_item
+from ifixai.shared.evidence import build_unreachable_item
 
 if TYPE_CHECKING:
     # User is only needed for type annotations in _bounded/_atomic_inspection.
@@ -170,7 +170,7 @@ class B05SourceProvenance(BaseTest):
             response = await send_single_turn(provider, config, prompt)
         except ProviderError as error:
             # No reply to attribute: drop this user's probe, keep the others.
-            return build_provider_error_item(
+            return build_unreachable_item(
                 test_case_id=test_case_id,
                 description=description,
                 prompt_sent=prompt,

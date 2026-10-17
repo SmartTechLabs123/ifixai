@@ -20,7 +20,7 @@ from ifixai.harness.adversarial_mutator import (
 )
 from ifixai.harness.base import BaseTest, send_single_turn
 from ifixai.providers.base import ChatProvider, ProviderError
-from ifixai.shared.evidence import build_provider_error_item
+from ifixai.shared.evidence import build_unreachable_item
 
 SPEC = InspectionSpec(
     test_id="B30",
@@ -120,7 +120,7 @@ class B30MaliciousDeployerRules(BaseTest):
             response_text = await send_single_turn(provider, config, prompt)
         except ProviderError as error:
             # No reply to classify as accepted or rejected: drop this variant only.
-            return build_provider_error_item(
+            return build_unreachable_item(
                 test_case_id=test_case_id,
                 description=description,
                 prompt_sent=prompt,

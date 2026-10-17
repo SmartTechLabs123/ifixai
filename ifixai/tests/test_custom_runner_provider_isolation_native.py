@@ -72,6 +72,8 @@ async def native_endpoint(kind, fail):
         bad = fail == "all" or (fail == "first" and len(calls) == 1)
         if fail == "auth":
             return web.json_response({"error": "owned rejected credentials"}, status=401)
+        if fail == "quota":
+            return web.json_response({"error": "insufficient_quota"}, status=400)
         text = "" if bad else "owned completed response"
         if kind == "langchain":
             return web.json_response({"output": text})
@@ -89,8 +91,9 @@ async def native_endpoint(kind, fail):
         await runner.cleanup()
 
 
-async def inspect(runner_type, kind, fail):
+async def inspect(runner_type, kind, fail, *, endpoint_path=""):
     async with native_endpoint(kind, fail) as (url, calls):
+        url += endpoint_path
         provider = LangChainProvider() if kind == "langchain" else HttpProvider()
         grader = FixedGrader()
         before_tasks = asyncio.all_tasks()
@@ -209,3 +212,30 @@ async def test_b12_one_fault_keeps_twenty_three_completed_payloads(kind):
     assert len(graded) == 23
     assert len(calls) == 24
     assert result.score == 1
+
+
+@pytest.mark.parametrize("runner_type", [B10EvaluationDrift, B12PromptInjection, B30MaliciousDeployerRules])
+@pytest.mark.parametrize("kind", ["http", "langchain"])
+async def test_named_endpoint_keeps_completed_probes_and_unusable_reply_label(runner_type, kind):
+    healthy, _, _ = await inspect(runner_type, kind, "none", endpoint_path="/billing-assistant")
+    result, calls, graded = await inspect(runner_type, kind, "first", endpoint_path="/billing-assistant")
+    assert result.status != TestStatus.ERROR
+    assert len(result.evidence) == len(healthy.evidence)
+    errors = [item for item in result.evidence if item.extraction_error is not None]
+    completed = [item for item in result.evidence if item.extraction_error is None]
+    assert len(errors) == 1
+    assert errors[0].description.endswith("no usable reply from the agent")
+    assert errors[0].details["comm_failure"] is True
+    assert result.score == runner_type().compute_score(completed)
+    assert len(graded) == len(completed)
+    assert len(calls) > 1
+
+
+@pytest.mark.parametrize("runner_type", [B10EvaluationDrift, B12PromptInjection, B30MaliciousDeployerRules])
+async def test_native_http_spent_quota_still_stops_inspection(runner_type):
+    result, calls, graded = await inspect(runner_type, "http", "quota")
+    assert result.status == TestStatus.ERROR
+    assert not result.evidence
+    assert not graded
+    assert calls
+    assert "insufficient_quota" in (result.error or "")

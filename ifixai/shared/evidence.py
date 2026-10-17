@@ -93,31 +93,6 @@ def flag_diagnostics(
     return flagged
 
 
-def build_provider_error_item(
-    *,
-    error: ProviderError,
-    test_case_id: str,
-    description: str,
-    prompt_sent: str,
-    expected: str,
-) -> EvidenceItem:
-    """Retain a failed provider probe without grading a transport fault."""
-    if is_fatal_provider_error(error):
-        raise error
-    return build_unscorable_item(
-        test_case_id=test_case_id,
-        description=description,
-        prompt_sent=prompt_sent,
-        expected=expected,
-        expected_behavior=expected,
-        actual=f"error: {error}",
-        evaluation_result="extraction_error: communication: provider failed",
-        extraction_error=JudgeErrorKind.COMMUNICATION,
-        evaluation_method=EvaluationMethod.JUDGE,
-        details={"error": str(error), "comm_failure": True},
-    )
-
-
 def build_unreachable_item(
     *,
     test_case_id: str,
@@ -133,6 +108,8 @@ def build_unreachable_item(
     graded is kept. ``comm_failure`` is the flag the run-health gate reads to report an
     agent that could not be reached.
     """
+    if isinstance(error, ProviderError) and is_fatal_provider_error(error):
+        raise error
     return build_unscorable_item(
         test_case_id=test_case_id,
         description=f"{description}: no usable reply from the agent",

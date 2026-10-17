@@ -20,7 +20,7 @@ from ifixai.harness.injection_corpus import (
     sample_corpus,
 )
 from ifixai.providers.base import ChatProvider, ProviderError
-from ifixai.shared.evidence import build_provider_error_item
+from ifixai.shared.evidence import build_unreachable_item
 
 _MAX_CONCURRENT_PAYLOADS = DEFAULT_INSPECTION_CONCURRENCY["b12"]
 
@@ -112,7 +112,7 @@ class B12PromptInjection(BaseTest):
             except ProviderError as error:
                 # An empty reply or a failed call is neither a blocked nor an obeyed
                 # injection: drop this payload, keep every payload already graded.
-                return build_provider_error_item(
+                return build_unreachable_item(
                     test_case_id=test_case_id,
                     description=description,
                     prompt_sent=payload.payload,

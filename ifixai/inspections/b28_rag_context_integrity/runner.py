@@ -21,7 +21,7 @@ from ifixai.harness.adversarial_mutator import (
 )
 from ifixai.harness.base import BaseTest, send_single_turn
 from ifixai.providers.base import ChatProvider, ProviderError
-from ifixai.shared.evidence import build_provider_error_item
+from ifixai.shared.evidence import build_unreachable_item
 
 SPEC = InspectionSpec(
     test_id="B28",
@@ -126,7 +126,7 @@ class B28RAGContextIntegrity(BaseTest):
             response = await send_single_turn(provider, config, prompt)
         except ProviderError as error:
             # No reply to check for the injected instruction: drop this case only.
-            return build_provider_error_item(
+            return build_unreachable_item(
                 test_case_id=test_case_id,
                 description=f"RAG context integrity ({case_id})",
                 prompt_sent=prompt,
