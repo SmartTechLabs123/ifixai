@@ -57,6 +57,7 @@ from ifixai.core.types import (
     EvaluationPipelineConfig,
     ProviderConfig,
     RunMode,
+    TestGrade,
     TestResult,
 )
 from ifixai.evaluation.checkpoint import load_checkpoint
@@ -1946,6 +1947,7 @@ def run(
     # same on every output surface.
     health = run_health(result)
     if health.invalid:
+        result.grade = TestGrade.F
         result.validation_warnings.append(
             "run_invalid: measurement failure — "
             f"errored={health.errored}/{health.n_inspections} inspections, "

@@ -1,9 +1,15 @@
-"""Empty calls remain measurements without voiding actual structural grades."""
+"""Empty calls retain their evidence without certifying an unanswered inspection."""
 
 import pytest
 
 from ifixai.core.fixture_loader import load_fixture
-from ifixai.core.types import ProviderConfig, TestRunResult, TestStatus
+from ifixai.core.types import (
+    EvaluationMethod,
+    PipelineResult,
+    ProviderConfig,
+    TestRunResult,
+    TestStatus,
+)
 from ifixai.harness.base import _InspectionResponses
 from ifixai.inspections.b11_system_controllability.runner import (
     B11SystemControllability,
@@ -27,6 +33,19 @@ class EmptyGovernanceProvider(MockGovernanceProvider):
         raise ProviderEmptyContentError(provider="mock", details="owned empty response")
 
 
+class AnsweredGovernanceProvider(MockGovernanceProvider):
+    async def send_message(self, messages, config):
+        return "Owned completed description of configuration controls"
+
+
+class PassingGrader:
+    async def evaluate(self, **kwargs):
+        return PipelineResult(
+            passed=True, evaluation_result="Owned passing response control",
+            evaluation_method=EvaluationMethod.JUDGE,
+        )
+
+
 @pytest.mark.asyncio
 async def test_empty_error_identity_survives_response_observation():
     fixture = load_fixture("customer_support")
@@ -40,18 +59,23 @@ async def test_empty_error_identity_survives_response_observation():
 
 
 @pytest.mark.asyncio
-async def test_b11_preserves_five_actual_governance_results_when_chat_is_empty():
+@pytest.mark.parametrize("empty", [True, False], ids=["empty", "answered"])
+async def test_b11_retains_structural_results_but_empty_chat_is_inconclusive(empty):
     fixture = load_fixture("customer_support")
+    provider = EmptyGovernanceProvider if empty else AnsweredGovernanceProvider
     result = await B11SystemControllability().execute(
-        EmptyGovernanceProvider(fixture.governance), ProviderConfig(provider="mock"), fixture,
+        provider(fixture.governance), ProviderConfig(provider="mock"), fixture,
+        pipeline=PassingGrader(),
     )
+    structural = [item for item in result.evidence if item.evaluation_method.value == "structural"]
+    assert len(structural) == 5
+    assert all(item.passed for item in structural)
     scored = [item for item in result.evidence if item.extraction_error is None]
-    assert len(scored) == 5
-    assert all(item.passed for item in scored)
-    assert result.status is TestStatus.PASS
-    assert result.score == 1
-    assert not result.insufficient_evidence
-    assert any(item.extraction_error is not None for item in result.evidence)
+    assert len(scored) == (5 if empty else 6)
+    assert result.status is (TestStatus.INCONCLUSIVE if empty else TestStatus.PASS)
+    assert result.score == (0 if empty else 1)
+    assert result.insufficient_evidence is empty
+    assert any(item.extraction_error is not None for item in result.evidence) is empty
 
 
 @pytest.mark.asyncio

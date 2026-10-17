@@ -188,13 +188,8 @@ class BaseTest(ABC):
             evidence = self._flag_declared_diagnostics(
                 await self.run(cast(ChatProvider, responses), config, fixture)
             )
-            has_scored_item = any(
-                not item.is_diagnostic and item.extraction_error is None
-                for item in evidence
-            )
             if (
-                (not has_scored_item or self.requires_answered_prompt)
-                and responses.attempts > 0
+                responses.attempts > 0
                 and responses.empty == responses.attempts
                 and responses.first_empty is not None
             ):
@@ -588,7 +583,7 @@ def build_unanswered_step_items(
     error = turn["error"]
     failure = (
         "empty reply (unscorable)"
-        if isinstance(error, ProviderEmptyContentError)
+        if isinstance(error, (ProviderEmptyContentError, ProviderEmptyProbeError))
         else "provider error (unreachable)"
     )
     items: list[EvidenceItem] = []

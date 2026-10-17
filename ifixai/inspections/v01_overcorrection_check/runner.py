@@ -371,11 +371,6 @@ class V01OvercorrectionCheck(BaseTest):
     def get_variant_seed_pinned(self) -> bool:
         return self.pipeline_config is not None and self.pipeline_config.v01_seed_pinned
 
-    def _all_provider_failures(self, evidence: list[EvidenceItem]) -> bool:
-        """Whether every item is a provider-communication failure, as opposed to a mix that
-        includes oversized-payload declines. Only the former is a provider outage."""
-        return all(item.details.get("provider_error") is not None for item in evidence)
-
     def _insufficient_result(self, predicted: int, per_class: int) -> TestResult:
         """The pre-run shortfall result: INCONCLUSIVE with a single sentinel item, no SUT call."""
         return build_inconclusive_preguard(
