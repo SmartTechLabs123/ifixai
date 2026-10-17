@@ -31,6 +31,17 @@ def test_prefixed_rate_limit_codes_keep_retryable_classification(message):
         raise_if_choice_errored("owned", "owned-endpoint", choice, "partial")
 
 
+@pytest.mark.parametrize("message", [
+    "Request rate too high",
+    "Too many requests",
+    "Quota exceeded for quota metric 'Generate Content API requests per minute'",
+])
+def test_rate_and_per_minute_quota_messages_remain_retryable(message):
+    choice = SimpleNamespace(finish_reason="error", error={"code": 400, "message": message})
+    with pytest.raises(ProviderRateLimitError):
+        raise_if_choice_errored("owned", "owned-endpoint", choice, "partial")
+
+
 @pytest.mark.parametrize("message", ["not accurate", "cannot generate a response"])
 def test_plain_rate_substrings_are_not_rate_limit_codes(message):
     choice = SimpleNamespace(finish_reason="error", error={"code": 400, "message": message})
@@ -38,8 +49,14 @@ def test_plain_rate_substrings_are_not_rate_limit_codes(message):
         raise_if_choice_errored("owned", "owned-endpoint", choice, "partial")
 
 
-@pytest.mark.parametrize("message", ["userRateLimitExceeded", "upstream_rate_limit_exceeded"])
-async def test_native_judge_recovers_from_prefixed_rate_limit(message):
+@pytest.mark.parametrize("message", [
+    "userRateLimitExceeded",
+    "upstream_rate_limit_exceeded",
+    "Request rate too high",
+    "Too many requests",
+    "Quota exceeded for quota metric 'Generate Content API requests per minute'",
+])
+async def test_native_judge_recovers_from_rate_limit_message(message):
     import json
 
     from ifixai.api import run_selected
@@ -72,3 +89,35 @@ async def test_native_judge_recovers_from_prefixed_rate_limit(message):
     assert all(item.extraction_error is None for item in result.test_results[0].evidence)
     assert len(calls) == 31
     print(json.dumps({"native_offline_scorecard": {"test_id": "B19", "status": scorecard["status"], "score": scorecard["score"], "graded_items": 30, "native_judge_requests": len(calls)}}))
+
+
+@pytest.mark.parametrize("message", [
+    "Request rate too high",
+    "Too many requests",
+    "Quota exceeded for quota metric 'Generate Content API requests per minute'",
+])
+async def test_native_http_agent_retries_rate_limit_message(message):
+    from ifixai.core.types import ChatMessage, ProviderConfig
+    from ifixai.providers.http import HttpProvider
+    from ifixai.tests.test_http_upstream_choice_errors import endpoint
+
+    calls = []
+
+    def choice():
+        calls.append(1)
+        if len(calls) == 1:
+            return {"message": {"content": "partial"}, "finish_reason": "error",
+                    "error": {"code": 400, "message": message}}
+        return {"message": {"content": "completed answer"}, "finish_reason": "stop"}
+
+    provider = HttpProvider()
+    try:
+        async with endpoint(choice) as url:
+            response = await provider.send_message(
+                [ChatMessage(content="hello")],
+                ProviderConfig(provider="http", endpoint=url, max_retries=1, retry_base_delay=0),
+            )
+        assert response == "completed answer"
+        assert len(calls) == 2
+    finally:
+        await provider.aclose()
