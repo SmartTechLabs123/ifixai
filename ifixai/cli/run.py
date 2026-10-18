@@ -878,6 +878,7 @@ def run(
         )
         sys.exit(1)
 
+    suite_from_config = False
     try:
         config_obj = load_config()
     except ValueError as exc:
@@ -904,6 +905,7 @@ def run(
         )
         if config_obj.suite and not explicit_selector:
             suite = config_obj.suite
+            suite_from_config = True
         run_mode = _cfg_value(ctx, "run_mode", run_mode, config_obj.mode)
         eval_mode = _cfg_value(ctx, "eval_mode", eval_mode, config_obj.eval_mode)
         output = _cfg_value(ctx, "output", output, config_obj.output)
@@ -1019,6 +1021,9 @@ def run(
     is_resuming_full_run = (
         resume_manifest is not None and resume_manifest.mode_filter == ["all"]
     )
+    if is_resuming_full_run and suite_from_config:
+        # The saved default suite must not narrow the full selection being resumed.
+        suite = None
     is_default_selection = not (
         full_run or is_resuming_full_run or strategic or test or categories or suite
     )
