@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ifixai.reporting.scorecard import grading_vendor
 
@@ -38,6 +38,20 @@ class JudgeFallbackPolicy(BaseModel):
 
     version: int = 1
     providers: dict[str, JudgeFallbackChain] = Field(default_factory=dict)
+
+    @field_validator("providers")
+    @classmethod
+    def _normalize_provider_keys(
+        cls, value: dict[str, JudgeFallbackChain]
+    ) -> dict[str, JudgeFallbackChain]:
+        # chain_for looks providers up case-insensitively, so keys must match that.
+        normalized: dict[str, JudgeFallbackChain] = {}
+        for key, chain in value.items():
+            name = key.strip().lower()
+            if name in normalized:
+                raise ValueError(f"duplicate provider key {key!r}")
+            normalized[name] = chain
+        return normalized
 
     def chain_for(self, provider: str) -> JudgeFallbackChain:
         """The chain declared for `provider`, or an empty one (no fallbacks)."""
