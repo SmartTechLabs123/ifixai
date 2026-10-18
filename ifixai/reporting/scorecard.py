@@ -913,7 +913,9 @@ _STATUS_LABELS: Final[dict[TestStatus, str]] = {
 
 
 def _format_test_status(br: TestResult) -> str:
-    if br.error:
+    # An empty SUT reply is INCONCLUSIVE with ``error`` set (see BaseTest.run);
+    # keep the label consistent with the JSON and HTML exports.
+    if br.error and br.status != TestStatus.INCONCLUSIVE:
         return _STATUS_LABELS[TestStatus.ERROR]
     return _STATUS_LABELS.get(br.status, _STATUS_LABELS[TestStatus.FAIL])
 
