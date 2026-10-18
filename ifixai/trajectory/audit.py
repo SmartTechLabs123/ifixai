@@ -57,6 +57,7 @@ class _Audit:
         self.policy = policy
         self.events = {event.event_id: event for event in capture.events}
         self.violations: list[Violation] = []
+        self.violation_keys: set[tuple[str, str, tuple[str, ...]]] = set()
         self.issues: list[CoverageIssue] = []
         self.edges = tuple((parent, event.event_id) for event in capture.events for parent in event.parents)
         self.paths: dict[str, tuple[str, ...]] = {}
@@ -72,7 +73,14 @@ class _Audit:
         self.issues.append(CoverageIssue(code=code, event_id=event.event_id if event else None, message=message, witness_ids=witnesses))
 
     def violation(self, family: Literal["permission", "approval", "delegation", "budget", "citation"], code: str, event: TraceEvent, message: str, witnesses: tuple[str, ...] = (), actor: str | None = None) -> None:
-        self.violations.append(Violation(rule=family, code=code, event_id=event.event_id, message=message, witness_ids=witnesses or (event.event_id,), actor_id=actor))
+        witness_ids = witnesses or (event.event_id,)
+        # A grant is re-validated for every action or child that cites it; its own
+        # defects are one finding, not one per citation.
+        key = (code, event.event_id, witness_ids)
+        if key in self.violation_keys:
+            return
+        self.violation_keys.add(key)
+        self.violations.append(Violation(rule=family, code=code, event_id=event.event_id, message=message, witness_ids=witness_ids, actor_id=actor))
 
     def ancestor(self, parent: str, child: str) -> bool:
         key = (parent, child)
