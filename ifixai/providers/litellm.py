@@ -8,6 +8,9 @@ Install: pip install ifixai[litellm]
 See https://docs.litellm.ai/docs/providers for all supported models.
 """
 
+from types import SimpleNamespace
+from typing import Any
+
 import litellm as _litellm
 import openai
 
@@ -17,6 +20,7 @@ from ifixai.providers.base import (
     ProviderAuthError,
     ProviderConnectionError,
     ProviderEmptyContentError,
+    ProviderError,
     ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
@@ -81,6 +85,9 @@ class LiteLLMProvider(ChatProvider):
                     details=f"Missing message in choice (finish_reason={finish_reason})",
                 )
             content = choice.message.content
+            raise_if_choice_errored(
+                "litellm", config.endpoint or "default", _native_choice(choice), content or ""
+            )
             if config.reject_truncated:
                 raise_if_truncated(
                     "litellm", config.endpoint or "default", finish_reason, content or ""
@@ -91,11 +98,8 @@ class LiteLLMProvider(ChatProvider):
                     endpoint=config.endpoint or "default",
                     details=f"Empty content in response (finish_reason={finish_reason})",
                 )
-            raise_if_choice_errored(
-                "litellm", config.endpoint or "default", choice, content
-            )
 
-        except ProviderResponseError:
+        except ProviderError:
             raise
         except (_litellm.AuthenticationError, openai.PermissionDeniedError) as exc:
             raise ProviderAuthError(
@@ -150,3 +154,17 @@ class LiteLLMProvider(ChatProvider):
             ) from exc
         else:
             return content
+
+
+def _native_choice(choice: Any) -> Any:
+    """The choice as the upstream sent it.
+
+    LiteLLM maps an unrecognised ``finish_reason="error"`` to ``"stop"`` and moves
+    the upstream's ``error`` object into ``provider_specific_fields``, which would
+    hide a mid-generation abort from ``raise_if_choice_errored``.
+    """
+    fields = getattr(choice, "provider_specific_fields", None) or {}
+    native = fields.get("native_finish_reason")
+    if not native:
+        return choice
+    return SimpleNamespace(finish_reason=native, error=fields.get("error"))
