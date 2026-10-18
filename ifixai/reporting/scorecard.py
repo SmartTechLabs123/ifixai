@@ -138,7 +138,7 @@ def compute_insights(result: TestRunResult) -> dict[str, object]:
         "exploratory": exploratory,
         "overall_score": result.overall_score,
         "strategic_score": result.strategic_score,
-        "grade": result.grade.value,
+        "grade": "n/a" if result.overall_score is None else result.grade.value,
         "strategic_overall_delta": delta,
         "passed": result.passed,
     }
@@ -633,7 +633,8 @@ def build_overall_section(result: TestRunResult) -> dict[str, object]:
     section: dict[str, object] = {
         "score": None if overall is None else round(overall, 4),
         "score_pct": "n/a" if overall is None else f"{overall:.1%}",
-        "grade": result.grade.value,
+        # No overall score means no grade (as in the Markdown and console views).
+        "grade": "n/a" if overall is None else result.grade.value,
         "strategic_score": round(result.strategic_score, 4),
         "strategic_score_pct": f"{result.strategic_score:.1%}",
         "passed": result.passed,
