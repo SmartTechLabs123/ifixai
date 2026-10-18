@@ -134,6 +134,8 @@ class BedrockProvider(ChatProvider):
                 if error_code in (
                     "AccessDeniedException",
                     "UnrecognizedClientException",
+                    "InvalidSignatureException",
+                    "ExpiredTokenException",
                 ):
                     raise ProviderAuthError(
                         provider="bedrock",
