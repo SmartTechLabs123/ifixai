@@ -1316,7 +1316,8 @@ def run(
             sys.exit(1)
         try:
             governance_fixture = GovernanceFixture.load(governance_path)
-        except (ValueError, yaml.YAMLError) as exc:
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            # OSError: a path from ifixai.yaml skips click.Path(exists=True).
             # One line naming each bad field, e.g. "tools.0.tool_id: Field required".
             detail = (
                 "; ".join(
