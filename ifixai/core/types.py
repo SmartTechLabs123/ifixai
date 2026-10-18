@@ -1,5 +1,5 @@
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -2178,8 +2178,8 @@ class TestRunResult(BaseModel):
     system_version: str = "1.0"
     provider: str = ""
     fixture_name: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    evaluation_date: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    evaluation_date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     specification_version: str = "3.0"
 
     overall_score: Optional[float] = 0.0

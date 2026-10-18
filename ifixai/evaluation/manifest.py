@@ -9,7 +9,7 @@ import secrets
 import stat
 import warnings
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -241,7 +241,7 @@ def build_manifest(
     run_id = compute_run_id(payload)
     return RunManifest(
         run_id=run_id,
-        timestamp=timestamp or datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        timestamp=timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         schema_version=CURRENT_MANIFEST_SCHEMA_VERSION,
         run_nonce=effective_run_nonce,
         sut_context_digest=sut_context_digest,
