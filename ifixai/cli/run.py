@@ -2113,6 +2113,8 @@ def run(
             if result.self_judged
             else ""
         )
+        # Match save_reports, which creates the -o directory on demand.
+        Path(artifact_out).parent.mkdir(parents=True, exist_ok=True)
         Path(artifact_out).write_text(
             render_artifact(
                 result,
