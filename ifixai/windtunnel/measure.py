@@ -28,13 +28,22 @@ reproducible from ``(profile, fixture, inspection ids)`` alone.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
 from ifixai.api import run_selected
 from ifixai.core.fixture_loader import load_fixture
-from ifixai.core.types import Fixture, TestResult, TestRunResult
+from ifixai.core.types import (
+    EvaluationMode,
+    EvaluationPipelineConfig,
+    Fixture,
+    TestResult,
+    TestRunResult,
+)
+from ifixai.judge.config import JudgeConfig
 from ifixai.providers.governance_fixture import GovernanceFixture
 from ifixai.windtunnel.defects import CLEAN, DefectProfile
 from ifixai.windtunnel.provider import DefectInjectingProvider
@@ -67,6 +76,14 @@ class Outcome(str, Enum):
     MISSED = "missed"
     FALSE_POSITIVE = "false_positive"
     UNUSABLE = "unusable"
+    #: The defect never reached this inspection: it gathered byte-identical
+    #: evidence in both runs, so it had nothing different to judge. That is a
+    #: statement about the injector's reach, not about the inspection, and
+    #: calling it `missed` would invent a blind spot. Observed for real: the
+    #: audit-entry defect leaves B03's and P08's evidence untouched, so an
+    #: earlier version of this module reported two blind spots that did not
+    #: exist.
+    NOT_EXERCISED = "not_exercised"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +104,11 @@ class InspectionOutcome:
             Outcome.MISSED.value,
             Outcome.UNUSABLE.value,
         )
+
+    @property
+    def is_unreached(self) -> bool:
+        """Claimed this defect, but never observed it. An injector gap."""
+        return self.expected and self.outcome == Outcome.NOT_EXERCISED.value
 
     @property
     def is_surprise(self) -> bool:
@@ -114,8 +136,18 @@ class WindTunnelReport:
 
     @property
     def blind_spots(self) -> tuple[InspectionOutcome, ...]:
-        """Inspections that claim this defect and failed to catch it."""
+        """Inspections that observed this defect and failed to catch it."""
         return tuple(o for o in self.outcomes if o.is_blind_spot)
+
+    @property
+    def unreached(self) -> tuple[InspectionOutcome, ...]:
+        """Expected detectors the defect never reached.
+
+        Reported apart from blind spots because the fix is different: a blind
+        spot is a gap in an inspection, an unreached detector is a gap in the
+        injector or in the profile's claim about which inspections cover it.
+        """
+        return tuple(o for o in self.outcomes if o.is_unreached)
 
     @property
     def surprises(self) -> tuple[InspectionOutcome, ...]:
@@ -129,7 +161,11 @@ class WindTunnelReport:
         control does: there is nothing to detect, so a rate would be
         meaningless rather than zero.
         """
-        expected = [o for o in self.outcomes if o.expected]
+        expected = [
+            o
+            for o in self.outcomes
+            if o.expected and o.outcome != Outcome.NOT_EXERCISED.value
+        ]
         if not expected:
             return None
         hits = sum(1 for o in expected if o.outcome == Outcome.DETECTED.value)
@@ -142,12 +178,26 @@ class WindTunnelReport:
             f"{self.profile_name}: detection {rate_text} "
             f"({len(self.detected)} detected, "
             f"{len(self.blind_spots)} blind spot(s), "
+            f"{len(self.unreached)} unreached, "
             f"{len(self.false_positives)} false positive(s))"
         )
 
 
 def _resolve(fixture: str | Fixture) -> Fixture:
     return load_fixture(fixture) if isinstance(fixture, str) else fixture
+
+
+def _evidence_digest(result: TestResult) -> str:
+    """A stable fingerprint of what this inspection actually observed.
+
+    Compared between the clean and defective runs to decide whether the defect
+    reached the inspection at all. The evidence models are deterministic for a
+    given run configuration -- no timestamps or ids vary -- so an identical
+    digest means identical observations, not merely a similar score.
+    """
+    payload = [item.model_dump(mode="json") for item in result.evidence]
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _score_of(result: TestResult) -> float | None:
@@ -172,6 +222,23 @@ def _classify(
         outcome = Outcome.UNUSABLE
     elif clean_score < threshold:
         outcome = Outcome.FALSE_POSITIVE
+    elif (
+        clean.evidence
+        and clean_score == defective_score
+        and _evidence_digest(clean) == _evidence_digest(defective)
+    ):
+        # Identical observations *and* an identical score: the defect never
+        # reached this inspection's evaluation path, so neither detection nor a
+        # miss can be claimed from it.
+        #
+        # Both conditions are required. Identical evidence alone is not enough:
+        # B02's score was observed moving 1.00 -> 0.50 between two runs whose
+        # recorded evidence was byte-identical, when run alongside the full
+        # selection rather than on its own. Whatever drives that, the score is
+        # not a function of the evidence this inspection retained, so treating
+        # the evidence as the whole picture would have silently relabelled a
+        # real score change as "never reached".
+        outcome = Outcome.NOT_EXERCISED
     elif defective_score is None:
         # The defect made the inspection unscoreable rather than failing it.
         # That is not a detection: a report cannot cite a score it does not
@@ -198,6 +265,7 @@ async def _run(
     fixture: str | Fixture,
     governance: GovernanceFixture,
     profile: DefectProfile,
+    judged: bool,
 ) -> TestRunResult:
     provider = DefectInjectingProvider(
         governance=governance,
@@ -205,12 +273,24 @@ async def _run(
         default_response="ACK",
         profile=profile,
     )
+    judge_config = pipeline_config = None
+    if judged:
+        # The conversation inspections refuse to score without an analytic
+        # judge pipeline, and the pipeline only engages outside DETERMINISTIC
+        # mode. Pointing it at the reference provider keeps the run offline and
+        # deterministic while letting those inspections produce evidence at
+        # all: without this they report no evidence and the wind tunnel calls
+        # them `unusable`, which understates what the suite can detect.
+        judge_config = JudgeConfig(provider="mock")
+        pipeline_config = EvaluationPipelineConfig(mode=EvaluationMode.SINGLE)
     return await run_selected(
         test_ids=test_ids,
         provider=provider,
         fixture=fixture,
         governance=governance,
         system_name=f"windtunnel:{profile.name}",
+        judge_config=judge_config,
+        pipeline_config=pipeline_config,
     )
 
 
@@ -245,6 +325,7 @@ async def measure(
     fixture: str | Fixture = "default",
     governance: GovernanceFixture | None = None,
     test_ids: Iterable[str] | None = None,
+    judged: bool = True,
 ) -> WindTunnelReport:
     """Run ``test_ids`` clean and defective, then classify each inspection.
 
@@ -259,8 +340,8 @@ async def measure(
     selected = set(test_ids) if test_ids is not None else set(STRUCTURAL_INSPECTIONS)
     selected |= set(profile.expected_detectors)
 
-    clean_run = await _run(selected, fixture_obj, governance, CLEAN)
-    defective_run = await _run(selected, fixture_obj, governance, profile)
+    clean_run = await _run(selected, fixture_obj, governance, CLEAN, judged)
+    defective_run = await _run(selected, fixture_obj, governance, profile, judged)
 
     clean_by_id = {r.test_id: r for r in clean_run.test_results}
     defective_by_id = {r.test_id: r for r in defective_run.test_results}
@@ -282,6 +363,7 @@ async def measure_all(
     fixture: str | Fixture = "default",
     governance: GovernanceFixture | None = None,
     test_ids: Iterable[str] | None = None,
+    judged: bool = True,
 ) -> tuple[WindTunnelReport, ...]:
     """Measure several profiles, in declaration order.
 
@@ -291,7 +373,7 @@ async def measure_all(
     """
     reports = []
     for profile in profiles:
-        reports.append(await measure(profile, fixture, governance, test_ids))
+        reports.append(await measure(profile, fixture, governance, test_ids, judged))
     return tuple(reports)
 
 

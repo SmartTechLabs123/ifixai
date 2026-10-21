@@ -28,12 +28,35 @@ measurement, and which fixtures those are is not apparent from reading them.
 
 | Exit | Decision | Meaning |
 | --- | --- | --- |
-| 0 | Detected | Every expected detector caught its defect. |
-| 1 | Blind spot | An expected detector did not move when its defect was present. |
-| 2 | Inconclusive | The clean control did not pass, so no detection claim from this run means anything. |
+| 0 | Detected | Every expected detector observed its defect and caught it. |
+| 1 | Blind spot | An expected detector observed its defect and did not move. |
+| 2 | Inconclusive | The clean control did not pass, or an expected detector never observed its defect. Either way no detection claim from this run means anything. |
 
 Exit 2 outranks exit 1 deliberately. An unusable control does not make a blind
 spot confirmed; it makes it unmeasurable.
+
+## Observed, or merely expected?
+
+The distinction that keeps this honest: an inspection that gathers **identical
+evidence in both runs** never saw the defect. Calling that a blind spot would
+invent one.
+
+So an expected detector whose evidence and score are byte-identical between the
+clean and defective runs is reported `not_exercised`, and the run is
+inconclusive rather than green. The gap is in the injector or in the profile's
+claim about which inspections cover the defect — not in the inspection.
+
+This is not hypothetical. An earlier version of this module reported that B03
+and P08 missed a dropped audit entry. They had not: the defect never reached
+the trail those inspections read, and both gathered identical evidence either
+way. Two findings that did not exist.
+
+Both conditions are required, evidence *and* score. Identical evidence alone is
+not sufficient: B02's score was observed moving 1.00 → 0.50 between two runs
+whose recorded evidence was byte-identical, when run alongside the full
+selection rather than on its own. Whatever drives that, the score is not a
+function of the evidence that inspection retained, so treating the evidence as
+the whole picture would relabel a real score change as "never reached".
 
 ## Sealed evidence, and failing a build on a lost detection
 
@@ -94,7 +117,8 @@ result is reproducible from `(profile, fixture, inspection ids)`.
 | Outcome | Meaning |
 | --- | --- |
 | `detected` | Passed clean, failed defective. The inspection tests for this defect. |
-| `missed` | Passed both. A blind spot, and the most valuable finding here. |
+| `missed` | Observed the defect and passed anyway. A blind spot, and the most valuable finding here. |
+| `not_exercised` | Identical evidence and score in both runs: the defect never reached it. |
 | `false_positive` | Failed the clean run too, so a later failure proves nothing. |
 | `unusable` | Produced no usable score: inconclusive, no evidence, or an error. |
 
@@ -155,11 +179,15 @@ a wholly broken layer is caught but how small a leak still trips the gate.
   about a real agent.
 - The defects are declared, not discovered. An adversary chooses its own attack;
   these do not, so a clean sweep is not evidence of resistance to one.
-- It measures the inspections, not the judges. The default selection covers the
-  inspections whose structural path the reference provider implements, because a
-  judge introduces variance that would otherwise be charged to the defect.
-  Judge-path inspections are measured only when a profile names them and a judge
-  is configured.
+- **It measures the inspections, not the judges.** Conversation inspections
+  refuse to score without an analytic judge pipeline, so the run configures the
+  reference provider as its own judge, offline and deterministic. That lets
+  those inspections produce evidence — B08 gathers 67 items where it previously
+  gathered none — but the grader is a fixture, not a model. A `missed` here
+  means the inspection did not move on evidence it observed; it says nothing
+  about how a real cross-vendor judge would discriminate, and a self-judged
+  result is exactly what this project refuses to let anyone cite elsewhere. Set
+  `judged=False` to measure the structural surface alone.
 - An inspection reported `unusable` on every fixture is not being measured by
   this tool at all. Treat that as a coverage gap to close, not a result.
 - `detected` means the score crossed the inspection's threshold. It does not

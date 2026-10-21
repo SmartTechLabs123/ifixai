@@ -53,6 +53,13 @@ def _verdict(
     # comparison itself is not trustworthy.
     if any(report.false_positives for report in reports):
         return _INCONCLUSIVE
+    # An expected detector that never observed its defect leaves the profile's
+    # claim untested. That is not a pass: the injector did not reach the
+    # inspection, so this run says nothing about whether it would catch the
+    # real thing. Inconclusive rather than a blind spot, because the gap is in
+    # the measurement, not in the inspection.
+    if any(report.unreached for report in reports):
+        return _INCONCLUSIVE
     if comparison is not None and comparison.regressed:
         return _BLIND_SPOT
     if any(report.blind_spots for report in reports):
@@ -140,11 +147,20 @@ def _echo_closing(reports: tuple[WindTunnelReport, ...]) -> None:
             "about the suite."
         )
         return
+    unreached = {o.test_id for r in reports for o in r.unreached}
+    if unreached:
+        click.echo(
+            f"\nNot exercised: {', '.join(sorted(unreached))} gathered "
+            "identical evidence in both runs, so the defect never reached "
+            "them. This run cannot say whether they would catch it; the gap "
+            "is in the injector or in the profile's claim, not in the "
+            "inspection."
+        )
     blind = {o.test_id for r in reports for o in r.blind_spots}
     if blind:
         click.echo(
-            f"\nBlind spots: {', '.join(sorted(blind))} did not move when the "
-            "defect they exist to catch was present on every eligible call."
+            f"\nBlind spots: {', '.join(sorted(blind))} observed the defect "
+            "they exist to catch and did not move."
         )
 
 

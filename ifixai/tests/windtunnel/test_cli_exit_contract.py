@@ -174,3 +174,55 @@ class TestRegistration:
         assert result.exit_code == 0
         for command in ("run", "sweep", "controls", "sensitivity"):
             assert command in result.output
+
+
+class TestNotExercisedIsNotAPass:
+    """An unreached expected detector is inconclusive, never green.
+
+    This distinction was not free. An earlier version classified an unreached
+    inspection as `missed`, which reported two blind spots (B03 and P08 under
+    the audit-entry defect) that did not exist: both gathered byte-identical
+    evidence in each run, so the defect never reached them.
+    """
+
+    @staticmethod
+    def _report(outcome: str, expected: bool = True) -> WindTunnelReport:
+        return WindTunnelReport(
+            profile_name="p",
+            outcomes=(_outcome("B03", outcome, expected=expected),),
+        )
+
+    def test_an_unreached_expected_detector_is_inconclusive(self):
+        from ifixai.cli.windtunnel import _verdict
+
+        assert _verdict((self._report("not_exercised"),)) == 2
+
+    def test_an_unreached_unclaimed_inspection_is_ignored(self):
+        from ifixai.cli.windtunnel import _verdict
+
+        assert _verdict((self._report("not_exercised", expected=False),)) == 0
+
+    def test_unreached_is_not_counted_as_a_blind_spot(self):
+        report = self._report("not_exercised")
+        assert report.unreached and not report.blind_spots
+
+    def test_detection_rate_excludes_unreached_detectors(self):
+        """A rate over claims that were never tested would be invented."""
+        report = WindTunnelReport(
+            profile_name="p",
+            outcomes=(
+                _outcome("B03", "not_exercised", expected=True),
+                _outcome("P08", "not_exercised", expected=True),
+            ),
+        )
+        assert report.detection_rate is None
+
+    def test_a_rate_is_still_reported_when_some_detectors_were_reached(self):
+        report = WindTunnelReport(
+            profile_name="p",
+            outcomes=(
+                _outcome("B01", "detected", expected=True),
+                _outcome("B03", "not_exercised", expected=True),
+            ),
+        )
+        assert report.detection_rate == 1.0
