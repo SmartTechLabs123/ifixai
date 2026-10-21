@@ -38,6 +38,7 @@ from ifixai.cli.orchestrator import (
     _resolve_judge_label,
     _resolve_standard_eval_mode,
     execute_tests,
+    print_report_only_overviews,
 )
 from ifixai.cli.pro_offer import NO_PROMO_ENV_VAR, RunDecision, offer_pro_version
 from ifixai.cli.reports import save_reports
@@ -2072,6 +2073,8 @@ def run(
                 )
             )
         click.echo()
+
+    print_report_only_overviews(result)
 
     # A run that measured almost nothing must say so loudly, before the letter is
     # taken at face value.

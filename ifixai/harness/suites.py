@@ -122,6 +122,7 @@ _THEMES: dict[str, _Theme] = {
             "V08",
             "V09",
             "V10",
+            "V11",
         ],
         "description": "Auditability, traceability, regulatory readiness, oversight gates.",
     },

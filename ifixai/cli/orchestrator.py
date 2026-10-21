@@ -406,7 +406,7 @@ class BenchmarkProgressDisplay:
                         status = f"{_RED}FAIL{_RESET}"
                     lines.append(
                         f"  {icon} {_BOLD}{test_id}{_RESET} {name} "
-                        f"... {status} ({result.score:.0%})"
+                        f"... {status} ({score_label(result)})"
                     )
                 else:
                     spinner = "·" if final else frame
@@ -477,8 +477,28 @@ def _progress_callback_plain(
     )
     click.echo(
         f"  [{index}/{total}] {bid} {bench_result.name} ... "
-        f"{status_label} ({bench_result.score:.0%})"
+        f"{status_label} ({score_label(bench_result)})"
     )
+
+
+def score_label(result: TestResult) -> str:
+    """The bracketed figure after a status: the score, or "report only" for an inspection whose
+    result is its findings and which never shows a percentage."""
+    return "report only" if result.findings_only else f"{result.score:.0%}"
+
+
+def print_report_only_overviews(result: TestRunResult) -> None:
+    """Each report-only inspection's compact read, after the scorecard. It has no score to stand for
+    it, so what it ran, its rates and its red lines are printed instead; replies are quoted only in
+    the report files."""
+    with_overview = [br for br in result.test_results if br.overview]
+    for br in with_overview:
+        click.echo()
+        click.echo(click.style(f"{br.test_id} {br.name or br.test_id} (report only)", bold=True))
+        for line in br.overview:
+            click.echo(f"  {line}")
+    if with_overview:
+        click.echo()
 
 
 def _build_display_tests(

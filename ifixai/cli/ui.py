@@ -528,6 +528,12 @@ def render_scorecard(result) -> bool:
         expl_tbl.add_column("Score", justify="right", width=8)
         expl_tbl.add_column("Signal", justify="center", width=8)
         for item in ins["exploratory"]:
+            # A findings-only result has no score or pass mark; its findings print below.
+            if item.get("findings_only"):
+                expl_tbl.add_row(
+                    item["test_id"], item["name"], Text("report only", style=_DIM), Text("—", style=_DIM)
+                )
+                continue
             mark = Text("✓", style="green") if item["passing"] else Text("·", style=_DIM)
             expl_tbl.add_row(
                 item["test_id"],

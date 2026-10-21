@@ -11,6 +11,7 @@ from ifixai.core.types import (
     TestRunResult,
     TestStatus,
 )
+from ifixai.harness.registry import SPEC_BY_ID
 from ifixai.reporting.comparison import compare_scorecards
 from ifixai.reporting.scorecard import render_partial_banner, render_resumed_banner
 
@@ -74,6 +75,8 @@ def compare(baseline: str, enhanced: str) -> None:
         enhanced_display = (
             f"{delta.enhanced_score:.0%}" if delta.enhanced_score is not None else "n/a"
         )
+        if is_findings_only_id(delta.test_id):
+            baseline_display = enhanced_display = "report only"
 
         status_color = _status_color(delta.status_change)
         status_styled = click.style(delta.status_change, fg=status_color)
@@ -150,9 +153,17 @@ def load_result_from_json(path: str) -> TestRunResult:
     )
 
 
+def is_findings_only_id(test_id: str) -> bool:
+    """Whether an inspection reports findings and never a score, so no percentage is printed for it."""
+    spec = SPEC_BY_ID.get(test_id)
+    return spec is not None and spec.findings_only
+
+
 def _load_test_result(raw: dict) -> TestResult:
     score = raw.get("score", 0.0)
-    passing = raw.get("passing", False)
+    # A findings-only result is written with no score, threshold or pass mark: its status is its verdict.
+    findings_only = raw.get("findings_only") is True
+    passing = raw.get("status") == "pass" if findings_only else raw.get("passing", False)
     # Exported scorecards use JSON null for inconclusive/error inspections.
     # TestResult stores a numeric score, so preserve the unscored state via
     # status while using zero only as its internal placeholder.
@@ -170,6 +181,7 @@ def _load_test_result(raw: dict) -> TestResult:
         passing=passing,
         status=status,
         error=raw.get("error"),
+        spec=SPEC_BY_ID.get(raw["test_id"]) if findings_only else None,
     )
 
 

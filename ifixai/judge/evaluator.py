@@ -66,6 +66,12 @@ class JudgeEvaluator:
         """
         return self._provider_config.provider
 
+    @property
+    def panel_identity(self) -> str:
+        """`provider:model` as configured: how a panel vote names this judge."""
+        model = self._provider_config.model or "<provider default>"
+        return f"{self._provider_config.provider}:{model}"
+
     def note_fallback_grade(self, model: str) -> None:
         """Record that `model` graded a probe in place of the configured judge.
 

@@ -5,7 +5,7 @@ from ifixai.harness.validator import LayoutValidationError, validate_layout
 
 @pytest.mark.parametrize(
     "folder_name",
-    ["b33_new_inspection", "v11_new_inspection", "b01-wrong-separator", "B01_uppercase"],
+    ["b33_new_inspection", "v12_new_inspection", "b01-wrong-separator", "B01_uppercase"],
 )
 def test_validator_rejects_inspection_like_folders_with_invalid_names(
     tmp_path, folder_name

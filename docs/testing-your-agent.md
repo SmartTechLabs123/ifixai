@@ -1,7 +1,7 @@
 # Test your own agent
 
 iFixAi tests the system you deploy: model plus tools, retrieval, and governance. A bare
-model API (`--provider openai` / `anthropic` / ...) scores 43 of 60 inspections; the rest
+model API (`--provider openai` / `anthropic` / ...) scores 44 of 61 inspections; the rest
 return `insufficient_evidence` and drop out. Flags and extras: [provider reference](#provider-reference).
 
 ## Path 1: HTTP endpoint
@@ -111,13 +111,13 @@ Counts are for a `--full-run`. A default run executes 10 of these inspections.
 
 | SUT shape | Inspections scored |
 |---|---|
-| Vanilla LLM, default fixture (ships `governance:`) | 60 / 60 \* |
-| Vanilla LLM, custom fixture without governance | 43 / 60 (27 core + 16 extended) |
-| `--provider mock` (zero credentials) | 60 / 60 \* |
-| Every hook exposed, or full mode + multi-judge | 60 / 60 |
+| Vanilla LLM, default fixture (ships `governance:`) | 61 / 61 \* |
+| Vanilla LLM, custom fixture without governance | 44 / 61 (27 core + 17 extended) |
+| `--provider mock` (zero credentials) | 61 / 61 \* |
+| Every hook exposed, or full mode + multi-judge | 61 / 61 |
 
 \* The bundled default fixture (NimbusForge, `managed_it_infrastructure`) declares a
-specific domain so B32 scores, and it carries **seeded defects**: expect 15/60 FAILs
+specific domain so B32 scores, and it carries **seeded defects**: expect 15/61 FAILs
 by design on a default-fixture run — they are properties of the fixture, not your
 system. Defect map: [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md).
 On a custom fixture, set a specific `metadata.domain` (or `metadata.on_topic_examples`)

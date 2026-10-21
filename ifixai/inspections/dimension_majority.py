@@ -8,15 +8,15 @@ zeroed a run while two of three did not.
 
 The fix is a per-probe tally recorded through the consensus engine's `correct=` hook, which runs on every
 sample before the vote. The runner publishes the tally on the evidence item, and every dimension-scoped
-read goes through `dimension_failed`. Shared rather than per-inspection so V09 and V10 (and whoever
-needs it next) read the same majority, with the same floor.
+read goes through `dimension_failed`. Shared rather than per-inspection so V09, V10 and V11 (and
+whoever needs it next) read the same majority, with the same floor.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypedDict
 
-from ifixai.core.types import EvidenceItem, PipelineResult, RubricVerdict
+from ifixai.core.types import EvidenceItem, JudgeVote, PipelineResult, RubricVerdict
 from ifixai.inspections.dimension_reads import dimension_failures
 
 if TYPE_CHECKING:
@@ -56,6 +56,40 @@ class MajorityRecord(TypedDict):
     majority_failed_dimensions: list[str]
 
 
+class CheckVoteRecord(TypedDict):
+    """One judge's read of one check, as published."""
+
+    check: str
+    passed: bool
+    reason: str
+
+
+class JudgeVoteRecord(TypedDict):
+    """One panel judge's vote on one probe, as published. `verdict` is "no verdict" (with `passed`
+    None, the error class and no checks) for a judge that errored, refused or was dropped."""
+
+    judge: str
+    provider: str
+    returned: bool
+    verdict: str
+    passed: bool | None
+    reason: str
+    error_class: str | None
+    fell_back_from: str | None
+    checks: list[CheckVoteRecord]
+
+
+class VoteRecord(TypedDict):
+    """Every judge on the panel for one probe, and how many answered."""
+
+    judge_votes: list[JudgeVoteRecord]
+    judges_called: int
+    judges_returned: int
+
+
+NO_VERDICT: str = "no verdict"
+
+
 def new_sample_tally() -> SampleTally:
     """An empty per-probe tally. Created inside each probe, never shared between probes."""
     return SampleTally(corrected=set(), dimension_fail_votes={}, verdict_samples=0, sample_failed_dimensions=[])
@@ -84,6 +118,56 @@ def record_sample_votes(
         if not score.passed:
             votes = tally["dimension_fail_votes"]
             votes[score.dimension_name] = votes.get(score.dimension_name, 0) + 1
+
+
+def vote_record(votes: list[JudgeVote]) -> VoteRecord:
+    """The panel's per-judge votes in their published form, in panel order.
+
+    A judge that gave no verdict is kept as such, never as a pass and never dropped, so a reader can
+    tell "two of three judges failed it" from "two judges answered and both failed it". The majority
+    rule is not touched: this only records who said what.
+    """
+    return VoteRecord(
+        judge_votes=[vote_entry(vote) for vote in votes],
+        judges_called=len(votes),
+        judges_returned=sum(1 for vote in votes if vote.verdict is not None),
+    )
+
+
+def vote_entry(vote: JudgeVote) -> JudgeVoteRecord:
+    verdict = vote.verdict
+    if verdict is None:
+        return JudgeVoteRecord(
+            judge=vote.judge,
+            provider=vote.provider,
+            returned=False,
+            verdict=NO_VERDICT,
+            passed=None,
+            # The class only: a vendor's error text stays in the logs, never in a published vote.
+            reason=f"{NO_VERDICT} ({vote.error_class})",
+            error_class=vote.error_class,
+            fell_back_from=vote.fell_back_from,
+            checks=[],
+        )
+    checks = [
+        CheckVoteRecord(check=score.dimension_name, passed=score.passed, reason=score.reasoning)
+        for score in verdict.dimension_scores
+    ]
+    failed = [check for check in checks if not check["passed"]]
+    return JudgeVoteRecord(
+        judge=vote.judge,
+        provider=vote.provider,
+        returned=True,
+        verdict="pass" if verdict.passed else "fail",
+        passed=verdict.passed,
+        reason=(
+            "; ".join(f"{check['check']}: {check['reason']}" for check in failed)
+            or "passed every check"
+        ),
+        error_class=None,
+        fell_back_from=vote.fell_back_from,
+        checks=checks,
+    )
 
 
 def majority_record(

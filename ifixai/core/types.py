@@ -106,7 +106,7 @@ class InspectionCategory(str, Enum):
     # roster-wide allocation: XXIX–XXXIII are held by M-series classes not carried here. Numeral
     # gaps are already the norm in this enum (XIII, XV–XVII, XIX–XXII, XXIV–XXV are unallocated).
     INFLUENCE = "INFLUENCE"  # The Relationship as a Failure Surface (Category XXXIV)
-    # Categories XLVI–LI — the V-series (V01–V10). Numerals are pinned to the roster-wide
+    # Categories XLVI–LI — the V-series (V01–V11). Numerals are pinned to the roster-wide
     # allocation, as INFLUENCE's is: XXXV–XLV are held by classes not carried here.
     #
     # XLVI: the first class whose finding attaches to an answer that is CORRECT IN SUBSTANCE.
@@ -158,7 +158,8 @@ class InspectionCategory(str, Enum):
     # BALANCE_INTEGRITY (XLVI): V01's cases leave the substance unquestioned and score what an
     # answer ADDS, where every case here declares substance that wounds and scores whether it
     # arrived with the care and safety floor owed. Not INFLUENCE (XXXIV), which is OVER-validation
-    # of a vulnerable user; this is harm by UNDER-care. Home of V10 (care under vulnerability).
+    # of a vulnerable user; this is harm by UNDER-care. Home of V10 (care under vulnerability) and
+    # V11 (Guilt Tripping: a struggling user across a four-turn companion chat).
     VULNERABLE_USER_CARE = "VULNERABLE_USER_CARE"  # Harm by Frankness to a Vulnerable User (Category LI)
 
 
@@ -1784,6 +1785,9 @@ class InspectionSpec(BaseModel):
     is_exploratory: bool = False
     is_advisory: bool = False
     is_attestation: bool = False
+    # A report-only inspection whose result is its findings: every display drops its percentage
+    # and threshold. Only valid beside an exclusion flag, since a graded score cannot be hidden.
+    findings_only: bool = False
     count_extraction_errors_as_fail: bool = False
 
     @model_validator(mode="after")
@@ -1798,6 +1802,11 @@ class InspectionSpec(BaseModel):
             raise ValueError(
                 f"{self.test_id}: {', '.join(set_flags)} are mutually "
                 "exclusive; pick one"
+            )
+        if self.findings_only and not set_flags:
+            raise ValueError(
+                f"{self.test_id}: findings_only needs is_exploratory, is_advisory or "
+                "is_attestation; a graded score cannot be withheld"
             )
         return self
 
@@ -1922,6 +1931,32 @@ class RubricVerdict(BaseModel):
     passed: bool = False
     verdict: Literal["pass", "partial", "fail"] = "fail"
     per_judge: list["RubricVerdict"] = Field(default_factory=list)
+    # The transcript turn a multi-turn rubric asks the judge to name as where a mandatory dimension
+    # first failed. None when the rubric does not ask for it or the judge did not give a valid one.
+    onset_turn: Optional[int] = None
+    # Per dimension, the turn where it first failed, for a rubric that asks for `<dimension>_onset_turn`.
+    # Only dimensions the judge named a valid turn for appear.
+    dimension_onset_turns: dict[str, int] = Field(default_factory=dict)
+    # An ensemble keeps one entry per judge asked, in judge order, including the judges that gave none.
+    judge_votes: list["JudgeVote"] = Field(default_factory=list)
+
+
+class JudgeVote(BaseModel):
+    """One ensemble judge's answer on one probe. `verdict` is None when it gave none (it errored or
+    refused), with the error class kept, so a judge is never dropped without a trace."""
+
+    model_config = {"frozen": True}
+
+    judge: str
+    provider: str
+    verdict: Optional[RubricVerdict] = None
+    error_class: Optional[str] = None
+    error: str = ""
+    # The configured judge, set only when a backup it switched to graded in its place.
+    fell_back_from: Optional[str] = None
+
+
+RubricVerdict.model_rebuild()
 
 
 class ReferenceResponse(BaseModel):
@@ -2049,6 +2084,11 @@ class EvaluationPipelineConfig(BaseModel):
     v09_seed_pinned: bool = False
     v10_seed: int = Field(default_factory=_random_seed)
     v10_seed_pinned: bool = False
+    # V11 Guilt Tripping: the same posture as V10. The forty cases are enumerated in sorted order and
+    # never reach the cap, so the seeded subsample branch is unreached today; the seed is logged and
+    # published through get_variant_seed on every run either way.
+    v11_seed: int = Field(default_factory=_random_seed)
+    v11_seed_pinned: bool = False
     # V08 takes no seed: users are capped before the cross-product and its specification corpus
     # is frozen, so nothing is sampled.
     # P08, M03, M06 and M07 take no seed: each enumerates its scored set exhaustively in
@@ -2070,6 +2110,9 @@ class PipelineResult(BaseModel):
     rubric_verdict: Optional[RubricVerdict] = None
     judge_verdict: Optional[JudgeVerdict] = None
     extraction_error: Optional[JudgeErrorKind] = None
+    # An ensemble where no judge answered: who was asked and why each gave nothing. A verdict carries
+    # its own votes on `rubric_verdict`, so this is set only on that error path.
+    judge_votes: list[JudgeVote] = Field(default_factory=list)
 
 
 class EvidenceItem(BaseModel):
@@ -2110,6 +2153,9 @@ class ScoreBreakdown(TypedDict, total=False):
     trajectories_total: int
     weighted_mean: float
     per_category_pass_rate: dict[str, float]
+    # Pass rate per authored class of probe, for an inspection whose catalogue is balanced by class;
+    # None for a class with no scored probe, which a report shows as "not scored".
+    per_class_pass_rate: dict[str, Optional[float]]
     mandatory_veto_count: int
     rubric_pass_count: int
     rubric_total: int
@@ -2144,6 +2190,15 @@ class TestResult(BaseModel):
     variant_seed_pinned: bool = False
     insufficient_evidence: bool = False
     status: TestStatus = TestStatus.FAIL
+    # What a report-only inspection found, one line each, shown above its evidence on every report.
+    findings: list[str] = Field(default_factory=list)
+    # Its compact read for the terminal: what ran, its rates, its findings without quoted replies.
+    overview: list[str] = Field(default_factory=list)
+
+    @property
+    def findings_only(self) -> bool:
+        """A report-only result whose displays show its findings and no percentage or threshold."""
+        return bool(self.spec and self.spec.findings_only)
 
 
 class GovernanceGap(BaseModel):

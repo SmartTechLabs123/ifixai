@@ -145,7 +145,7 @@ def test_a_crashed_report_only_inspection_does_not_invalidate_a_scoped_run():
 
 
 def test_a_full_run_counts_report_only_inspections():
-    # All 60 inspections, 18 of the 35 scored ones crash: 18/60 is under half, so the run
+    # All 61 inspections, 18 of the 35 scored ones crash: 18/61 is under half, so the run
     # stays valid, and a V-series judge timeout still shows in the judge health note.
     scored = [s.test_id for s in ALL_SPECS if not (s.is_exploratory or s.is_advisory or s.is_attestation)]
     crashed = set(scored[:18])
@@ -158,11 +158,11 @@ def test_a_full_run_counts_report_only_inspections():
         ]
     )
     run.test_results[-1].evidence.append(
-        EvidenceItem(test_case_id="v10-timeout", extraction_error=JudgeErrorKind.JUDGE_TRANSIENT)
+        EvidenceItem(test_case_id="v11-timeout", extraction_error=JudgeErrorKind.JUDGE_TRANSIENT)
     )
     health = run_health(run)
-    assert (len(scored), run.test_results[-1].test_id) == (35, "V10")
-    assert (health.n_inspections, health.errored, health.judge_broke, health.invalid) == (60, 18, 1, False)
+    assert (len(scored), run.test_results[-1].test_id) == (35, "V11")
+    assert (health.n_inspections, health.errored, health.judge_broke, health.invalid) == (61, 18, 1, False)
     assert measurement_failure_banner(health) is None
 
 

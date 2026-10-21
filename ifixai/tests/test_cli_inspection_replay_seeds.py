@@ -132,7 +132,7 @@ def test_derived_seeds_cover_all_unpersisted_inspections():
 
     seeds = inspection_seeds(17)
     config = EvaluationPipelineConfig(**seeds)
-    assert len(seeds) == 22
+    assert len(seeds) == 23
     assert seeds == inspection_seeds(17)
     assert seeds != inspection_seeds(18)
     assert len(set(seeds.values())) == len(seeds)

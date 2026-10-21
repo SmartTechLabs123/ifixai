@@ -22,6 +22,7 @@ from ifixai.evaluation.analytic_judge import (
     JudgeContractError,
     JudgeExtractionError,
     JudgeTransientError,
+    judge_votes_of,
 )
 from ifixai.evaluation.atomic_claims import (
     AtomicMode,
@@ -263,6 +264,7 @@ class EvaluationPipeline:
                     evaluation_result=f"extraction_error: communication: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.JUDGE_UNREACHABLE,
+                    judge_votes=judge_votes_of(exc),
                 )
             except JudgeTransientError as exc:
                 _logger.exception("Judge gave no full answer")
@@ -271,6 +273,7 @@ class EvaluationPipeline:
                     evaluation_result=f"extraction_error: judge_transient: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.JUDGE_TRANSIENT,
+                    judge_votes=judge_votes_of(exc),
                 )
             except JudgeExtractionError as exc:
                 _logger.exception("Judge extraction error")
@@ -279,6 +282,7 @@ class EvaluationPipeline:
                     evaluation_result=f"extraction_error: extraction: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.EXTRACTION,
+                    judge_votes=judge_votes_of(exc),
                 )
             except JudgeContractError as exc:
                 _logger.exception("Judge contract error")
@@ -287,6 +291,7 @@ class EvaluationPipeline:
                     evaluation_result=f"extraction_error: contract: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.CONTRACT,
+                    judge_votes=judge_votes_of(exc),
                 )
 
         # Unreachable: the misconfig guard at the top of evaluate() raises
