@@ -14,6 +14,7 @@ needs: **learning**, **doing**, **looking up**, and **understanding**
 - **[Author a fixture](fixture_authoring.md)**: declare your roles, tools, permissions, policies, and governance.
 - **[Business Policy Lab](business-policy-lab.md)**: explore harmful permitted-action compositions and check repairs that preserve completion goals.
 - **[Recorded trajectory assurance](trajectory-assurance.md)**: check a recorded sequence of agent actions against a business policy, then replay the findings offline.
+- **[Evaluator wind tunnel](wind-tunnel.md)**: inject a seeded governance defect and measure which inspections actually catch it.
 - **[Reproduce a run](reproducibility.md)**: the manifest, the digest algorithm, and verification helpers.
 
 ## 📖 Looking something up → reference

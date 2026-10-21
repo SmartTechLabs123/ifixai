@@ -1,0 +1,185 @@
+"""Offline wind-tunnel measurement; no provider, credential or network path.
+
+Exit codes follow the repository's conclusiveness discipline rather than a
+pass/fail reading, because "the suite caught the defect" and "the suite could
+not be asked" are different answers and only one of them is citable:
+
+====  ===========================================================
+0     Every expected detector caught its defect.
+1     At least one expected detector missed it: a blind spot.
+2     Inconclusive. The clean control did not pass, so no
+      detection claim from this run means anything.
+====  ===========================================================
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import click
+
+from ifixai.core.fixture_loader import list_fixture_names
+from ifixai.windtunnel.defects import CATALOGUE, CLEAN, DefectKind, leak_profiles
+from ifixai.windtunnel.measure import WindTunnelReport, measure_all
+
+#: Exit code per outcome, worst wins. 2 beats 1 because an unusable control
+#: makes a blind spot unmeasurable rather than confirmed.
+_INCONCLUSIVE = 2
+_BLIND_SPOT = 1
+_CLEAN = 0
+
+
+def _verdict(reports: tuple[WindTunnelReport, ...]) -> int:
+    if any(report.false_positives for report in reports):
+        return _INCONCLUSIVE
+    if any(report.blind_spots for report in reports):
+        return _BLIND_SPOT
+    return _CLEAN
+
+
+def _echo_report(report: WindTunnelReport, verbose: bool) -> None:
+    click.echo(report.summary())
+    rows = (
+        report.outcomes
+        if verbose
+        else tuple(
+            outcome
+            for outcome in report.outcomes
+            if outcome.expected
+            or outcome.is_surprise
+            or outcome.outcome == "false_positive"
+        )
+    )
+    for outcome in rows:
+        clean = "—" if outcome.clean_score is None else f"{outcome.clean_score:.2f}"
+        defective = (
+            "—" if outcome.defective_score is None else f"{outcome.defective_score:.2f}"
+        )
+        marker = "*" if outcome.expected else " "
+        click.echo(
+            f"  {marker}{outcome.test_id:<5}{outcome.outcome:<16}"
+            f"clean={clean:<6}defective={defective:<6}"
+            f"threshold={outcome.threshold:.2f}"
+        )
+
+
+def _echo_closing(reports: tuple[WindTunnelReport, ...]) -> None:
+    false_positives = {o.test_id for r in reports for o in r.false_positives}
+    if false_positives:
+        click.echo(
+            "\nInconclusive: the clean control failed "
+            f"{', '.join(sorted(false_positives))} on this fixture. A detection "
+            "rate measured against a control that does not pass says nothing "
+            "about the suite."
+        )
+        return
+    blind = {o.test_id for r in reports for o in r.blind_spots}
+    if blind:
+        click.echo(
+            f"\nBlind spots: {', '.join(sorted(blind))} did not move when the "
+            "defect they exist to catch was present on every eligible call."
+        )
+
+
+def _run(coroutine) -> tuple[WindTunnelReport, ...]:
+    try:
+        return asyncio.run(coroutine)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from None
+
+
+@click.group()
+def windtunnel() -> None:
+    """Measure what the inspections detect, against seeded defects."""
+
+
+@windtunnel.command("run")
+@click.argument("profile", type=click.Choice(sorted(CATALOGUE)), metavar="PROFILE")
+@click.option(
+    "--fixture", default="default", show_default=True, help="Fixture to audit against."
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show every inspection, not only the expected detectors.",
+)
+def run_profile(profile: str, fixture: str, verbose: bool) -> None:
+    """Run one named defect profile and report what caught it."""
+    reports = _run(measure_all((CATALOGUE[profile],), fixture=fixture))
+    for report in reports:
+        _echo_report(report, verbose)
+    _echo_closing(reports)
+    raise click.exceptions.Exit(_verdict(reports))
+
+
+@windtunnel.command("sweep")
+@click.option(
+    "--fixture", default="default", show_default=True, help="Fixture to audit against."
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show every inspection, not only the expected detectors.",
+)
+def sweep(fixture: str, verbose: bool) -> None:
+    """Run the whole catalogue against one fixture."""
+    profiles = tuple(
+        profile
+        for profile in CATALOGUE.values()
+        # PERMIT_DESTRUCTION needs the caller to name the destructive tools the
+        # fixture declares, so it cannot be swept from a profile name alone.
+        if profile.for_kind(DefectKind.PERMIT_DESTRUCTION) is None
+    )
+    reports = _run(measure_all(profiles, fixture=fixture))
+    for report in reports:
+        _echo_report(report, verbose)
+    _echo_closing(reports)
+    raise click.exceptions.Exit(_verdict(reports))
+
+
+@windtunnel.command("controls")
+def controls() -> None:
+    """Check the clean control on every bundled fixture.
+
+    Run this before citing any detection rate. A fixture whose reference
+    provider fails an inspection before a defect is injected cannot support a
+    measurement, and which fixtures those are is not obvious from reading them.
+    """
+    failures = 0
+    for name in list_fixture_names():
+        try:
+            report = _run(measure_all((CLEAN,), fixture=name))[0]
+        except click.ClickException as error:
+            click.echo(f"{name:<24} skipped — {error.message}")
+            continue
+        unusable = tuple(o.test_id for o in report.outcomes if o.outcome == "unusable")
+        false_positives = tuple(o.test_id for o in report.false_positives)
+        if false_positives:
+            failures += 1
+            click.echo(f"{name:<24} NOT A CONTROL — fails {', '.join(false_positives)}")
+        else:
+            click.echo(
+                f"{name:<24} clean"
+                + (f" (no surface: {', '.join(unusable)})" if unusable else "")
+            )
+    raise click.exceptions.Exit(_INCONCLUSIVE if failures else _CLEAN)
+
+
+@windtunnel.command("sensitivity")
+@click.option(
+    "--fixture", default="default", show_default=True, help="Fixture to audit against."
+)
+def sensitivity(fixture: str) -> None:
+    """Trace a gate's sensitivity curve across partial leak rates.
+
+    The mandatory minimums exist to make a single bad permission cell fatal, so
+    the question worth answering is not whether a wholly broken layer is caught
+    but how small a leak still trips the gate.
+    """
+    reports = _run(measure_all(leak_profiles(), fixture=fixture))
+    for report in reports:
+        _echo_report(report, verbose=False)
+    raise click.exceptions.Exit(_verdict(reports))
+
+
+__all__ = ["windtunnel"]
