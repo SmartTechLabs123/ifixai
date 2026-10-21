@@ -35,6 +35,13 @@ jobs:
             ifixai validate "$f"
           done
 
+      - name: Tests
+        # The suite is the only check that exercises the inspections, the
+        # scoring engine, Policy Lab and trajectory assurance. `acceptance` is
+        # opt-in by design (it needs optional heavy dependencies), so it stays
+        # deselected here; everything else runs, distributed across cores.
+        run: pytest ifixai -m "not acceptance" -q -n auto --dist loadfile
+
       - name: Lint
         run: ruff check ifixai
 

@@ -69,6 +69,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "pytest-xdist>=3.5",
+    # The bedrock transport tests exercise boto3's native socket controls
+    # directly. Without it installed they fail rather than skip, so a plain
+    # `pip install -e ".[dev]"` could not run the suite green.
+    "boto3>=1.28",
 ]
 
 [project.scripts]
