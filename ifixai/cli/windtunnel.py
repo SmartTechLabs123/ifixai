@@ -19,7 +19,20 @@ import asyncio
 import click
 
 from ifixai.core.fixture_loader import list_fixture_names
-from ifixai.windtunnel.defects import CATALOGUE, CLEAN, DefectKind, leak_profiles
+from ifixai.windtunnel.defects import (
+    CATALOGUE,
+    CLEAN,
+    DefectKind,
+    DefectProfile,
+    leak_profiles,
+)
+from ifixai.windtunnel.evidence import (
+    BaselineComparison,
+    compare_to_baseline,
+    create_bundle,
+    load_bundle,
+    write_bundle,
+)
 from ifixai.windtunnel.measure import WindTunnelReport, measure_all
 
 #: Exit code per outcome, worst wins. 2 beats 1 because an unusable control
@@ -29,12 +42,66 @@ _BLIND_SPOT = 1
 _CLEAN = 0
 
 
-def _verdict(reports: tuple[WindTunnelReport, ...]) -> int:
+def _verdict(
+    reports: tuple[WindTunnelReport, ...],
+    comparison: BaselineComparison | None = None,
+) -> int:
+    # A regression against a recorded baseline fails even when this run has no
+    # blind spot of its own: the suite used to catch something and no longer
+    # does, which is the one result a build should never go green on. It cannot
+    # raise the code past 2, because an inconclusive control means the
+    # comparison itself is not trustworthy.
     if any(report.false_positives for report in reports):
         return _INCONCLUSIVE
+    if comparison is not None and comparison.regressed:
+        return _BLIND_SPOT
     if any(report.blind_spots for report in reports):
         return _BLIND_SPOT
     return _CLEAN
+
+
+def _seal(
+    profiles: tuple[DefectProfile, ...],
+    reports: tuple[WindTunnelReport, ...],
+    fixture: str,
+    output: str | None,
+    baseline: str | None,
+) -> BaselineComparison | None:
+    """Write the bundle if asked, and compare against a baseline if given."""
+    bundle = create_bundle(tuple(zip(profiles, reports, strict=True)), fixture)
+    if output:
+        try:
+            written = write_bundle(bundle, output)
+        except (ValueError, OSError) as error:
+            raise click.ClickException(str(error)) from None
+        click.echo(f"\nEvidence: {written}  digest {bundle.integrity_digest[:16]}")
+
+    if not baseline:
+        return None
+    try:
+        recorded = load_bundle(baseline)
+        comparison = compare_to_baseline(recorded, bundle)
+    except (ValueError, OSError) as error:
+        raise click.ClickException(str(error)) from None
+
+    if comparison.identical:
+        click.echo("\nBaseline: identical measurement (digests match).")
+    for change in comparison.regressions:
+        click.echo(
+            f"\nREGRESSION {change.profile}/{change.test_id}: "
+            f"{change.was} -> {change.now}"
+        )
+    for change in comparison.improvements:
+        click.echo(
+            f"\nImproved {change.profile}/{change.test_id}: "
+            f"{change.was} -> {change.now}"
+        )
+    if comparison.unmatched:
+        click.echo(
+            "\nNot compared (present in only one bundle): "
+            + ", ".join(comparison.unmatched)
+        )
+    return comparison
 
 
 def _echo_report(report: WindTunnelReport, verbose: bool) -> None:
@@ -103,13 +170,27 @@ def windtunnel() -> None:
     is_flag=True,
     help="Show every inspection, not only the expected detectors.",
 )
-def run_profile(profile: str, fixture: str, verbose: bool) -> None:
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False),
+    help="Write sealed evidence here. The path must not exist.",
+)
+@click.option(
+    "--baseline",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Compare against this recorded bundle; a lost detection exits 1.",
+)
+def run_profile(
+    profile: str, fixture: str, verbose: bool, output: str | None, baseline: str | None
+) -> None:
     """Run one named defect profile and report what caught it."""
-    reports = _run(measure_all((CATALOGUE[profile],), fixture=fixture))
+    profiles = (CATALOGUE[profile],)
+    reports = _run(measure_all(profiles, fixture=fixture))
     for report in reports:
         _echo_report(report, verbose)
     _echo_closing(reports)
-    raise click.exceptions.Exit(_verdict(reports))
+    comparison = _seal(profiles, reports, fixture, output, baseline)
+    raise click.exceptions.Exit(_verdict(reports, comparison))
 
 
 @windtunnel.command("sweep")
@@ -121,7 +202,19 @@ def run_profile(profile: str, fixture: str, verbose: bool) -> None:
     is_flag=True,
     help="Show every inspection, not only the expected detectors.",
 )
-def sweep(fixture: str, verbose: bool) -> None:
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False),
+    help="Write sealed evidence here. The path must not exist.",
+)
+@click.option(
+    "--baseline",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Compare against this recorded bundle; a lost detection exits 1.",
+)
+def sweep(
+    fixture: str, verbose: bool, output: str | None, baseline: str | None
+) -> None:
     """Run the whole catalogue against one fixture."""
     profiles = tuple(
         profile
@@ -134,7 +227,8 @@ def sweep(fixture: str, verbose: bool) -> None:
     for report in reports:
         _echo_report(report, verbose)
     _echo_closing(reports)
-    raise click.exceptions.Exit(_verdict(reports))
+    comparison = _seal(profiles, reports, fixture, output, baseline)
+    raise click.exceptions.Exit(_verdict(reports, comparison))
 
 
 @windtunnel.command("controls")

@@ -35,6 +35,37 @@ measurement, and which fixtures those are is not apparent from reading them.
 Exit 2 outranks exit 1 deliberately. An unusable control does not make a blind
 spot confirmed; it makes it unmeasurable.
 
+## Sealed evidence, and failing a build on a lost detection
+
+A measurement printed to a terminal cannot be cited or compared. `--output`
+writes the run as a bundle holding its complete inputs and outcomes, sealed
+with a canonical SHA-256 digest, owner-only, refusing to overwrite:
+
+```sh
+ifixai windtunnel sweep --fixture customer_support --output evidence/base.json
+```
+
+The digest covers inputs and outcomes and carries **no timestamp**, so the same
+profiles against the same fixture and the same registry seal to the *same*
+digest. That makes the digest a content identity rather than a receipt, which is
+what lets a later run be compared to a recorded one:
+
+```sh
+ifixai windtunnel sweep --fixture customer_support --baseline evidence/base.json
+```
+
+An inspection that detected its defect in the baseline and does not now is a
+**regression**, and exits 1 even when the run has no blind spot of its own —
+the suite used to catch something and no longer does, which is the one result a
+build should never go green on. A detection that appears is reported as an
+improvement and does not fail. Losing the ability to score at all
+(`detected` → `unusable`) counts as a regression: an inspection that can no
+longer produce a number has stopped detecting, whatever the reason.
+
+The comparison refuses outright across fixtures and across registry sizes. A
+detection rate spanning either is not a rate, and a comparison that silently
+spanned one would be worse than no comparison.
+
 ## How a measurement is produced
 
 The comparison is paired. The same inspections run twice against the same
@@ -135,6 +166,13 @@ a wholly broken layer is caught but how small a leak still trips the gate.
   show that the inspection reported a *useful* reason, only that it moved.
 - Nothing here validates the fixture. A fixture that describes governance the
   deployment does not have will produce a confident measurement of a fiction.
+- A digest proves content, not provenance. Anyone who edits a bundle can
+  recompute its digest and the result will load; what they cannot do is keep
+  the original digest, so a baseline comparison reports a changed measurement
+  rather than accepting a substituted one. It is not a signature, and it says
+  nothing about who ran the measurement or whether they ran it honestly.
+- A baseline only guards what it recorded. Profiles or inspections absent from
+  it are reported as not compared, never as unchanged.
 
 ## Validate changes
 
@@ -144,6 +182,11 @@ python -m pytest ifixai/tests/windtunnel -q
 
 The suite pins the injector's blast radius — rate semantics, seed keying,
 per-tool scoping, and that an authorization defect leaves the configuration
-version and audit trail alone. Detection rates are deliberately not asserted:
-they are expected to change as the inspections improve, and a test that froze
-them would make an improvement look like a regression.
+version and audit trail alone — the CLI's exit-code contract, and the evidence
+properties: digest stability across repeated runs, refusal of an edited bundle,
+and refusal to compare across fixtures or registry sizes.
+
+Detection rates are deliberately not asserted. They are expected to change as
+the inspections improve, and a test that froze them would make an improvement
+look like a regression. A recorded baseline is the right place to notice a
+change, because it reports the direction.

@@ -75,6 +75,67 @@ class TestVerdictOrdering:
         assert _verdict((report,)) == 0
 
 
+class TestBaselineAffectsTheVerdict:
+    """A regression fails a build that would otherwise have been green.
+
+    This is asserted here rather than through the CLI because the suite cannot
+    be made to lose a detection on demand: a run that detects everything is the
+    only run available. The verdict function is what the CLI calls, so pinning
+    it pins the behaviour the docs promise.
+    """
+
+    @staticmethod
+    def _clean_report() -> WindTunnelReport:
+        return WindTunnelReport(
+            profile_name="good",
+            outcomes=(_outcome("B01", "detected", expected=True),),
+        )
+
+    def _comparison(self, regressions: int, improvements: int = 0):
+        from ifixai.windtunnel.evidence import BaselineComparison, DetectionChange
+
+        return BaselineComparison(
+            baseline_digest="a" * 64,
+            current_digest="b" * 64,
+            regressions=tuple(
+                DetectionChange(
+                    profile="good", test_id=f"B{i:02d}", was="detected", now="missed"
+                )
+                for i in range(regressions)
+            ),
+            improvements=tuple(
+                DetectionChange(
+                    profile="good", test_id=f"C{i:02d}", was="missed", now="detected"
+                )
+                for i in range(improvements)
+            ),
+            unmatched=(),
+        )
+
+    def test_a_regression_fails_an_otherwise_clean_run(self):
+        from ifixai.cli.windtunnel import _verdict
+
+        reports = (self._clean_report(),)
+        assert _verdict(reports) == 0, "precondition: this run is clean on its own"
+        assert _verdict(reports, self._comparison(regressions=1)) == 1
+
+    def test_an_improvement_alone_does_not_fail(self):
+        from ifixai.cli.windtunnel import _verdict
+
+        comparison = self._comparison(regressions=0, improvements=2)
+        assert _verdict((self._clean_report(),), comparison) == 0
+
+    def test_an_inconclusive_control_outranks_a_regression(self):
+        """A comparison drawn against a broken control is not trustworthy."""
+        from ifixai.cli.windtunnel import _verdict
+
+        report = WindTunnelReport(
+            profile_name="bad-control",
+            outcomes=(_outcome("B01", "false_positive", expected=True),),
+        )
+        assert _verdict((report,), self._comparison(regressions=1)) == 2
+
+
 class TestRunCommand:
     def test_a_fully_detected_profile_exits_zero(self):
         result = _invoke("run", "over_refusing", "--fixture", CLEAN_FIXTURE)

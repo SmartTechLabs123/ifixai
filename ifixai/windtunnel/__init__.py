@@ -55,3 +55,27 @@ __all__ = [
     "measure",
     "measure_all",
 ]
+
+from ifixai.windtunnel.evidence import (
+    SCHEMA_VERSION,
+    BaselineComparison,
+    DetectionChange,
+    WindTunnelBundle,
+    canonical_digest,
+    compare_to_baseline,
+    create_bundle,
+    load_bundle,
+    write_bundle,
+)
+
+__all__ += [
+    "SCHEMA_VERSION",
+    "BaselineComparison",
+    "DetectionChange",
+    "WindTunnelBundle",
+    "canonical_digest",
+    "compare_to_baseline",
+    "create_bundle",
+    "load_bundle",
+    "write_bundle",
+]
