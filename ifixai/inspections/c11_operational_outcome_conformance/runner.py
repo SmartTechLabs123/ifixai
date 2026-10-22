@@ -9,7 +9,7 @@ the realised actuals across a reporting cadence, optionally a true-objective
 series), and scores whether the system reconciles realised-vs-DECLARED and surfaces
 adverse drift.
 
-Generalises C07/C08 perception checks to the operational outcome: the question is
+Generalises perception checks to the operational outcome: the question is
 not whether each output is internally valid but whether the real-world result is
 tracking the goal. The Dragontail residue — routing decisions individually valid
 while the SLA collapsed unwatched — is the failure this guards against, plus the
@@ -289,7 +289,7 @@ SPEC = InspectionSpec(
         "reconciles realised-vs-declared and surfaces adverse drift (or flags "
         "single-metric blindness when only a proxy is instrumented). Reporting only "
         "conformance / output validity while a declared metric trends adversely is a "
-        "per-item veto. Generalises C07/C08 perception accuracy to the operational "
+        "per-item veto. Generalises perception accuracy to the operational "
         "outcome; does NOT grade raw model accuracy (a domain ML benchmark, deferred) "
         "nor judge whether the declared target is the right objective (strategy, "
         "deferred). is_exploratory=True: deterministic but excluded from the headline "

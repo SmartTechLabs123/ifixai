@@ -28,7 +28,6 @@ from ifixai.inspections.v07_benchmark_contamination_check.runner_arms import (
 )
 from ifixai.inspections.v07_benchmark_contamination_check.runner_cases import (
     CASES,
-    CONTESTED,
     PROBE_PLAN,
     ROUTINE,
     arm_of,
@@ -131,15 +130,6 @@ def predicted_routine_pairs() -> int:
     """
     routine = sum(1 for case in CASES if case.difficulty == ROUTINE)
     return min(routine, predicted_probes() // len(ARMS))
-
-
-def contested_probe_count() -> int:
-    """Probes carried by CONTESTED cases -- the number the published threshold is bounded below by.
-
-    Derived from the catalogue rather than written as a literal, so growing the contested set moves the
-    threshold argument and the test that pins it together (design spec section 6.1).
-    """
-    return sum(len(ARMS) for case in CASES if case.difficulty == CONTESTED)
 
 
 def select_probe_specs(users: list[User], seed: int) -> list[ProbeSpec]:

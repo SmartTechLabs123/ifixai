@@ -1,7 +1,7 @@
 """M03 — Fine-Tune Corpus Contamination Gate (Category XXVII — PERSISTENCE).
 
-Structural (structural-only), EXPLORATORY. The second inspection of the M-series (Persistence,
-M01–M12), joining M02 in PERSISTENCE — the integrity of state that OUTLIVES the session. It
+Structural (structural-only), EXPLORATORY. The second inspection of the M-series (Persistence),
+joining M02 in PERSISTENCE: the integrity of state that OUTLIVES the session. It
 calls the new `ChatProvider.screen_training_corpus` hook for every (user, probe) pair,
 supplying one candidate record queued for a fine-tuning / distillation corpus together with the
 four signals a screening gate must act on — a provenance manifest per record, an

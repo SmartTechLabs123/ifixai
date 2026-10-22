@@ -1,5 +1,3 @@
-import re
-import warnings
 from collections.abc import Iterable
 from typing import TypedDict
 
@@ -427,66 +425,6 @@ ALL_SPECS = [
 
 SPEC_BY_ID: dict[str, object] = {spec.test_id: spec for spec in ALL_SPECS}
 
-# B-series: B01..B32 (Categories I–V). P-series: P01..P32 (Categories VI–XII —
-# SABOTAGE / SUBVERSION / CONCEALMENT / SANDBAGGING / INSUBORDINATION / USURPATION /
-# SYSTEMIC_RISK); P19 (honeypot-tool restraint) is SANDBAGGING (Category IX —
-# capability concealment & evaluation gaming). C-series: C01..C16 (Capability-Reliability,
-# Categories XIV–XXI); C02 (abstention), C05 (human-fallback routing) and C11
-# (operational-outcome conformance & decay) are the first three, all MISCALIBRATION (XIV).
-# S-series: S01..S08 (Stakeholder & Multi-Principal Integrity, Category XVIII); S02
-# (configurer-vs-stakeholder conflict) is the first. X-series: X01..X11 (Gap-closure,
-# Categories XXII–XXVI); X04 (deployed-detection-performance acceptance gate,
-# PERCEPTION_GOVERNANCE XXIII) and X11 (automation-bias / pre-action confirmation gate,
-# OVERSIGHT_ATROPHY XXVI — human-oversight atrophy) are the two current members. M-series:
-# M01..M12 (M-series, Categories XXVII–XXVIII: it opens at XXVII because the X-series' five
-# classes consume XXII–XXVI in full, and its failure classes then take contiguous numerals the
-# same way the C-series takes XIV–XXI). PERSISTENCE (XXVII — integrity of state that outlives
-# the session) is its first class, home of M02 (standing-automation authority re-validation) and
-# M03 (fine-tune corpus contamination gate); IDENTITY_ATTESTATION (XXVIII — knowing what, and
-# whom, you are running) is its second, home of M06 (runtime model-identity attestation and
-# silent-substitution detection) and M07 (cross-organization delegation scope attenuation — the
-# counterparty half of the same category: its definition already names agent-to-agent protocols
-# making the counterparty an open question, so M07 opens NO new numeral).
-# The 'M' alternative with a 01..12 NN range was added for M02.
-# All ranges share the NN shape; the S alternative (01..08) admits S02 ∈ 0[1-8], the X
-# alternative (01..11) admits both X04 and X11 ∈ 0[1-9]|1[0-1] (the X04 addition already widened
-# the pattern to the full X-series range), and the M alternative (01..12) — added for M02 —
-# already admits M03, M06 and M07, so none required a pattern change (pinned by
-# test_id_pattern_already_admits_m03 / _m06 / _m07).
-# V-series: V01..V11 (Categories XLVI–LI). The 'V' alternative is BOUNDED at 11 rather than opened
-# to 0[1-9]|[1-9][0-9], because the V-series declares exactly V01–V11: a widening admits what exists
-# rather than what might, so V12 is still rejected. BALANCE_INTEGRITY (XLVI) holds V01/V02,
-# FRANKNESS_CORRECTNESS_LINK (XLVII) V03/V04, GRADER_VALIDITY (XLVIII) V05/V06,
-# BENCHMARK_CONTAMINATION (XLIX) V07, TRAINING_DISPOSITION_PROVENANCE (L) V08/V09 and
-# VULNERABLE_USER_CARE (LI) V10/V11. V08 is a structural judge-edge gate with no SUT contact; the
-# other ten are full judge-path inspections.
-_TEST_ID_PATTERN = re.compile(
-    r"^(B(0[1-9]|[12][0-9]|3[0-2])|P(0[1-9]|[12][0-9]|3[0-2])"
-    r"|C(0[1-9]|1[0-6])|S(0[1-8])|X(0[1-9]|1[0-1])|M(0[1-9]|1[0-2])"
-    r"|V(0[1-9]|1[01]))$"
-)
-_LEGACY_PREFIXES = ("SSCI-",)
-
-
-def normalize_test_id(value: str) -> str:
-    candidate = value.strip().upper()
-    for prefix in _LEGACY_PREFIXES:
-        if candidate.startswith(prefix):
-            warnings.warn(
-                f"Test id '{value}' uses the deprecated '{prefix}' prefix; "
-                f"use the bare form '{candidate[len(prefix):]}' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            candidate = candidate[len(prefix) :]
-            break
-    if not _TEST_ID_PATTERN.match(candidate):
-        raise ValueError(
-            f"Unknown test id: {value!r}. Expected B01..B32, P01..P32, C01..C16, "
-            "S01..S08, X01..X11, M01..M12 or V01..V11 (bare form)."
-        )
-    return candidate
-
 
 def create_inspection(spec_id: str) -> BaseTest:
     registry: dict[str, type[BaseTest]] = {
@@ -587,7 +525,7 @@ CATEGORIES = {
     # (Category XXVI) is the human-oversight-atrophy member, home of X11.
     23: InspectionCategory.PERCEPTION_GOVERNANCE,
     26: InspectionCategory.OVERSIGHT_ATROPHY,
-    # Category XXVII — PERSISTENCE, the M-series' (M01–M12) FIRST failure class, home of M02 and
+    # Category XXVII: PERSISTENCE, the M-series' FIRST failure class, home of M02 and
     # M03. It opens at XXVII because the X-series' five failure classes consume XXII–XXVI in full.
     27: InspectionCategory.PERSISTENCE,
     # Category XXVIII — IDENTITY_ATTESTATION, the M-series' SECOND failure class (contiguous

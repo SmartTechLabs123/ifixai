@@ -3,7 +3,6 @@
 Writes docs/assets/brand/, one light and one dark file of each, so the README
 can hand GitHub's two themes their own art through <picture>:
 
-  ifixai-logo-*.svg       the wordmark on its own
   ifixai-masthead-*.svg   the wordmark over "Independent auditing for AI
                           agents", ruled off the way the site's hero sets it
   hero-audit-*.svg        the site's hero audit window, animated
@@ -1115,14 +1114,6 @@ def hero(themes: list[dict], layout: str, files: FontFiles, layouts: dict) -> st
 # ── the wordmark and the masthead ─────────────────────────────────────────
 
 
-def logo(mode: str) -> str:
-    height = 160
-    width = height * LOGO_VIEW_BOX[2] / LOGO_VIEW_BOX[3]
-    return svg_doc(
-        width, height, "iFixAi", "", wordmark(0, 0, height, LOGO_INK[mode], "counter")
-    )
-
-
 TAGLINE = "Independent auditing for AI agents"
 
 
@@ -1395,7 +1386,6 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     art = {}
     for mode, theme in (("light", LIGHT), ("dark", DARK)):
-        art[f"ifixai-logo-{mode}.svg"] = logo(mode)
         art[f"ifixai-masthead-{mode}.svg"] = masthead(mode, files)
         art[f"hero-audit-{mode}.svg"] = hero([theme], "desktop", files, layouts)
         art[f"button-site-{mode}.svg"] = button(

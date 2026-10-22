@@ -114,18 +114,3 @@ def bind_run(**bindings: Any) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger().bind(**bindings)
     return _StdlibAdapter(bindings)
-
-
-def bind_run_context(**bindings: Any) -> None:
-    """Bind suite-level context that flows through every subsequent log line.
-
-    Uses `structlog.contextvars` so child asyncio tasks inherit the binding
-    automatically. The stdlib fallback is a no-op.
-    """
-    if _STRUCTLOG_AVAILABLE:
-        structlog.contextvars.bind_contextvars(**bindings)
-
-
-def clear_run_context() -> None:
-    if _STRUCTLOG_AVAILABLE:
-        structlog.contextvars.clear_contextvars()

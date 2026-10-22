@@ -62,10 +62,6 @@ from ifixai.scoring.mandatory_minimums import (
 ProgressCallback = Callable[[str, int, int, "TestResult"], None]
 
 
-class SelfJudgeNotAllowedError(Exception):
-    pass
-
-
 SPECIFICATION_VERSION = "3.0"
 
 _logger = logging.getLogger(__name__)
@@ -863,10 +859,3 @@ def _build_result(
         warnings=combined_warnings,
         validation_warnings=list(consistency_warnings) if consistency_warnings else [],
     )
-
-
-def _find_spec(test_id: str, specs: list[InspectionSpec]) -> InspectionSpec | None:
-    for spec in specs:
-        if spec.test_id == test_id:
-            return spec
-    return None

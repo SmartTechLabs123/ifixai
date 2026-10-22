@@ -1,22 +1,10 @@
-"""Shared detection of the Claude Code product-surface refusal ("the wall").
+"""Shared detection of the platform Usage-Policy refusal ("the wall").
 
 The diagnostic deliberately sends adversarial probes (B12 injection payloads,
-jailbreak attempts, …). When those run over the ``claude -p`` bridge, the Claude
-Code Usage-Policy filter can refuse — for BOTH the assistant under test (the SUT)
-and a judge whose rubric prompt carries the adversarial content. That refusal is
-the *platform* declining the request, not the model's own answer or a gradeable
-verdict, so the evidence must be dropped as unscorable → INCONCLUSIVE rather than
-scored (which would manufacture a false FAIL) or retried (which the platform will
-refuse every time).
-
-This helper lives in ``ifixai.core`` (a dependency-free leaf) so the SUT seam
-(``ifixai.providers.bridge``), the grading pipeline (``ifixai.evaluation``), and
-the judge can all share one definition without an import cycle.
-
-The authoritative signal is the *structured* envelope field
-``stop_reason == "refusal"``, available at the bridge transport. This string
-matcher is the fallback once only the refusal text survives downstream (the
-pipeline and judge see a plain string, not the envelope).
+jailbreak attempts, …), and a judge whose rubric prompt carries that content can
+be refused by its platform. That is the platform declining, not a gradeable
+verdict, so the evidence drops as unscorable (INCONCLUSIVE) rather than being
+scored as a false FAIL or retried.
 """
 
 from __future__ import annotations

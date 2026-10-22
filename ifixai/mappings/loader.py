@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from ifixai.core.types import GovernanceGap, RegulatoryFramework, RegulatoryMapping
+from ifixai.core.types import RegulatoryFramework, RegulatoryMapping
 
 _MAPPINGS_DIR = Path(__file__).parent
 
@@ -67,19 +67,3 @@ def get_mappings_for_test(
     for fw in frameworks.values():
         mappings.extend(fw.mappings.get(test_id, []))
     return mappings
-
-
-def filter_by_framework(
-    gaps: list[GovernanceGap],
-    framework_name: str,
-    frameworks: dict[str, RegulatoryFramework] | None = None,
-) -> list[GovernanceGap]:
-    if frameworks is None:
-        frameworks = load_all_mappings()
-
-    fw = frameworks.get(framework_name)
-    if fw is None:
-        return []
-
-    mapped_ids = set(fw.mappings.keys())
-    return [g for g in gaps if g.test_id in mapped_ids]

@@ -23,7 +23,7 @@ AtomicMode = Literal["grounding", "attribution"]
 
 # Per-call timeout for atomic-claims judge requests. Mirrors the analytic-judge
 # `_JUDGE_TIMEOUT` (and its IFIXAI_JUDGE_TIMEOUT override) so a hung upstream
-# cannot stall an entire benchmark, while a slow CLI-bridge judge can be given
+# cannot stall an entire benchmark, while a slow judge can be given
 # more room than the 60s default.
 def _atomic_judge_timeout_from_env(default: float = 60.0) -> float:
     """Parse IFIXAI_JUDGE_TIMEOUT, falling back to `default` on an empty or

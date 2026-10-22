@@ -79,5 +79,5 @@ def test_utf8_fixture_text_is_preserved_outside_utf8_locale(tmp_path, suffix):
 def test_bundled_utf8_rule_text_is_preserved_outside_utf8_locale(operation):
     from ifixai.rules.loader import RuleLoader
 
-    expected = RuleLoader().load_rules("B12").model_dump(mode="json")
-    assert _read_in_non_utf8_process(operation, "B12") == expected
+    expected = RuleLoader().load_rules("P27").model_dump(mode="json")
+    assert _read_in_non_utf8_process(operation, "P27") == expected

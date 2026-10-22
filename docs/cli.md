@@ -55,7 +55,7 @@ no provider key; see [trajectory assurance](trajectory-assurance.md),
 |---|---|---|
 | `--fixture`, `-f` | auto | Fixture name or YAML/JSON path. |
 | `--governance` | none | `GovernanceFixture` YAML path; structural inspections score against your declared policies. See [fixture_authoring.md](fixture_authoring.md). |
-| `--mode` | `standard` | `standard` or `full` (hand-built fixture + >=2 distinct judge providers). Deprecated alias `--profile` (`quick` → `standard`). |
+| `--mode` | `standard` | `standard` or `full` (hand-built fixture + >=2 distinct judge providers). |
 
 ### Suite subset
 

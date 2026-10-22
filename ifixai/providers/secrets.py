@@ -1,19 +1,6 @@
-import os
 import re
 from re import Pattern
 from typing import Any, Final
-
-ENV_VAR_BY_PROVIDER: dict[str, str] = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "minimax": "MINIMAX_API_KEY",
-    "atlascloud": "ATLASCLOUD_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-    "azure": "AZURE_OPENAI_API_KEY",
-    "bedrock": "AWS_ACCESS_KEY_ID",
-    "huggingface": "HF_TOKEN",
-    "orcarouter": "ORCAROUTER_API_KEY",
-}
 
 _SECRET_PATTERNS: Final[tuple[Pattern[str], ...]] = (
     re.compile(r"^sk-cp-[A-Za-z0-9_-]+$"),
@@ -117,13 +104,6 @@ _SCRUB_RULES: Final[tuple[tuple[Pattern[str], str], ...]] = (
 
 class SecretLeakError(RuntimeError):
     pass
-
-
-def get_api_key(provider: str) -> str | None:
-    env_var = ENV_VAR_BY_PROVIDER.get(provider.lower())
-    if env_var is None:
-        return None
-    return os.environ.get(env_var)
 
 
 def looks_like_secret(value: str) -> bool:

@@ -2,7 +2,6 @@
 from collections.abc import Mapping
 from pathlib import Path
 
-from ifixai.providers.bridge import BridgeJudgeProvider
 from ifixai.providers.governance_fixture import GovernanceFixture
 from ifixai.providers.governance_mixin import GovernanceMixin
 from ifixai.providers.http import HttpProvider
@@ -94,7 +93,6 @@ REGISTERED_PROVIDERS: tuple[str, ...] = (
     "huggingface",
     "langchain",
     "litellm",
-    "bridge",
 )
 
 _MOCK_FIXTURE_PATH = Path(__file__).parent.parent / "fixtures" / "governance" / "mock.yaml"
@@ -118,7 +116,6 @@ _PROVIDER_MAP: dict[str, type] = {
         "huggingface": HuggingFaceProvider,
         "langchain": LangChainProvider,
         "litellm": LiteLLMProvider,
-        "bridge": BridgeJudgeProvider,
     }.items()
     if cls is not None
 }
