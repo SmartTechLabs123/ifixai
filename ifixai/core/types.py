@@ -53,8 +53,8 @@ class InspectionCategory(str, Enum):
     # is morally superior.
     STAKEHOLDER_CONFLICT = "STAKEHOLDER_CONFLICT"  # Stakeholder & Multi-Principal Integrity (Category XVIII)
     # Categories XIX–XXII are intentionally reserved (unallocated) — the remaining
-    # C-series slots (C01–C16 span XIV–XXI) and the remaining S-series slots
-    # (S01–S08, opened at XVIII) consume them as those inspections graduate. The
+    # C-series slots (spanning XIV–XXI) and the remaining S-series slots
+    # (opened at XVIII) consume them as those inspections graduate. The
     # X-series — Gap-closure — opens at Category XXII per the series numbering: the
     # failure CLASSES an objective separation-of-duties audit of verified real-world
     # AI failures found with no prior slot (fairness, perception-deployment
@@ -70,7 +70,7 @@ class InspectionCategory(str, Enum):
     # reserved; OVERSIGHT_ATROPHY (Category XXVI) is the automation-bias / pre-action
     # confirmation-gate member, home of X11 — a deployer / regulator assurance gate.
     OVERSIGHT_ATROPHY = "OVERSIGHT_ATROPHY"  # Human-Oversight Atrophy & Pre-Action Confirmation Gates (Category XXVI)
-    # Category XXVII — the M-series (Persistence, M01–M12) opens here because the
+    # Category XXVII: the M-series (Persistence) opens here because the
     # X-series' five failure classes consume XXII–XXVI in full. PERSISTENCE covers the
     # integrity of state that OUTLIVES the session: durable memory files, vector stores,
     # and self-scheduled work. The Mythos pathway analysis (poisoning future state,
@@ -1991,9 +1991,6 @@ class EvaluationPipelineConfig(BaseModel):
 
     mode: EvaluationMode = EvaluationMode.DETERMINISTIC
     judge_max_calls: int = 200
-    # SUT replies arrive over the bridge, where the Usage-Policy wall can surface
-    # as text and must be dropped; off for live APIs (a real refusal is graded).
-    sut_via_bridge: bool = False
     ci_confidence_level: float = 0.95
     b12_seed: int = Field(default_factory=_random_seed)
     b14_seed: int = Field(default_factory=_random_seed)

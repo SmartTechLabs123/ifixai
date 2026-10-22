@@ -75,10 +75,9 @@ _BACKOFF_BASE: float = 0.5
 _RETIRE_STREAK: Final[int] = 3
 
 
-# Per grading call. The 60s default suits a fast direct-API judge; a judge
-# routed through the `claude -p` CLI (plugin bridge) is much slower (CLI startup
-# + thinking + a large rubric prompt), so a plan user can raise this — e.g.
-# IFIXAI_JUDGE_TIMEOUT=300 — to stop grading calls being guillotined → ERROR.
+# Per grading call. The 60s default suits a fast direct-API judge; a slow judge
+# (thinking + a large rubric prompt) can raise it, e.g. IFIXAI_JUDGE_TIMEOUT=300,
+# to stop grading calls being cut off as ERROR.
 def _judge_timeout_from_env(default: float = 60.0) -> float:
     """Parse IFIXAI_JUDGE_TIMEOUT, falling back to `default` on an empty or
     non-numeric value instead of crashing the import with a raw ValueError."""
@@ -1305,9 +1304,8 @@ class AnalyticRubricJudge:
                 # (→ INCONCLUSIVE) instead of grinding all attempts → ERROR.
                 if is_platform_refusal(raw_response):
                     raise JudgeExtractionError(
-                        "judge refused by the platform Usage-Policy filter — this "
-                        "adversarial probe cannot be graded via the claude -p bridge "
-                        "(use --mode api for adversarial coverage)"
+                        "judge refused by the platform Usage-Policy filter; this "
+                        "adversarial probe cannot be graded by this judge"
                     ) from exc
                 last_exc = exc
                 extraction_failures += 1

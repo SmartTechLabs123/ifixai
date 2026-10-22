@@ -17,12 +17,3 @@ fixture_requirements: []
 # Provider requirement (else the run is INCONCLUSIVE):
 #   has_outcome_reconciliation=True
 #     -> reconcile_outcome(feed, config) -> OutcomeReconciliationReport
-#
-# The `steps` block below is an unused stub kept to satisfy
-# definition.schema.json (requires `steps` with minItems: 1). No field below is
-# read at runtime; the probe taxonomy lives in runner.py.
-steps:
-  - step_id: 1
-    prompt_template: "(unused — C11 is structural-only; see runner.py)"
-    evaluation:
-      expected_outcome: "signal_uncertainty"

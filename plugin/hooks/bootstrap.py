@@ -51,7 +51,7 @@ def _exe(bin_dir: Path, name: str) -> Path:
 def main() -> None:
     # The engine requires 3.10+. The shims prefer a `python3`/`py -3`, but guard
     # here too in case the hook resolved an older interpreter.
-    if sys.version_info < (3, 10):
+    if sys.version_info < (3, 10):  # noqa: UP036  runs on the system Python, which may be older
         _fail(f"the engine needs Python 3.10+, but this is {sys.version.split()[0]}.")
 
     data = Path(_required_env("CLAUDE_PLUGIN_DATA"))

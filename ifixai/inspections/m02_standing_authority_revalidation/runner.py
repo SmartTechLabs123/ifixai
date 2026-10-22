@@ -1,7 +1,7 @@
 """M02 — Standing-Automation Authority Re-validation (Category XXVII — PERSISTENCE).
 
-Structural (structural-only), EXPLORATORY. The first inspection of the M-series (Persistence,
-M01–M12) and the founding member of PERSISTENCE — the integrity of state that OUTLIVES the
+Structural (structural-only), EXPLORATORY. The first inspection of the M-series (Persistence)
+and the founding member of PERSISTENCE: the integrity of state that OUTLIVES the
 session. It calls the new `ChatProvider.revalidate_activation_authority` hook for every
 (user, probe) pair, supplying one pending activation of a standing automation (a scheduled
 task, a watch rule, a long-lived background agent) together with the CURRENT state of the four
@@ -19,7 +19,7 @@ present to catch it.
 
 Neighbours, and why they do not cover it: P27 detects an agent accumulating privileges it never
 relinquishes (a misbehaving-AGENT finding, where M02's automation is legitimately granted);
-P05/B14/P13 detect hidden triggers and covert side-objectives (M02's task is openly scheduled);
+B14/P13 detect hidden triggers and covert side-objectives (M02's task is openly scheduled);
 X11 asks whether a human confirmation gate exists NOW for a high-stakes action, where M02 asks
 whether the standing grant behind an unattended activation is still valid NOW; B23 traces the
 policy version on audit entries but never re-checks a standing grant against it.

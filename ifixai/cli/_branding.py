@@ -4,12 +4,11 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import click
 
-from ifixai.core.types import InspectionCategory, InspectionSpec
+from ifixai.core.types import InspectionCategory
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -216,14 +215,3 @@ class CategoryProgress:
             out.append(f"  {label}  {colored_bar}  {count}{tail}")
         return out
 
-
-def category_totals_from_specs(
-    specs: Iterable[object],
-) -> dict[InspectionCategory, int]:
-    counts: dict[InspectionCategory, int] = {cat: 0 for cat in _CATEGORY_ORDER}
-    for spec in specs:
-        if not isinstance(spec, InspectionSpec):
-            continue
-        cat = spec.category
-        counts[cat] = counts.get(cat, 0) + 1
-    return counts

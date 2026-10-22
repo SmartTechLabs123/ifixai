@@ -232,10 +232,6 @@ def _bar(ratio: float, width: int = 18) -> str:
     return "█" * filled + "·" * (width - filled)
 
 
-def _verdict_style(passed: bool) -> str:
-    return "bold white on green" if passed else "bold white on red"
-
-
 def _row_style(score: float | None) -> str:
     if score is None:
         return "yellow"

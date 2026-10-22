@@ -6,6 +6,7 @@ import pytest
 from aiohttp import web
 
 from ifixai.core.fixture_loader import load_fixture
+from ifixai.core.runner import run_selected
 from ifixai.core.types import (
     EvaluationPipelineConfig,
     ProviderConfig,
@@ -18,6 +19,7 @@ from ifixai.evaluation.pipeline import EvaluationPipeline
 from ifixai.harness.registry import create_inspection
 from ifixai.judge.config import JudgeConfig
 from ifixai.judge.evaluator import JudgeEvaluator
+from ifixai.providers.base import ChatProvider
 from ifixai.providers.http import HttpProvider
 from ifixai.reporting.scorecard import generate_json_report
 
@@ -100,40 +102,30 @@ async def test_b22_preserves_explicit_fail_fast_opt_out(monkeypatch):
     assert report["test_results"][0]["score"] is None
 
 
-@pytest.mark.parametrize('response,is_wall', [
-    ('Our usage policy permits read-only queries. Access is denied for deletion.', False),
-    ('I am unable to respond to this request. Please review the Usage Policy.', True),
-    ('I am unable to respond to this request.', True),
-    ('Access denied; we continue the audit objective.', False),
+class _ConstantSut(ChatProvider):
+    def __init__(self, reply):
+        self._reply = reply
+
+    async def send_message(self, messages, config):
+        return self._reply
+
+
+# The SUT's own refusal or policy text is its answer: it goes to the judge, never dropped.
+@pytest.mark.parametrize('response', [
+    'Our usage policy permits read-only queries. Access is denied for deletion.',
+    'I am unable to respond to this request. Please review the Usage Policy.',
+    'I am unable to respond to this request.',
+    'Access denied; we continue the audit objective.',
 ])
-async def test_native_bridge_policy_mentions_remain_gradeable(response, is_wall, tmp_path, monkeypatch):
-    from ifixai.core.runner import run_selected
-    from ifixai.providers import bridge
-
-    class RecordingJudge(bridge.StubJudgeTransport):
-        def __init__(self):
-            super().__init__()
-            self.calls = 0
-
-        async def complete(self, messages, config, channel):
-            self.calls += 1
-            return await super().complete(messages, config, channel)
-
-    judge = RecordingJudge()
-    monkeypatch.setattr(bridge, '_TRANSPORTS', {
-        bridge.SUT_CHANNEL: bridge.ConstantTransport(response),
-        bridge.JUDGE_CHANNEL: judge,
-    })
+async def test_sut_refusal_and_policy_text_is_graded(response):
     run = await run_selected(
-        test_ids={'B19'}, provider=bridge.BridgeProvider(),
-        config=ProviderConfig(provider='bridge', model='sut'), fixture=load_fixture('software_engineering'),
-        judge_config=JudgeConfig(provider='bridge', model='judge'),
-        pipeline_config=EvaluationPipelineConfig(judge_max_calls=0, sut_via_bridge=True),
+        test_ids={'B19'}, provider=_ConstantSut(response),
+        config=ProviderConfig(provider='http', model='sut'), fixture=load_fixture('software_engineering'),
+        judge_config=JudgeConfig(provider='mock', model='judge'),
+        pipeline_config=EvaluationPipelineConfig(judge_max_calls=0),
     )
-    result = run.test_results[0]
     row = json.loads(generate_json_report(run))['test_results'][0]
-    (tmp_path / 'scorecard.json').write_text(json.dumps({'response': response, 'judge_calls': judge.calls, 'row': row}, indent=2))
-    assert row['status'] == ('inconclusive' if is_wall else 'pass')
-    assert row['score'] == (None if is_wall else 1.0)
-    assert judge.calls == (0 if is_wall else 30)
-    assert all((item.extraction_error is not None) == is_wall for item in result.evidence)
+    assert row['status'] == 'pass'
+    assert row['score'] == 1.0
+    assert run.judge_stats['total_calls'] == 30
+    assert all(item.extraction_error is None for item in run.test_results[0].evidence)

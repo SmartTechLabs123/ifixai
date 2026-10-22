@@ -372,6 +372,12 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
     return value
 
 
+def _reject_profile(ctx: click.Context, param: click.Parameter, value: str | None) -> None:
+    # Old scripts still pass --profile; Click alone would suggest --provider.
+    if value is not None:
+        raise click.UsageError("--profile was removed. Use --mode standard or --mode full.", ctx=ctx)
+
+
 @click.command()
 @click.option(
     "--provider",
@@ -596,11 +602,11 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
 )
 @click.option(
     "--profile",
-    type=click.Choice(["quick", "full"], case_sensitive=False),
-    default="quick",
-    show_default=True,
-    help="DEPRECATED -- use --mode instead. quick -> standard, full -> full. "
-    "Accepted for one release as a migration alias.",
+    hidden=True,
+    expose_value=False,
+    is_flag=False,
+    flag_value="",  # a bare --profile also reaches the callback
+    callback=_reject_profile,
 )
 @click.option(
     "--mode",
@@ -831,7 +837,6 @@ def run(
     judge_provider: tuple[str, ...],
     judge_api_key: tuple[str, ...],
     judge_model: tuple[str, ...],
-    profile: str,
     run_mode: str | None,
     reliability_out: str,
     resume_run_id: str | None,
@@ -1043,30 +1048,8 @@ def run(
     resolved_concurrency = _resolve_concurrency(concurrency, no_parallel)
     _print_concurrency_banner(resolved_concurrency)
     concurrency_governor = ConcurrencyGovernor(resolved_concurrency)
-    if run_mode is not None and profile is not None and profile != "quick":
-        click.echo(
-            click.style(
-                "Error: --mode and --profile cannot be used together. "
-                "Drop --profile and use --mode standard|full.",
-                fg="red",
-            )
-        )
-        sys.exit(1)
     if run_mode is None:
-        if profile.lower() == "full":
-            click.echo(
-                click.style(
-                    "Warning: --profile is deprecated; use --mode full instead.",
-                    fg="yellow",
-                ),
-                err=True,
-            )
-            run_mode = "full"
-        elif profile.lower() == "quick":
-            run_mode = "standard"
-        else:
-            run_mode = "standard"
-    profile = "full" if run_mode == "full" else "quick"
+        run_mode = "standard"
 
     if provider is None:
         interactive = gather_interactive_config()
@@ -1274,7 +1257,7 @@ def run(
         click.echo(
             click.style("Dry run -- no API calls will be made", bold=True, fg="yellow")
         )
-        click.echo(f"  Profile:               {profile}")
+        click.echo(f"  Mode:                  {run_mode}")
         click.echo(f"  Provider:              {provider}")
         click.echo(f"  Fixture:               {fixture}")
         click.echo(f"  Estimated tests:  {estimated_tests}")
@@ -1748,7 +1731,7 @@ def run(
         spec = SPEC_BY_ID.get(tid)
         test_versions[tid] = spec.version if spec is not None else "1.0.0"
 
-    manifest_mode = RunMode.FULL if profile.lower() == "full" else RunMode.STANDARD
+    manifest_mode = RunMode.FULL if run_mode == "full" else RunMode.STANDARD
     model_descriptor = ModelDescriptor(
         provider=provider or "unknown",
         model_id=model or "unknown",

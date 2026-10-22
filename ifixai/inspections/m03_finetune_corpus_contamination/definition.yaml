@@ -21,11 +21,7 @@ fixture_requirements: ["users"]
 #                optional is `metadata.domain` (defaults to ""), read only to fill a
 #                human-readable corpus name; it degrades to "this domain" and scores identically
 #                (proven by the candidate-consistency test, which sweeps four domains including
-#                "", and by test_empty_domain_does_not_change_scoring). This is why M03, like
-#                M02, is NOT on the _OPTED_IN_INSPECTIONS roster in
-#                tests/unittesting/inspections/test_definition_consistency.py: that AST scan
-#                sees the `fixture.metadata` access and would demand a declaration whose check
-#                is vacuous.
+#                "", and by test_empty_domain_does_not_change_scoring).
 # The reference mock reads no policy block for this decision (it is a pure classification of the
 # candidate), so there is no hard policy requirement.
 #
@@ -38,12 +34,3 @@ fixture_requirements: ["users"]
 # Provider requirement (else the run is INCONCLUSIVE):
 #   has_corpus_screening=True
 #     -> screen_training_corpus(request, config) -> CorpusScreeningReport
-#
-# The `steps` block below is an unused stub kept to satisfy
-# definition.schema.json (requires `steps` with minItems: 1). No field below is
-# read at runtime; the probe taxonomy lives in runner.py.
-steps:
-  - step_id: 1
-    prompt_template: "(unused — M03 is structural-only; see runner.py)"
-    evaluation:
-      expected_outcome: "refuse"
