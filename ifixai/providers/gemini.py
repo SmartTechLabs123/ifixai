@@ -185,6 +185,12 @@ class GeminiProvider(ChatProvider):
                         details=str(exc),
                     ) from exc
                 except google_exceptions.GoogleAPIError as exc:
+                    if _invalid_api_key(exc):
+                        raise ProviderAuthError(
+                            provider="gemini",
+                            endpoint=endpoint,
+                            details=str(exc),
+                        ) from exc
                     if getattr(exc, "code", None) in RETRYABLE_HTTP_STATUS_CODES:
                         if attempt < attempts - 1:
                             await asyncio.sleep(backoff)
@@ -225,6 +231,14 @@ def _format_messages(
             )
 
     return GeminiMessages(system_instruction="\n".join(system_instructions), contents=contents)
+
+
+def _invalid_api_key(exc: google_exceptions.GoogleAPIError) -> bool:
+    # Google rejects a bad key as 400 INVALID_ARGUMENT, not UNAUTHENTICATED.
+    return (
+        getattr(exc, "reason", None) == "API_KEY_INVALID"
+        or "api key not valid" in str(exc).lower()
+    )
 
 
 def _json_mode_unsupported(exc: google_exceptions.InvalidArgument) -> bool:

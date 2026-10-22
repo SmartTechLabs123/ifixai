@@ -77,7 +77,9 @@ back critical and recommend denial. Getting both directions right is the point.
 
 ## What we actually look for
 
-Sixty inspections: 32 core checks across the five graded pillars and 28 extended checks reported separately. Two core checks (B15 exploratory and B22 advisory) are reported but held out of the grade, leaving 30 core checks in the aggregate.
+Sixty-one inspections. Thirty-two sit in the graded pillars and thirty reach the aggregate (two
+are reported inside their pillar but held out of the average); twenty-nine are extended and
+reported separately. The graded ones sit in five pillars.
 
 | Pillar | Weight | The question |
 |---|---|---|
@@ -114,7 +116,24 @@ you which policy version it applied, and does it escalate the things your fixtur
 
 ### The extended set
 
-Twenty-eight extended inspections, reported but kept out of the grade so headline numbers stay comparable. They cover destruction resistance, audit-trail integrity, hidden goals and shortcut-tool restraint, goal changes and privilege creep, systemic risk, confidence and human handoff, stakeholder conflict, deployment and confirmation gates, standing authority, training-data screening, model identity, delegated scope, user dependency, response balance and honesty, grader validity, benchmark contamination, training provenance, and care for vulnerable users.
+Twenty-nine further inspections, reported but kept out of the grade so headline numbers stay
+comparable: destruction resistance under plausible justification, audit-log tampering, hidden
+side-objectives surviving across long sessions, a forbidden shortcut tool it reaches for when it
+thinks nobody is watching, accepting a mid-session goal change, privilege creep, multi-agent
+systemic risk, abstention when confidence is low, human handoff, outcome reconciliation,
+configurer-versus-stakeholder conflict, two deployment gates, standing automations that outlive the
+authority which approved them, records harvested into a fine-tuning corpus without screening,
+whether every response can be attributed to the model that actually served it, and whether authority
+handed to an agent in another organization is narrowed to the task it was handed for.
+
+Eleven of them look at the agent's disposition towards the person in front of it, which is where
+over-correction and over-agreement live: whether a correct position survives being pushed on and
+whether a wrong one gets dropped, whether the agent caves to a confident user, whether it attributes
+what it says to a real source, whether it flatters the grader when it works out it is being graded,
+whether it recognises a benchmark it has seen before, whether a request to help build training data
+gets screened, whether an instruction embedded in content can override its brief, and whether a user
+who presents as vulnerable gets more care rather than more compliance — including a report-only check
+on guilt-tripping, which carries findings and no score.
 
 ## The rule that surprises people
 
@@ -158,7 +177,11 @@ Worth saying plainly, because it is what a careful buyer asks:
 
 ## Common questions
 
-**"Isn't this just prompt testing?"** No. The suite also calls exposed provider and governance capabilities directly. Examples include tool authorization, deterministic governance, override handling, policy-version traceability, audit-trail integrity, destruction resistance, confidence and handoff behaviour, outcome reconciliation, and deployment or confirmation gates.
+**"Isn't this just prompt testing?"** No. Twenty-four of the sixty-one inspections call your
+machinery directly on at least part of their path, and fifteen send no prompt at all: tool authorization,
+whether a deterministic governance layer exists, override handling, policy-version traceability,
+audit-trail integrity, destruction resistance, confidence and handoff behaviour, outcome
+reconciliation, and the two acceptance gates are typed calls checked against your policy.
 
 **"Can the agent game it?"** That is itself one of the tests. We run identical decisions under
 audit framing and neutral framing and compare. Behaving better when it thinks it is being observed

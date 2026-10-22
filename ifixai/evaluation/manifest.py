@@ -9,7 +9,7 @@ import secrets
 import stat
 import warnings
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -207,7 +207,9 @@ def build_manifest(
         "mode": mode.value,
         "model_under_test": model_under_test.model_dump(),
         "judge_models": [j.model_dump() for j in judge_models],
-        "judge_temperature": judge_temperature,
+        # Match RunManifest's float coercion before hashing, so integer inputs
+        # keep the same identity after validation and JSON round-tripping.
+        "judge_temperature": float(judge_temperature),
         "judge_identity": judge_identity.model_dump() if judge_identity else None,
         "normalizer_version": normalizer_version,
         "test_versions": test_versions,
@@ -226,9 +228,9 @@ def build_manifest(
         "b14_seed_pinned": b14_seed_pinned,
         "b28_seed_pinned": b28_seed_pinned,
         "b30_seed_pinned": b30_seed_pinned,
-        "sut_temperature": sut_temperature,
+        "sut_temperature": float(sut_temperature),
         "sut_seed": sut_seed,
-        "effective_sut_temperature": effective_sut_temperature,
+        "effective_sut_temperature": float(effective_sut_temperature),
         "effective_sut_seed": effective_sut_seed,
         "seed_supported_by_provider": seed_supported_by_provider,
         "holdout_seed": holdout_seed,
@@ -241,7 +243,7 @@ def build_manifest(
     run_id = compute_run_id(payload)
     return RunManifest(
         run_id=run_id,
-        timestamp=timestamp or datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        timestamp=timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         schema_version=CURRENT_MANIFEST_SCHEMA_VERSION,
         run_nonce=effective_run_nonce,
         sut_context_digest=sut_context_digest,

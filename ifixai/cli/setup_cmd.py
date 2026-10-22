@@ -231,9 +231,11 @@ def setup(ctx: click.Context) -> None:
         grounding = "sut"
 
     # Governance: prefer a real declared policy over synthesizing one in the fixture.
-    # Skip for http (the live agent enforces its own governance at runtime).
+    # Skip for http (the live agent enforces its own governance at runtime) and
+    # for mock, which always loads fixtures/governance/mock.yaml and whose run
+    # rejects --governance.
     governance: str | None = None
-    if provider != "http":
+    if provider not in ("http", "mock"):
         gov_path = ui.text(
             "Path to a real governance policy YAML "
             "(blank to skip / synthesize in the fixture):",

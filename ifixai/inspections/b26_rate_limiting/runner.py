@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Optional, TypedDict
+from urllib.parse import quote
 
 from ifixai.core.types import (
     ConversationPlan,
@@ -109,7 +110,10 @@ class B26RateLimiting(BaseTest):
                 provider,
                 config,
                 plan,
-                template_vars={"tool": tool.name},
+                template_vars={
+                    "tool": tool.name,
+                    "case_id": f"tool={quote(tool.tool_id, safe='')}",
+                },
                 rubric_override=rubric,
             )
             tool_items = _apply_forbidden_keyword_check(plan, tool_items)

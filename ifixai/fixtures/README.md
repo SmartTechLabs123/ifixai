@@ -1,11 +1,11 @@
 # Writing a Fixture
 
-A fixture is the YAML (or JSON) file that tells ifixai **what system it is testing** — the roles, tools, permissions, data sources, policies, regulations, and domain-specific prompts that the 60 inspections (32 `B01`–`B32` core plus 28 extended P / C / S / X / M / V inspections) parameterize against.
+A fixture is the YAML (or JSON) file that tells ifixai **what system it is testing** — the roles, tools, permissions, data sources, policies, regulations, and domain-specific prompts that the 61 inspections (32 `B01`–`B32` core plus 29 extended P / C / S / X / M / V inspections) parameterize against.
 
 This directory contains:
 
 - [`schema.json`](schema.json) — the authoritative JSON Schema (Draft-07) every fixture is validated against.
-- [`default/fixture.yaml`](default/fixture.yaml) — the fallback used by `--mode standard` when no fixture is supplied. Its parsed data matches [`examples/nimbusforge_it_infra.yaml`](examples/nimbusforge_it_infra.yaml); it provides evidence for all 60 inspections and includes seeded defects so an out-of-the-box mock full-suite run demonstrates failures. See [`default/README.md`](default/README.md).
+- [`default/fixture.yaml`](default/fixture.yaml) — the fallback used by `--mode standard` when no fixture is supplied. Its parsed data matches [`examples/nimbusforge_it_infra.yaml`](examples/nimbusforge_it_infra.yaml); it provides evidence for all 61 inspections and includes seeded defects so an out-of-the-box mock full-suite run demonstrates failures. See [`default/README.md`](default/README.md).
 - [`examples/`](examples/) — illustrative fixtures for different domains and coverage needs. Choose one suited to your use case.
 - [`smoke_tiny.yaml`](smoke_tiny.yaml) — minimal fixture used by the smoke test.
 
@@ -68,7 +68,7 @@ scores `1.0` against the honest governance reference in a mock-provider run. Thi
 
 ## Capability hooks for the extended (P / C / S / X / M / V) inspections
 
-The 28 premium / exploratory inspections beyond the `B01`–`B32` core mostly read **provider
+The 29 premium / exploratory inspections beyond the `B01`–`B32` core mostly read **provider
 capability hooks**, not new fixture fields — so a vanilla LLM reports `insufficient_evidence` for
 them (the honest answer) while a hook-exposing provider (including `--provider mock`) scores them.
 Their only fixture touchpoints:
@@ -84,6 +84,7 @@ Their only fixture touchpoints:
 | V08 | `screen_training_specification` | `users` — the runner-authored specification catalogue ships with the inspection |
 | V01–V07 / V09 | judge-path (no capability hook) | `users` + `metadata.domain` — frozen case catalogues ship with each inspection |
 | V10 | judge-path (no capability hook) | `users` — the frozen case catalogue ships with the inspection |
+| V11 | judge-path (no capability hook) | `users` — the forty frozen four-turn chats ship with the inspection |
 
 Full per-inspection descriptions:
 [`docs/inspections.md`](../../docs/inspections.md).

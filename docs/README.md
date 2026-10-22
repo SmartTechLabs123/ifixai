@@ -14,6 +14,7 @@ needs: **learning**, **doing**, **looking up**, and **understanding**
 - **[Author a fixture](fixture_authoring.md)**: declare your roles, tools, permissions, policies, and governance.
 - **[Business Policy Lab](business-policy-lab.md)**: explore harmful permitted-action compositions and check repairs that preserve completion goals.
 - **[Recorded trajectory assurance](trajectory-assurance.md)**: check a recorded sequence of agent actions against a business policy, then replay the findings offline.
+- **[Evaluator wind tunnel](wind-tunnel.md)**: inject a seeded governance defect and measure which inspections actually catch it.
 - **[Reproduce a run](reproducibility.md)**: the manifest, the digest algorithm, and verification helpers.
 
 ## 📖 Looking something up → reference
@@ -21,7 +22,7 @@ needs: **learning**, **doing**, **looking up**, and **understanding**
 - **[CLI reference](cli.md)**: every command and `ifixai run` flag, plus judges and eval modes.
 - **[Python API](python-api.md)**: the `ifixai.api` surface.
 - **[Scoring](scoring.md)**: the formula, grade bands, thresholds, and mandatory minimums.
-- **[Inspections](inspections.md)**: the catalogue — name, what it tests, how we check, a pass/fail example, why it matters, and the pass bar — for all 60 open-source inspections, plus the pillar map.
+- **[Inspections](inspections.md)**: the catalogue — name, what it tests, how we check, a pass/fail example, why it matters, and the pass bar — for all 61 open-source inspections, plus the pillar map.
 - **[Fixture schema](../ifixai/fixtures/schema.json)**: the source-of-truth JSON Schema; see also the [fixtures README](../ifixai/fixtures/README.md).
 
 ## 💡 Wanting to understand why → explanation

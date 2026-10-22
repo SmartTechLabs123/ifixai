@@ -62,7 +62,7 @@
 
 The existing Eval, Red-teaming, and Observability Tools are evaluating the agent mainly based on tech capability (token efficiency, latency, prompt injections). They cannot answer the most crucial question.
 
-Is the agent doing the job it is supposed to do based on the business KPIs and Organizational Structure? iFixAi gives you this answer in less than 120 seconds by striking the right balance between AI-Red Teaming and Operational Assurance. 
+Is the agent doing the job it is supposed to do based on the business KPIs and Organizational Structure? iFixAi gives you this answer in less than 120 seconds by striking the right balance between AI-Red Teaming and Operational Assurance.
 
 Adversarial depth. Assurance discipline. All-in-one auditing process.
 
@@ -79,7 +79,7 @@ All three run the same diagnostic underneath. The difference is how you configur
 | **What you test** | any provider, or your agent's real endpoint | same | same |
 | **Who grades it** | self, one independent vendor, or a multi-judge ensemble | same | same |
 | **Output** | JSON + Markdown reports + rich terminal scorecard | same | interactive results artifact (+ JSON source of truth; static-report fallback) |
-| **Suite** | pick with arrow keys in the wizard | 10 inspections by default; `--full-run` for all 60, or `--suite smoke\|strategic\|essential\|core\|extended\|all` | the agent picks `--mode`/`--suite`, same engine as the CLI |
+| **Suite** | pick with arrow keys in the wizard | 10 inspections by default; `--full-run` for all 61, or `--suite smoke\|strategic\|essential\|core\|extended\|all` | the agent picks `--mode`/`--suite`, same engine as the CLI |
 | **Works in** | any terminal | any terminal / CI | Claude Code, Cursor, Codex, VS Code, Windsurf, Cline, Continue, Gemini, Zed |
 
 ## Quick start
@@ -228,7 +228,7 @@ the calls, so expect roughly a sixth of the cost and time.
 
 `ifixai run` runs **10 inspections** unless you ask for more. They are the `essential` suite: six
 high-impact checks plus four medium-impact ones, picked so a first run is quick and still ends in
-a grade. Add **`--full-run`** to run all 60.
+a grade. Add **`--full-run`** to run all 61.
 
 | Impact | ID | Checks that your agent… |
 |---|---|---|
@@ -253,7 +253,7 @@ a grade. Add **`--full-run`** to run all 60.
 
 ```bash
 ifixai run --provider openai                 # the default: 10 inspections
-ifixai run --provider openai --full-run      # all 60: slower, costs more
+ifixai run --provider openai --full-run      # all 61: slower, costs more
 ```
 
 `--full-run` cannot be combined with `--suite`,
@@ -272,8 +272,8 @@ To pick a different set, name a suite:
 | `strategic` | 8 | quick read on the riskiest spots |
 | `essential` | 10 | a fast first grade (**the default**) |
 | `core` | 32 | the graded five-pillar scorecard |
-| `extended` | 28 | frontier risk signal, scored outside the grade |
-| `all` | 60 | everything; the same inspections as `--full-run` |
+| `extended` | 29 | frontier risk signal, scored outside the grade |
+| `all` | 61 | everything; the same inspections as `--full-run` |
 
 Four themes (`security`, `reliability`, `compliance`, `frontier`) also work as `--suite` values; run `ifixai list suites` to browse them all.
 
@@ -333,7 +333,7 @@ connection defaults.
 
 ## What you get back
 
-A letter grade with the breakdown behind it. iFixAi groups the 60 inspections into **25 categories**, five core pillars plus twenty premium. The five core pillars:
+A letter grade with the breakdown behind it. iFixAi groups the 61 inspections into **25 categories**, five core pillars plus twenty premium. The five core pillars:
 
 | Core pillar | What it detects |
 |---|---|
@@ -351,7 +351,7 @@ sandbagging, insubordination, usurpation, systemic risk, miscalibration, stakeho
 conflict, perception governance, oversight atrophy, persistence, identity attestation,
 influence, balance integrity, frankness-correctness link, grader validity, benchmark
 contamination, training disposition provenance, vulnerable user care. This
-repo ships **28 inspections from them as a free preview of iFixAi's premium suite**, at least
+repo ships **29 inspections from them as a free preview of iFixAi's premium suite**, at least
 one per category. **None of
 them feed the grade**: they are scored and reported on their own, so grades stay comparable
 even between agents that expose different capabilities. The one exception is P01: as a
@@ -368,7 +368,7 @@ mapping and every premium category: **[docs/inspections.md](docs/inspections.md#
 
 ## iFixAi Pro
 
-Everything in this repo is our open-source engine. It stays free, with 60 inspections you can run
+Everything in this repo is our open-source engine. It stays free, with 61 inspections you can run
 on your own infrastructure using your own model keys.
 
 [iFixAi Pro](https://www.ifixai.ai/?utm_source=github&utm_medium=readme&utm_content=pro-section#pricing) is our independent auditing service for AI agents, with up to 400

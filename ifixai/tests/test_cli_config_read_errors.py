@@ -78,3 +78,16 @@ def test_yaml_validation_keeps_its_existing_error(tmp_path):
     (tmp_path / "ifixai.yaml").write_text("provider: [\n", encoding="utf-8")
     with pytest.raises(ValueError, match="is not valid YAML"):
         load_config(tmp_path)
+
+
+@pytest.mark.parametrize("key", ["1", "true", "null"])
+def test_nonstring_config_keys_report_config_error(tmp_path, key):
+    (tmp_path / "ifixai.yaml").write_text(
+        f"provider: mock\n{key}: unexpected\n", encoding="utf-8"
+    )
+    result = _run(tmp_path)
+    assert result.returncode == 1
+    assert "Config error: ifixai.yaml" in result.stderr
+    assert "string keys at the top level" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "Dry run" not in result.stdout

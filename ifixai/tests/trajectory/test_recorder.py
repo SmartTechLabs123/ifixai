@@ -179,3 +179,15 @@ def test_clock_regression_is_clamped_and_invalid_clock_fails():
     assert [event.time_ns for event in trace.seal().events] == [10, 10, 10]
     with pytest.raises(ValueError):
         TraceRecorder("tenant", "collector", clock_ns=lambda: True)
+
+
+def test_event_bound_rejected_before_callable_executes():
+    trace = recorder()
+    source = SourcePayload(actor_id="a", resource="source:one", content_digest="a" * 64)
+    while len(trace._events) < 99999:
+        trace.emit(source)
+    calls = []
+    with pytest.raises(ValueError, match="event bound"):
+        trace.invoke(lambda: calls.append("side effect"), actor_id="actor", action="write", resource="local:one", arguments={})
+    assert calls == []
+    assert len(trace._events) == 99999
