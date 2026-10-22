@@ -476,12 +476,12 @@ def probe_majority(record: SampleRecord, consensus: ConsensusResult) -> Majority
     more than half of the judges that returned pass it), never the members' fail votes alone: those
     would let a 1-1 split on the harm read as no harm at all."""
     if consensus["dispersion"] is not None:
-        return majority_record(record["tally"], consensus["dispersion"])
+        return majority_record(record["tally"], consensus["samples_asked"])
     verdict = consensus["result"].rubric_verdict
     panel = new_sample_tally()
     if verdict is not None:
         record_sample_votes(panel, verdict, sorted(record["corrected"]))
-    return majority_record(panel, None)
+    return majority_record(panel, 1)
 
 
 def probe_evaluation_result(result: PipelineResult) -> str:

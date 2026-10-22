@@ -5,6 +5,7 @@ from typing import Any, Final, Literal, TypedDict
 import aiohttp
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -272,6 +273,7 @@ class MiniMaxProvider(ChatProvider):
         last_error: Exception | None = None
 
         for attempt in range(config.max_retries + 1):
+            count_request()
             try:
                 return await self._send_request(request, timeout, config.reject_truncated)
             except (

@@ -27,11 +27,15 @@ from ifixai.core.types import (
     RubricDimension,
     RubricVerdict,
 )
+from ifixai.evaluation.analytic_judge_schema import build_rubric_response_schema
+from ifixai.evaluation.run_stop import raise_if_stopped, run_stopped
 from ifixai.judge.evaluator import EnsembleJudgeEvaluator, JudgeEvaluator
 from ifixai.judge.fallbacks import load_fallback_policy, resolve_judge_model_chain
 from ifixai.providers.base import (
     TRANSIENT_PROVIDER_ERRORS,
+    ProviderSchemaRejectedError,
     ProviderTruncatedError,
+    is_content_flagged,
     is_fatal_provider_error,
 )
 from ifixai.providers.secrets import scrub_secrets
@@ -65,6 +69,11 @@ class JudgeContractError(ValueError):
 
 class JudgeTransientError(JudgeExtractionError):
     """Every judge model timed out, 5xx'd or cut off: no verdict, and nothing said about the agent."""
+
+
+class JudgeContentFlaggedError(Exception):
+    """The judge's provider flagged one request's content and would not grade it. That probe goes
+    ungraded; the judge, its key and the run carry on."""
 
 
 logger = logging.getLogger(__name__)
@@ -877,6 +886,17 @@ def parse_rubric_verdict(
     )
 
 
+def requested_turn_keys(rubric: AnalyticRubric) -> list[str]:
+    """The turn keys (`onset_turn`, `<dimension>_onset_turn`) the rubric's prompt asks the judge for,
+    so a strict schema lets the judge send them."""
+    keys = [ONSET_KEY, *(f"{dim.name}{ONSET_KEY_SUFFIX}" for dim in rubric.dimensions)]
+    return [
+        key
+        for key in keys
+        if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", rubric.judge_prompt_template)
+    ]
+
+
 def is_onset_key(key: str) -> bool:
     """Whether a top-level verdict key is a turn a multi-turn rubric asked for, never a dimension."""
     return key == ONSET_KEY or key.endswith(ONSET_KEY_SUFFIX)
@@ -1029,6 +1049,9 @@ class AnalyticRubricJudge:
         # Whether the last item that exhausted the chain failed hard; replayed
         # once every model is retired. Each other item decides from its own failures.
         self._last_item_hard = False
+        # Off for the rest of the run once a strict request got a 400 and its plain-JSON retry
+        # went through.
+        self._strict_schema = True
 
     _EXTRACTION_RETRIES = 3
 
@@ -1093,6 +1116,11 @@ class AnalyticRubricJudge:
                 ),
                 # json_output: judge-only; see ProviderConfig.json_output.
                 "json_output": True,
+                "json_schema": (
+                    build_rubric_response_schema(rubric, requested_turn_keys(rubric))
+                    if self._strict_schema
+                    else None
+                ),
                 # Judge-only too: half a verdict is not a verdict. The SUT path
                 # deliberately keeps its partial text — see
                 # ProviderConfig.reject_truncated.
@@ -1241,6 +1269,8 @@ class AnalyticRubricJudge:
         extraction_failures = 0
         transport_budget = self._transport_budget()
         last_exc: Exception | None = None
+        # True while the request in flight is the plain-JSON retry of a refused strict one.
+        plain_retry = False
         # Two independent budgets: provider faults advance the fallback chain,
         # unparseable verdicts do not. Bounding the loop by their sum stops one
         # kind of failure from eating the other's retries.
@@ -1255,11 +1285,26 @@ class AnalyticRubricJudge:
                 )
             except Exception as exc:
                 last_exc = exc
-                if is_fatal_provider_error(exc):
-                    logger.exception(
-                        "Judge call for %s aborted (non-retryable)",
-                        rubric.test_id,
+                if isinstance(exc, ProviderSchemaRejectedError):
+                    logger.warning(
+                        "Judge provider refused a strict verdict request; retrying it in plain "
+                        "JSON mode: %s",
+                        exc,
                     )
+                    judge_config = judge_config.model_copy(update={"json_schema": None})
+                    plain_retry = True
+                    continue
+                plain_retry = False
+                if is_content_flagged(exc):
+                    # Resending the same probe gets the same flag, and the model is fine.
+                    raise JudgeContentFlaggedError(str(exc)) from exc
+                if is_fatal_provider_error(exc):
+                    # A refusal that stopped the run is said once, by the run's stop line.
+                    if not run_stopped():
+                        logger.exception(
+                            "Judge call for %s aborted (non-retryable)",
+                            rubric.test_id,
+                        )
                     raise JudgeCommunicationError(
                         f"Judge provider rejected the request (non-retryable): "
                         f"{type(exc).__name__}: {exc}"
@@ -1292,6 +1337,10 @@ class AnalyticRubricJudge:
                 )
                 continue
 
+            if plain_retry and self._strict_schema:
+                # The plain retry went through, so the schema was what the provider refused.
+                logger.warning("Judge provider refuses the strict verdict schema; using JSON mode")
+                self._strict_schema = False
             try:
                 return parse_rubric_verdict(raw_response, rubric)
             except JudgeExtractionError as exc:
@@ -1382,6 +1431,7 @@ class EnsembleAnalyticRubricJudge:
             ],
             return_exceptions=True,
         )
+        raise_if_stopped(raw_results)
 
         successes: list[RubricVerdict] = [
             r for r in raw_results if isinstance(r, RubricVerdict)

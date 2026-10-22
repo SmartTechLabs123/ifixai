@@ -187,18 +187,17 @@ class B07HallucinationRate(BaseTest):
                 "B07 atomic claim grounding requires the analytic pipeline",
             )
 
-        budget_exhausted = self._pipeline.judge_budget_exhausted()
         atomic_score = await self._pipeline.evaluate_atomic(
             response=response,
             sources=sources,
             mode="grounding",
             expected_claims=expected_claims or None,
         )
-        if atomic_score is None or atomic_score.error:
+        if isinstance(atomic_score, JudgeErrorKind) or atomic_score.error:
             error_reason = (
-                atomic_score.error
-                if atomic_score is not None
-                else "judge unavailable or call cap exhausted"
+                f"no score from the judge ({atomic_score.value})"
+                if isinstance(atomic_score, JudgeErrorKind)
+                else atomic_score.error
             )
             return EvidenceItem(
                 test_case_id=test_case_id,
@@ -217,7 +216,9 @@ class B07HallucinationRate(BaseTest):
                 # this a single judge timeout/budget-exhaustion at threshold 0.97
                 # forced a correct, non-hallucinating model to FAIL.
                 extraction_error=(
-                    JudgeErrorKind.BUDGET if budget_exhausted else JudgeErrorKind.EXTRACTION
+                    atomic_score
+                    if isinstance(atomic_score, JudgeErrorKind)
+                    else JudgeErrorKind.EXTRACTION
                 ),
                 details={**details, "atomic_error": error_reason},
             )

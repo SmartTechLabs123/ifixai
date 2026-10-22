@@ -203,12 +203,23 @@ class JudgeErrorKind(str, Enum):
     EXTRACTION = "extraction"
     CONTRACT = "contract"
     BUDGET = "budget"
-    # The judge rejected the request (bad key, unknown model) with fail-fast off.
-    # Never scored; counts as a failed call, like COMMUNICATION.
+    # The judge rejected the request (bad key, unknown model, no credit). Never scored;
+    # counts as a failed call, like COMMUNICATION.
     JUDGE_UNREACHABLE = "judge_unreachable"
     # Every judge model timed out, 5xx'd or cut off on this item. Never scored,
     # never the agent's fault: a flaky judge, not a dead one.
     JUDGE_TRANSIENT = "judge_transient"
+    # The judge wasn't asked (it is down for this inspection), or a classify or claim
+    # call to it failed. COMMUNICATION is the agent's.
+    UNAVAILABLE = "judge_unavailable"
+
+
+class UngradedReason(str, Enum):
+    """Why the judge, not the agent, left an inspection's probes ungraded."""
+
+    JUDGE_UNAVAILABLE = "judge_unavailable"
+    JUDGE_UNUSABLE = "judge_unusable"
+    BUDGET = "budget"
 
 
 class EvaluationMode(str, Enum):
@@ -255,6 +266,14 @@ class ProviderConfig(BaseModel):
             "back to free text if the model rejects it; a no-op on providers with no "
             "JSON mode (anthropic, bedrock, huggingface), where the json-repair "
             "parser handles free text."
+        ),
+    )
+    json_schema: Optional[dict[str, object]] = Field(
+        default=None,
+        description=(
+            "Judge-only: the strict JSON schema a reply must match. The openai and "
+            "openrouter providers send it as response_format=json_schema in place of "
+            "json_object; every other provider ignores it."
         ),
     )
     reject_truncated: bool = Field(
@@ -1991,6 +2010,10 @@ class EvaluationPipelineConfig(BaseModel):
 
     mode: EvaluationMode = EvaluationMode.DETERMINISTIC
     judge_max_calls: int = 200
+    # A soft judge budget, in calls to the judge's provider: the run may go 25% over it, then
+    # stops, and what it never finished is reported as not run. 0 = none, the hard
+    # `judge_max_calls` (in grades) alone.
+    judge_budget: int = 0
     ci_confidence_level: float = 0.95
     b12_seed: int = Field(default_factory=_random_seed)
     b14_seed: int = Field(default_factory=_random_seed)
@@ -2181,11 +2204,13 @@ class TestResult(BaseModel):
     inspection_method: InspectionMethod = InspectionMethod.TEXT
     confidence_interval: Optional[ConfidenceInterval] = None
     evaluation_mode: Optional[EvaluationMode] = None
-    judge_calls_used: int = 0
     score_breakdown: Optional[ScoreBreakdown] = None
     variant_seed: Optional[int] = None
     variant_seed_pinned: bool = False
     insufficient_evidence: bool = False
+    # Why the judge left some probes ungraded. It decides the verdict only when the result is
+    # short of evidence: then the gap is the run's, never the agent's.
+    ungraded_reason: Optional[UngradedReason] = None
     status: TestStatus = TestStatus.FAIL
     # What a report-only inspection found, one line each, shown above its evidence on every report.
     findings: list[str] = Field(default_factory=list)
@@ -2196,6 +2221,12 @@ class TestResult(BaseModel):
     def findings_only(self) -> bool:
         """A report-only result whose displays show its findings and no percentage or threshold."""
         return bool(self.spec and self.spec.findings_only)
+
+
+def ungraded_reason_of(result: TestResult) -> UngradedReason | None:
+    """Why the judge left `result` short of evidence, or None when it isn't short or the judge
+    didn't."""
+    return result.ungraded_reason if result.insufficient_evidence else None
 
 
 class GovernanceGap(BaseModel):
@@ -2271,6 +2302,8 @@ class TestRunResult(BaseModel):
     partial: bool = False
     abort_reason: Optional[str] = None
     not_run_test_ids: list[str] = Field(default_factory=list)
+    # Why `not_run_test_ids` never finished, for their label: "budget", "aborted", ...
+    not_run_reason: str = "aborted"
     # Set when --resume merged checkpointed results from an earlier session,
     # so every report surface can disclose the mixed provenance.
     resumed_run_id: Optional[str] = None

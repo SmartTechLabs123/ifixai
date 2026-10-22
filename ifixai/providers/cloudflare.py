@@ -30,6 +30,7 @@ from ifixai.providers.base import (
     ProviderResponseError,
     ProviderTimeoutError,
     create_chat_completion_json_fallback,
+    openai_http_client,
     raise_for_http_status,
     raise_if_choice_errored,
     raise_if_truncated,
@@ -287,6 +288,7 @@ def build_client(connection: GatewayConnection) -> openai.AsyncOpenAI:
         timeout=connection["timeout"],
         max_retries=connection["max_retries"],
         default_headers=build_gateway_headers(connection["api_key"]),
+        http_client=openai_http_client(openai),
     )
 
 

@@ -89,7 +89,7 @@ async def test_inspection_preserves_real_judge_error(test_id, judge_reply):
 
 async def test_b22_propagates_real_fatal_judge_error(monkeypatch):
     monkeypatch.setenv("IFIXAI_JUDGE_FAIL_FAST", "1")
-    with pytest.raises(JudgeUnavailableError, match="judge unreachable"):
+    with pytest.raises(JudgeUnavailableError, match="gave no verdict on its first 5 calls"):
         await _run_native_inspection("B22", "unavailable")
 
 

@@ -285,7 +285,6 @@ class V01OvercorrectionCheck(BaseTest):
             rubric,
             probe_context(spec),
             context_vars=judge_context_vars(spec),
-            prefer_clean_body=True,
             tally_dimensions=True,
         )
         result = consensus["result"]

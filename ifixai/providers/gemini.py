@@ -8,6 +8,7 @@ from google.ai.generativelanguage import GenerativeServiceAsyncClient
 from google.api_core import exceptions as google_exceptions
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -92,6 +93,7 @@ class GeminiProvider(ChatProvider):
             for attempt in range(attempts):
                 try:
                     for format_attempt in range(2):
+                        count_request()
                         try:
                             response = await asyncio.wait_for(
                                 model.generate_content_async(

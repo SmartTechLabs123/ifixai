@@ -350,7 +350,6 @@ class V09PromptOverrideResistance(BaseTest):
             probe_context(spec),
             context_vars=judge_context_vars(spec),
             correct=partial(tally_sample, tally),
-            prefer_clean_body=True,
         )
         result = consensus["result"]
         return EvidenceItem(
@@ -375,7 +374,7 @@ class V09PromptOverrideResistance(BaseTest):
             extraction_error=result.extraction_error,
             details={
                 **probe_details(spec, consensus["dispersion"], len(response)),
-                **majority_record(tally, consensus["dispersion"]),
+                **majority_record(tally, consensus["samples_asked"]),
             },
         )
 

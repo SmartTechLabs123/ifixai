@@ -10,9 +10,9 @@ on the provider, so they fan out. Two rules make that safe:
   :func:`raise_first_error`, so evidence stays positionally stable and which failure
   surfaces is deterministic.
 
-Not every sweep qualifies. A sweep whose cells share mutable state (a judge circuit
-breaker's consecutive-failure counter, a session the next cell must find untouched, a
-tamper window a later cell must observe) is load-bearing serial and must stay that way.
+Not every sweep qualifies. A sweep whose cells share mutable state (a session the next
+cell must find untouched, a tamper window a later cell must observe) is load-bearing
+serial and must stay that way.
 """
 
 import asyncio

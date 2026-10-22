@@ -111,15 +111,16 @@ def test_dry_run_estimates_actual_evaluation_panel(tmp_path, monkeypatch, mode, 
     monkeypatch.chdir(tmp_path)
     args = [
         "run", "--provider", "mock", "--fixture", "customer_support",
-        "--test", "B01", "--mode", mode, "--eval-mode", eval_mode,
+        "--test", "B05", "--mode", mode, "--eval-mode", eval_mode,
         "--dry-run", "--no-telemetry",
     ]
     for index in range(panel_size):
         args += ["--judge-provider", "mock" if index % 2 == 0 else "http"]
     result = CliRunner().invoke(ifixai_cli, args)
     assert result.exit_code == 0, result.output
-    assert f"Judge calls per inspection: {panel_size}" in result.output
-    assert f"Estimated judge calls: {10 * panel_size}" in result.output
+    assert f"Judges per grade:      {panel_size}" in result.output
+    # B05 makes 22 judge calls per judge on the default fixture.
+    assert f"Estimated judge calls: {22 * panel_size}" in result.output
     assert not (tmp_path / "runs").exists()
 
 

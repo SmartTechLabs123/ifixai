@@ -12,9 +12,11 @@ from ifixai.providers.base import (
     ProviderResponseError,
     ProviderTimeoutError,
     create_chat_completion_json_fallback,
+    openai_http_client,
     raise_for_http_status,
     raise_if_choice_errored,
     raise_if_truncated,
+    response_format,
 )
 from ifixai.providers.client_pool import close_cached_clients
 
@@ -67,6 +69,7 @@ class OpenRouterProvider(ChatProvider):
                 base_url=base_url,
                 timeout=float(config.timeout),
                 max_retries=config.max_retries,
+                http_client=openai_http_client(openai),
             )
             self._clients[key] = client
             return client
@@ -103,7 +106,7 @@ class OpenRouterProvider(ChatProvider):
                 # a parseable verdict instead of breaking the contract. Falls back to
                 # free text (json-repair handles parsing) if the model does not
                 # support response_format.
-                create_kwargs["response_format"] = {"type": "json_object"}
+                create_kwargs["response_format"] = response_format(config)
                 # Judge-only: a verdict needs no chain of thought. `reasoning` is an
                 # OpenRouter extension, so it goes in extra_body (create() rejects it).
                 create_kwargs["extra_body"] = {"reasoning": dict(REASONING_DISABLED)}

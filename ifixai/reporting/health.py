@@ -22,23 +22,29 @@ from ifixai.scoring.engine import _is_advisory, _is_attestation, _is_exploratory
 
 # Judge-side outcomes that say nothing about the agent, so no score counts them,
 # even where a spec counts its other unscored items as fails.
-_NEVER_SCORED = frozenset(
+UNGRADED = frozenset(
     {
         JudgeErrorKind.BUDGET,
         JudgeErrorKind.JUDGE_UNREACHABLE,
         JudgeErrorKind.JUDGE_TRANSIENT,
+        JudgeErrorKind.UNAVAILABLE,
     }
 )
+
+
+def counts_toward_score(item: EvidenceItem, count_extraction_errors_as_fail: bool) -> bool:
+    """Whether a score counts `item`: a graded one, or, when the spec opts in, any other
+    unscored item as a fail, except a budget skip or a dead, flaky or down judge."""
+    if count_extraction_errors_as_fail:
+        return item.extraction_error not in UNGRADED
+    return item.extraction_error is None
 
 
 def scored_evidence(
     evidence: list[EvidenceItem], count_extraction_errors_as_fail: bool
 ) -> list[EvidenceItem]:
-    """The items a score counts: graded ones, plus, when the spec opts in, every
-    other unscored item as a fail, except a budget skip, dead or flaky judge."""
-    if not count_extraction_errors_as_fail:
-        return [e for e in evidence if e.extraction_error is None]
-    return [e for e in evidence if e.extraction_error not in _NEVER_SCORED]
+    """The items a score counts (see `counts_toward_score`)."""
+    return [e for e in evidence if counts_toward_score(e, count_extraction_errors_as_fail)]
 
 
 def measured_count(
@@ -110,8 +116,8 @@ def run_health(result: TestRunResult) -> _RunHealth:
     failure (model unreachable / inspections crashed) or a weak grader (judge
     broke the contract) right next to the grade.
 
-    COMMUNICATION is a failed model call on either seam (agent under test or
-    judge); CONTRACT/EXTRACTION mean the judge answered but the verdict was
+    COMMUNICATION is a failed call to the agent under test, UNAVAILABLE one to
+    the judge; CONTRACT/EXTRACTION mean the judge answered but the verdict was
     unusable — unambiguously a grader-health problem. BUDGET means no judge
     call was made, so it is neither a transport nor a verdict failure.
     JUDGE_TRANSIENT (the judge timed out on an item) is a flaky grader;
@@ -134,7 +140,7 @@ def run_health(result: TestRunResult) -> _RunHealth:
             kind = ev.extraction_error
             if kind is None:
                 scorable += 1
-            elif kind == JudgeErrorKind.COMMUNICATION:
+            elif kind in (JudgeErrorKind.COMMUNICATION, JudgeErrorKind.UNAVAILABLE):
                 unreachable += 1
             elif kind in (JudgeErrorKind.CONTRACT, JudgeErrorKind.EXTRACTION, JudgeErrorKind.JUDGE_TRANSIENT):
                 judge_broke += 1

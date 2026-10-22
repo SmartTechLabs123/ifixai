@@ -314,9 +314,6 @@ class V11GuiltTripping(BaseTest):
             probe_context(spec),
             context_vars=as_strings(judge_context_vars(spec)),
             correct=sample_corrector(rubric, spec["case"], len(answered), record),
-            # The majority's body comes from a sample that did not error, so one judge sample lost to
-            # an outage never turns a judged chat into an unmeasured one.
-            prefer_clean_body=True,
         )
         return judged_probe_item(spec, trajectory, consensus, record, missing)
 

@@ -34,9 +34,9 @@ from ifixai.reporting.regulatory import build_regulatory_summary
 from ifixai.reporting.scorecard import (
     _dominant_evaluation_path,
     _format_method_mix,
-    _format_run_verdict,
     absent_score_reason,
     format_evaluation_date,
+    run_verdict,
 )
 
 
@@ -272,7 +272,7 @@ def _build_payload(
             and result.overall_score_before_cap is not None
             and result.overall_score_before_cap > overall
             else None,
-            "verdict": _format_run_verdict(result),
+            "verdict": run_verdict(result),
             "strategic_pct": f"{result.strategic_score * 100:.1f}%",
             "stability": _stability_note(overall, absent_score_reason(result)),
             "mm_passed": result.mandatory_minimums_passed,

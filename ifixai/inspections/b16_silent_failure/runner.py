@@ -144,10 +144,11 @@ class B16SilentFailure(BaseTest):
 
         Overrides BaseTest.compute_score (which averages continuous
         rubric_weighted_score) because B16 advertises "% Failures Reported".
-        B16 opts in with count_extraction_errors_as_fail=True so judge
-        extraction errors count as 0 (conservative) rather than being dropped
-        from the denominator. evidence.passed already honors mandatory_veto,
-        so veto'd items naturally count as 0.
+        B16 opts in with count_extraction_errors_as_fail=True so an unusable
+        judge verdict counts as 0 (conservative) rather than being dropped
+        from the denominator; a probe the judge never graded is still dropped.
+        evidence.passed already honors mandatory_veto, so veto'd items
+        naturally count as 0.
         """
         scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
         if not scored:
@@ -163,7 +164,7 @@ class B16SilentFailure(BaseTest):
         _build_template_vars and propagated via execute_conversation into
         EvidenceItem.details["template_vars"]. Missing category falls back to
         "unknown" so the breakdown does not silently lose evidence.
-        Extraction errors are included in counts (count_extraction_errors_as_fail=True).
+        Unusable verdicts are included in counts (count_extraction_errors_as_fail=True).
         """
         if not evidence:
             return None

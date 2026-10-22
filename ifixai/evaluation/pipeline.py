@@ -1,5 +1,9 @@
+import asyncio
 import logging
 import re
+from collections import Counter
+from collections.abc import Awaitable
+from typing import TypeVar
 
 from ifixai.core.types import (
     AnalyticRubric,
@@ -13,11 +17,13 @@ from ifixai.core.types import (
     PipelineResult,
     ReferenceResponse,
     RubricVerdict,
+    UngradedReason,
 )
 from ifixai.evaluation.analytic_judge import (
     AnalyticRubricJudge,
     EnsembleAnalyticRubricJudge,
     JudgeCommunicationError,
+    JudgeContentFlaggedError,
     JudgeContractError,
     JudgeExtractionError,
     JudgeTransientError,
@@ -31,13 +37,112 @@ from ifixai.evaluation.atomic_claims import (
 )
 from ifixai.evaluation.errors import (
     JudgePipelineRequiredError,
-    JudgeUnavailableError,
     judge_fail_fast_enabled,
 )
 from ifixai.evaluation.response_classifier import ResponseClass, classify_response
-from ifixai.providers.base import ProviderError
+from ifixai.evaluation.run_stop import CURRENT_INSPECTION, RunStop, RunStopped, StopKind
+from ifixai.judge.evaluator import judge_refusal
+from ifixai.providers.base import (
+    ProviderAuthError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderOverloadedError,
+    ProviderTimeoutError,
+    is_content_flagged,
+    is_fatal_provider_error,
+    names_unknown_model,
+)
 
 _logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# Judge-down failures in a row on one inspection before it stops calling the judge.
+JUDGE_FAILURE_STREAK_LIMIT: int = 5
+
+JUDGE_UNAVAILABLE = "judge unavailable"
+JUDGE_UNAVAILABLE_REASON = (
+    JUDGE_UNAVAILABLE + ": the judge stopped answering (a rejected key, no credit, timeouts or "
+    "server errors), so probes went ungraded. This is a gap in the run, not a finding about the agent."
+)
+# A probe the judge's provider would not grade because it flagged the probe's content.
+JUDGE_FLAGGED_CONTENT = "the judge's provider flagged this probe's content and would not grade it"
+JUDGE_NO_VERDICT = "judge gave no usable verdict"
+JUDGE_NO_VERDICT_REASON = (
+    JUDGE_NO_VERDICT + ": it answered, but every reply was off-format or a refusal, so probes went "
+    "ungraded. This is a gap in the run, not a finding about the agent."
+)
+JUDGE_BUDGET = "judge budget exhausted"
+JUDGE_BUDGET_REASON = (
+    JUDGE_BUDGET + ": the run's judge-call cap ran out, so probes went ungraded. This is a gap "
+    "in the run, not a finding about the agent."
+)
+# The progress-line label and the full sentence for each reason the judge left probes ungraded.
+UNGRADED_LABELS: dict[UngradedReason, str] = {
+    UngradedReason.JUDGE_UNAVAILABLE: JUDGE_UNAVAILABLE,
+    UngradedReason.JUDGE_UNUSABLE: JUDGE_NO_VERDICT,
+    UngradedReason.BUDGET: JUDGE_BUDGET,
+}
+UNGRADED_MESSAGES: dict[UngradedReason, str] = {
+    UngradedReason.JUDGE_UNAVAILABLE: JUDGE_UNAVAILABLE_REASON,
+    UngradedReason.JUDGE_UNUSABLE: JUDGE_NO_VERDICT_REASON,
+    UngradedReason.BUDGET: JUDGE_BUDGET_REASON,
+}
+# Statuses meaning this judge will never answer: a rejected key (401/403) or an unknown model (404).
+_MISCONFIGURED_STATUS: frozenset[int] = frozenset({401, 403, 404})
+# Atomic scoring folds a failed judge call into its error text; anything else is an off-format reply.
+_ATOMIC_CALL_FAILED: tuple[str, ...] = ("judge call", "all ensemble judges failed")
+
+# Failures that mean the judge is down, not throttled (429) or answering badly. Both timeout
+# classes: on 3.10 asyncio.TimeoutError is not the builtin.
+_JUDGE_DOWN_ERRORS: tuple[type[BaseException], ...] = (
+    ProviderTimeoutError,
+    ProviderConnectionError,
+    ProviderOverloadedError,
+    asyncio.TimeoutError,
+    TimeoutError,
+)
+
+
+def is_judge_down_error(exc: BaseException | None) -> bool:
+    """Whether a judge call that failed after its own retries and fallbacks found the judge down:
+    a rejected key or no credit, a timeout, or a 5xx. Follows the causes to the provider's error."""
+    while exc is not None:
+        if isinstance(exc, _JUDGE_DOWN_ERRORS):
+            return True
+        if isinstance(exc, ProviderError):
+            return is_fatal_provider_error(exc)
+        exc = exc.__cause__
+    return False
+
+
+def judge_failed_stop(exc: BaseException, unknown_model: bool) -> RunStopped:
+    """The run stop for a judge that never gave a verdict: an unknown model (at once) or five
+    rejected calls. One plain line; the provider's raw error stays in the log."""
+    error: BaseException | None = exc
+    while error is not None and not isinstance(error, ProviderError):
+        error = error.__cause__
+    where = f" ({error.provider})" if isinstance(error, ProviderError) else ""
+    if unknown_model:
+        what = f"the judge's provider{where} has no such model"
+        fix = "Pick another with --judge-model, or check the judge's base URL"
+    else:
+        what = f"the judge's provider{where} gave no verdict on its first {JUDGE_FAILURE_STREAK_LIMIT} calls"
+        fix = "Check the judge's model and base URL"
+    return RunStopped(StopKind.JUDGE_FAILED, what, fix, "the judge never answered")
+
+
+def is_judge_misconfigured(exc: BaseException | None) -> bool:
+    """Whether a judge call failed on a rejected key or an unknown model, following the causes."""
+    while exc is not None:
+        if isinstance(exc, ProviderAuthError):
+            return True
+        if getattr(exc, "status_code", None) in _MISCONFIGURED_STATUS:
+            return True
+        if isinstance(exc, ProviderError) and names_unknown_model(exc.details):
+            return True
+        exc = exc.__cause__
+    return False
 
 
 def detect_forbidden_hit(response: str, forbidden: list[str]) -> str | None:
@@ -100,18 +205,142 @@ class EvaluationPipeline:
         self._config = config
         self._judge = judge
         self._judge_calls_used = 0
+        self._stop = RunStop(config.judge_budget)
+        self._failure_streaks: Counter[str] = Counter()
+        self._judge_down: set[str] = set()
+        # Inspections the judge returned at least one verdict for, failed on at least once, or
+        # answered off-format at least once.
+        self._answered: set[str] = set()
+        self._failed: set[str] = set()
+        self._unusable: set[str] = set()
+        self._capped: set[str] = set()
+        self._hard_failures = 0
+        self._items_capped = 0
+        self._budget_reasons_logged: set[str] = set()
 
     @property
     def judge_calls_used(self) -> int:
         return self._judge_calls_used
 
-    def judge_budget_exhausted(self) -> bool:
-        """Whether the next logical grading call will be skipped for budget."""
-        return (
-            self._judge is not None
-            and self._config.judge_max_calls > 0
-            and self._judge_calls_used >= self._config.judge_max_calls
+    @property
+    def run_stop(self) -> RunStop:
+        """The run's stop switch: every call to the agent or the judge checks it."""
+        return self._stop
+
+    def _budget_reason(self) -> str | None:
+        """Why the next grade would be skipped for budget: the run reached its hard
+        judge-call cap. None while there is room."""
+        if self._judge is None:
+            return None
+        cap = self._config.judge_max_calls
+        if cap > 0 and self._judge_calls_used >= cap:
+            return f"judge budget exhausted: the run reached its judge-call cap of {cap}"
+        return None
+
+    def judge_down_reason(self, test_id: str) -> str | None:
+        """Why `test_id` is unscored for want of a judge: its breaker tripped, or it never got a
+        verdict back because a judge call failed or every reply was off-format. A call that was
+        only reserved (then cancelled) is not the judge's doing. None otherwise."""
+        if test_id in self._judge_down:
+            return JUDGE_UNAVAILABLE_REASON
+        if test_id in self._answered:
+            return None
+        if test_id in self._failed:
+            return JUDGE_UNAVAILABLE_REASON
+        if test_id in self._unusable:
+            return JUDGE_NO_VERDICT_REASON
+        return None
+
+    def ungraded_reason(self, test_id: str) -> UngradedReason | None:
+        """Why the judge left some of `test_id`'s grades missing: a call failed, the budget ran
+        out, or a reply was off-format. None when it graded everything it was asked."""
+        if test_id in self._failed:
+            return UngradedReason.JUDGE_UNAVAILABLE
+        if test_id in self._capped:
+            return UngradedReason.BUDGET
+        if test_id in self._unusable:
+            return UngradedReason.JUDGE_UNUSABLE
+        return None
+
+    def cap_stats(self) -> dict[str, object]:
+        """The budget or cap in force, the most grades it allows, and whether it cut the run,
+        for the run's judge stats."""
+        stop = self._stop
+        return {
+            "judge_call_cap": stop.budget or self._config.judge_max_calls,
+            "judge_call_ceiling": stop.ceiling or self._config.judge_max_calls,
+            "cap_reached": self._items_capped > 0 or stop.kind is StopKind.BUDGET,
+            "items_capped": self._items_capped,
+        }
+
+    def _skip_for_budget(self) -> str | None:
+        """The reason the next grade is skipped for budget (logged once per reason), else None."""
+        reason = self._budget_reason()
+        if reason is None:
+            return None
+        self._items_capped += 1
+        self._capped.add(CURRENT_INSPECTION.get())
+        if reason not in self._budget_reasons_logged:
+            self._budget_reasons_logged.add(reason)
+            _logger.warning(
+                "Skipping judge grades: %s. They are left unscored, a gap in coverage and not a "
+                "finding about the agent.",
+                reason,
+            )
+        return reason
+
+    def _reserve_call(self) -> None:
+        """Count one judge grade (the hard cap's unit) before its first await, so concurrent
+        grades cannot all pass the cap check. A stopped run makes none."""
+        self._stop.check()
+        self._judge_calls_used += 1
+
+    def _after_call(self) -> None:
+        """After a judge call: a refusal the judge met inside it stops the run now, even when
+        another judge of an ensemble answered."""
+        if self._stop.kind is StopKind.JUDGE_REFUSED:
+            self._stop.check()
+
+    async def _judged(self, call: Awaitable[_T]) -> _T:
+        """Await one reserved judge call, then `_after_call`, whether it answered or failed. A
+        cancelled call stays cancelled: a stop raised in its place would outlive the run."""
+        try:
+            answer = await call
+        except Exception:
+            self._after_call()
+            raise
+        self._after_call()
+        return answer
+
+    def _record_judge_answer(self) -> None:
+        """A verdict came back: the judge works, so this inspection's failure streak ends."""
+        inspection = CURRENT_INSPECTION.get()
+        self._answered.add(inspection)
+        self._failure_streaks[inspection] = 0
+
+    def _record_judge_failure(self, exc: BaseException, hard: bool) -> None:
+        """A judge call failed after its retries. Five judge-down failures in a row, as they
+        arrive, stop new judge calls for this inspection. A key or account the provider refuses
+        (rejected key, spent quota, no credit) stops the run at any point: every later call
+        would be refused too. Before any verdict, an unknown model also stops it at once, and
+        other `hard` failures (a rejected request) after five."""
+        inspection = CURRENT_INSPECTION.get()
+        self._failed.add(inspection)
+        if is_judge_down_error(exc):
+            self._failure_streaks[inspection] += 1
+            if self._failure_streaks[inspection] >= JUDGE_FAILURE_STREAK_LIMIT:
+                self._judge_down.add(inspection)
+        if hard:
+            self._hard_failures += 1
+        refusal = judge_refusal(exc)
+        if refusal is not None and judge_fail_fast_enabled():
+            raise self._stop.stop(refusal) from exc
+        misconfigured = is_judge_misconfigured(exc)
+        stop = not self._answered and (
+            misconfigured or self._hard_failures >= JUDGE_FAILURE_STREAK_LIMIT
         )
+        if stop and judge_fail_fast_enabled():
+            raise self._stop.stop(judge_failed_stop(exc, misconfigured)) from exc
 
     def is_ensemble_judge(self) -> bool:
         """True when the wired judge aggregates an ensemble of samples.
@@ -194,67 +423,61 @@ class EvaluationPipeline:
 
             # A deterministic veto needs no judge call and remains valid after
             # the remote grading budget is exhausted.
-            if (
-                self._config.judge_max_calls > 0
-                and self._judge_calls_used >= self._config.judge_max_calls
-            ):
-                _logger.warning(
-                    "Judge budget exhausted (%d/%d calls used)",
-                    self._judge_calls_used,
-                    self._config.judge_max_calls,
-                )
+            if CURRENT_INSPECTION.get() in self._judge_down:
                 return PipelineResult(
                     passed=False,
-                    evaluation_result="inconclusive: judge budget exhausted",
+                    evaluation_result=JUDGE_UNAVAILABLE_REASON,
+                    evaluation_method=EvaluationMethod.JUDGE,
+                    extraction_error=JudgeErrorKind.UNAVAILABLE,
+                )
+            budget = self._skip_for_budget()
+            if budget is not None:
+                return PipelineResult(
+                    passed=False,
+                    evaluation_result=f"inconclusive: {budget}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.BUDGET,
                 )
 
-
-            # Reserve the call before the first await. Concurrent inspections
-            # otherwise all pass the budget check while earlier calls are in
-            # flight, exceeding the configured limit and incurring extra cost.
-            self._judge_calls_used += 1
+            self._reserve_call()
             try:
-                rubric_verdict = await self._judge.evaluate_with_rubric(
-                    response, rubric, context, context_vars
+                rubric_verdict = await self._judged(
+                    self._judge.evaluate_with_rubric(response, rubric, context, context_vars)
                 )
-                return PipelineResult(
-                    passed=rubric_verdict.passed,
-                    evaluation_result=f"judge: {rubric_verdict.verdict} (weighted_score={rubric_verdict.weighted_score:.2f})",
-                    evaluation_method=EvaluationMethod.JUDGE,
-                    dimension_scores=rubric_verdict.dimension_scores,
-                    rubric_verdict=rubric_verdict,
-                )
-            except JudgeCommunicationError as exc:
-                _logger.exception("Judge communication error")
-                # The judge is not responding / keeps erroring after its bounded
-                # retries. A down judge won't recover, so by default stop the whole
-                # run rather than grind the rest into INCONCLUSIVE at real cost.
-                if judge_fail_fast_enabled():
-                    raise JudgeUnavailableError(
-                        f"judge unreachable after retries ({type(exc).__name__}: "
-                        f"{exc}). Stopping the run. Set IFIXAI_JUDGE_FAIL_FAST=0 to "
-                        "keep going and drop unreachable probes as INCONCLUSIVE."
-                    ) from exc
+            except JudgeContentFlaggedError:
+                # One probe the provider won't grade: not the judge failing, not the agent's fail.
+                _logger.warning("Judge provider flagged a probe's content; that probe is ungraded")
                 return PipelineResult(
                     passed=False,
-                    evaluation_result=f"extraction_error: communication: {exc}",
+                    evaluation_result=f"{JUDGE_UNAVAILABLE}: {JUDGE_FLAGGED_CONTENT}",
+                    evaluation_method=EvaluationMethod.JUDGE,
+                    extraction_error=JudgeErrorKind.UNAVAILABLE,
+                )
+            except JudgeCommunicationError as exc:
+                # A rejected call (bad key, unknown model, no credit): no answer, not the agent's fail.
+                _logger.exception("Judge communication error")
+                self._record_judge_failure(exc, hard=True)
+                return PipelineResult(
+                    passed=False,
+                    evaluation_result=f"{JUDGE_UNAVAILABLE}: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.JUDGE_UNREACHABLE,
                     judge_votes=judge_votes_of(exc),
                 )
             except JudgeTransientError as exc:
+                # Timeouts, 5xx and cut-offs on every judge model: a flaky judge, not the agent's fail.
                 _logger.exception("Judge gave no full answer")
+                self._record_judge_failure(exc, hard=False)
                 return PipelineResult(
                     passed=False,
-                    evaluation_result=f"extraction_error: judge_transient: {exc}",
+                    evaluation_result=f"{JUDGE_UNAVAILABLE}: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.JUDGE_TRANSIENT,
                     judge_votes=judge_votes_of(exc),
                 )
             except JudgeExtractionError as exc:
                 _logger.exception("Judge extraction error")
+                self._unusable.add(CURRENT_INSPECTION.get())
                 return PipelineResult(
                     passed=False,
                     evaluation_result=f"extraction_error: extraction: {exc}",
@@ -264,6 +487,7 @@ class EvaluationPipeline:
                 )
             except JudgeContractError as exc:
                 _logger.exception("Judge contract error")
+                self._unusable.add(CURRENT_INSPECTION.get())
                 return PipelineResult(
                     passed=False,
                     evaluation_result=f"extraction_error: contract: {exc}",
@@ -271,6 +495,14 @@ class EvaluationPipeline:
                     extraction_error=JudgeErrorKind.CONTRACT,
                     judge_votes=judge_votes_of(exc),
                 )
+            self._record_judge_answer()
+            return PipelineResult(
+                passed=rubric_verdict.passed,
+                evaluation_result=f"judge: {rubric_verdict.verdict} (weighted_score={rubric_verdict.weighted_score:.2f})",
+                evaluation_method=EvaluationMethod.JUDGE,
+                dimension_scores=rubric_verdict.dimension_scores,
+                rubric_verdict=rubric_verdict,
+            )
 
         # Unreachable: the misconfig guard at the top of evaluate() raises
         # JudgePipelineRequiredError when judge or rubric is missing.
@@ -279,20 +511,21 @@ class EvaluationPipeline:
             "judge or rubric missing after pipeline entry",
         )
 
-    async def classify(self, response: str, query: str) -> ResponseClass | None:
-        if self._judge is None:
-            return None
-        if (
-            self._config.judge_max_calls > 0
-            and self._judge_calls_used >= self._config.judge_max_calls
-        ):
-            _logger.warning(
-                "Judge budget exhausted (%d/%d calls used) — classify skipped",
-                self._judge_calls_used,
-                self._config.judge_max_calls,
-            )
-            return None
-        self._judge_calls_used += 1
+    def _skip_kind(self) -> JudgeErrorKind | None:
+        """Why a classify or atomic call is not made: no judge or a down one, or no budget left."""
+        if self._judge is None or CURRENT_INSPECTION.get() in self._judge_down:
+            return JudgeErrorKind.UNAVAILABLE
+        if self._skip_for_budget() is not None:
+            return JudgeErrorKind.BUDGET
+        return None
+
+    async def classify(self, response: str, query: str) -> ResponseClass | JudgeErrorKind:
+        """The response's class, or why the judge gave none: UNAVAILABLE (no judge, or it did not
+        answer), BUDGET, or CONTRACT (it answered off-format). Returned, not raised, so one
+        ungraded probe never errors the caller's whole inspection."""
+        skipped = self._skip_kind()
+        if skipped is not None:
+            return skipped
         try:
             pair = self._judge.classifier_provider()
             provider = pair["provider"]
@@ -301,22 +534,30 @@ class EvaluationPipeline:
             raise JudgePipelineRequiredError(
                 "classify", f"classifier provider not accessible: {exc}"
             ) from exc
+        self._reserve_call()
         try:
-            return await classify_response(
-                response_text=response,
-                query=query,
-                judge_provider=provider,
-                judge_config=config,
+            verdict = await self._judged(
+                classify_response(
+                    response_text=response,
+                    query=query,
+                    judge_provider=provider,
+                    judge_config=config,
+                )
             )
         except JudgeContractError:
             _logger.exception("Classifier contract violation (non-conforming output)")
-            return None
-        except ProviderError:
+            self._unusable.add(CURRENT_INSPECTION.get())
+            return JudgeErrorKind.CONTRACT
+        except ProviderError as exc:
+            if is_content_flagged(exc):
+                _logger.warning("Judge provider flagged a probe's content; that probe is ungraded")
+                return JudgeErrorKind.UNAVAILABLE
             # A judge-side transport failure, typically an upstream rate limit.
-            # None is this method's documented signal for a judge-infra failure;
-            # letting it propagate errors the caller's whole inspection instead.
             _logger.exception("Classifier call failed (judge infrastructure)")
-            return None
+            self._record_judge_failure(exc, hard=is_fatal_provider_error(exc))
+            return JudgeErrorKind.UNAVAILABLE
+        self._record_judge_answer()
+        return verdict
 
     async def evaluate_atomic(
         self,
@@ -326,44 +567,52 @@ class EvaluationPipeline:
         expected_claims: list[ExpectedClaim] | None = None,
         attribution_strict: bool = False,
         test_id: str = "",
-    ) -> AtomicScore | None:
-        if self._judge is None:
-            return None
-        if (
-            self._config.judge_max_calls > 0
-            and self._judge_calls_used >= self._config.judge_max_calls
-        ):
-            _logger.warning(
-                "Judge budget exhausted (%d/%d calls used) — atomic skipped",
-                self._judge_calls_used,
-                self._config.judge_max_calls,
-            )
-            return None
-        self._judge_calls_used += 1
+    ) -> AtomicScore | JudgeErrorKind:
+        """The claim score, or why the judge gave none (see `classify`)."""
+        skipped = self._skip_kind()
+        if skipped is not None:
+            return skipped
         try:
             judge_arg = self._judge.atomic_evaluator()
         except AttributeError as exc:
             raise JudgePipelineRequiredError(
                 "atomic", f"evaluator not accessible: {exc}"
             ) from exc
+        self._reserve_call()
         try:
             if expected_claims:
-                return await score_atomic_claims_with_ground_truth(
-                    response=response,
-                    expected_claims=expected_claims,
-                    judge=judge_arg,
-                    attribution_strict=attribution_strict,
+                score = await self._judged(
+                    score_atomic_claims_with_ground_truth(
+                        response=response,
+                        expected_claims=expected_claims,
+                        judge=judge_arg,
+                        attribution_strict=attribution_strict,
+                    )
                 )
-            return await score_atomic_claims(
-                response=response,
-                sources=sources,
-                mode=mode,
-                judge=judge_arg,
-                attribution_strict=attribution_strict,
-                test_id=test_id,
-            )
-        except ProviderError:
-            # Same contract as classify(): None means judge-infra failure, and
-            # propagating would error the caller's whole inspection.
+            else:
+                score = await self._judged(
+                    score_atomic_claims(
+                        response=response,
+                        sources=sources,
+                        mode=mode,
+                        judge=judge_arg,
+                        attribution_strict=attribution_strict,
+                        test_id=test_id,
+                    )
+                )
+        except ProviderError as exc:
+            if is_content_flagged(exc):
+                _logger.warning("Judge provider flagged a probe's content; that probe is ungraded")
+                return JudgeErrorKind.UNAVAILABLE
+            # Same contract as classify(): returned, so one probe never errors the inspection.
             _logger.exception("Atomic scoring failed (judge infrastructure)")
-            return None
+            self._record_judge_failure(exc, hard=is_fatal_provider_error(exc))
+            return JudgeErrorKind.UNAVAILABLE
+        # An error score is the judge failing (or answering off-format) inside its own retries.
+        if not score.error:
+            self._record_judge_answer()
+        elif score.error.startswith(_ATOMIC_CALL_FAILED):
+            self._failed.add(CURRENT_INSPECTION.get())
+        else:
+            self._unusable.add(CURRENT_INSPECTION.get())
+        return score

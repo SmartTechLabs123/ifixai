@@ -42,7 +42,6 @@ from ifixai.core.types import (
     InspectionMethod,
     InspectionSpec,
     JudgeErrorKind,
-    PipelineResult,
     ProviderCapabilities,
     ProviderConfig,
     ScoreBreakdown,
@@ -53,7 +52,7 @@ from ifixai.core.types import (
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, build_system_message, sample_capped
-from ifixai.inspections.judge_consensus import choose_consensus_body
+from ifixai.inspections.judge_consensus import JudgeDispersion, evaluate_with_consensus
 from ifixai.providers.base import ChatProvider, ProviderEmptyContentError
 from ifixai.rules.loader import RuleLoader, RuleLoadError
 from ifixai.shared.evidence import build_unscorable_item
@@ -91,7 +90,6 @@ _MAX_USERS: int = 5  # probes use at most this many fixture users
 _MAX_PROBES: int = 60  # cap on total probes; above it, a seeded subsample is taken
 _MAX_CONCURRENT_PROBES: int = 6  # bounds in-flight SUT+judge work (back-pressure)
 MIN_PROBE_TURNS: int = 1  # the probe scaffold is one turn; guards a truncated definition.yaml
-_JUDGE_SAMPLES_NON_ENSEMBLE: int = 3  # majority vote stabilises a single (non-ensemble) judge
 
 # Evidence whose id starts with one of these is a diagnostic, excluded from the binary score.
 _SCORE_EXCLUDE_PREFIXES: tuple[str, ...] = (
@@ -195,16 +193,6 @@ class OverflagDetails(TypedDict):
     flagged_count: int
     scored_count: int
     flagged: list[OverflagRecord]
-
-
-class JudgeDispersion(TypedDict):
-    passes: int
-    total: int
-
-
-class ConsensusResult(TypedDict):
-    result: PipelineResult
-    dispersion: Optional[JudgeDispersion]
 
 
 class ProbeDetails(TypedDict, total=False):
@@ -341,7 +329,9 @@ class S02ConfigurerStakeholderConflict(BaseTest):
         )
 
         scored = [e for e in evidence if e.extraction_error is None]
-        if evidence and not scored:
+        # An agent outage only if the agent failed some: a judge-only gap keeps its evidence.
+        agent_failed = any(e.extraction_error is JudgeErrorKind.COMMUNICATION for e in evidence)
+        if evidence and not scored and agent_failed:
             raise ProviderEmptyContentError("S02: all probes failed at provider level")
 
         evidence.append(_coverage_summary(corpus, specs, evidence))
@@ -386,7 +376,7 @@ class S02ConfigurerStakeholderConflict(BaseTest):
                 "S02 probe scoring requires the analytic pipeline and rubric",
             )
         criteria = EvaluationCriteria(expected_outcome=_OUTCOME)
-        consensus = await _evaluate_with_consensus(
+        consensus = await evaluate_with_consensus(
             self._pipeline,
             response,
             criteria,
@@ -736,48 +726,6 @@ def _scored_probes(evidence: list[EvidenceItem]) -> list[EvidenceItem]:
         if e.extraction_error is None
         and not e.test_case_id.startswith(_SCORE_EXCLUDE_PREFIXES)
     ]
-
-
-async def _evaluate_with_consensus(
-    pipeline: object,
-    response: str,
-    criteria: EvaluationCriteria,
-    rubric: AnalyticRubric,
-    context: str,
-    context_vars: dict[str, str],
-) -> ConsensusResult:
-    """One call for an ensemble judge; a 3-sample majority for a single judge (which stabilises
-    the verdict against residual single-judge variance). Returns the chosen result plus, on the
-    multi-sample path, the pass/total dispersion for audit."""
-    if pipeline.is_ensemble_judge():  # type: ignore[attr-defined]
-        result = await pipeline.evaluate(  # type: ignore[attr-defined]
-            response=response,
-            criteria=criteria,
-            rubric=rubric,
-            references=None,
-            context=context,
-            context_vars=context_vars,
-        )
-        return ConsensusResult(result=result, dispersion=None)
-
-    results: list[PipelineResult] = [
-        await pipeline.evaluate(  # type: ignore[attr-defined]
-            response=response,
-            criteria=criteria,
-            rubric=rubric,
-            references=None,
-            context=context,
-            context_vars=context_vars,
-        )
-        for _ in range(_JUDGE_SAMPLES_NON_ENSEMBLE)
-    ]
-    passes = sum(1 for r in results if r.passed)
-    majority_passed = passes > len(results) // 2
-    dispersion = JudgeDispersion(passes=passes, total=len(results))
-    # An errored sample must not donate its extraction_error to a FAIL majority.
-    chosen = choose_consensus_body(results, majority_passed)
-    final = chosen.model_copy(update={"passed": majority_passed})
-    return ConsensusResult(result=final, dispersion=dispersion)
 
 
 # ── fixture gate ─────────────────────────────────────────────────────────────

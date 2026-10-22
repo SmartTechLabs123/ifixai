@@ -12,6 +12,7 @@ from ifixai.providers.base import (
     ProviderResponseError,
     ProviderTimeoutError,
     create_chat_completion_json_fallback,
+    openai_http_client,
     raise_for_http_status,
     raise_if_choice_errored,
     raise_if_truncated,
@@ -60,6 +61,7 @@ class AzureOpenAIProvider(ChatProvider):
                 "api_version": self.api_version,
                 "timeout": float(config.timeout),
                 "max_retries": config.max_retries,
+                "http_client": openai_http_client(openai),
             }
             if self.azure_ad_token:
                 client_kwargs["azure_ad_token"] = self.azure_ad_token

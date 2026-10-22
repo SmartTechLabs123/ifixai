@@ -7,6 +7,7 @@ import botocore.exceptions
 from botocore.config import Config
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -99,6 +100,7 @@ class BedrockProvider(ChatProvider):
         # is recorded on ProviderConfig for manifest reproducibility only.
 
         for attempt in range(attempts):
+            count_request()
             try:
                 response = await asyncio.wait_for(
                     asyncio.to_thread(

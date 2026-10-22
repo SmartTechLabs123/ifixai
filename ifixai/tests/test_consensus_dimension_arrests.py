@@ -310,3 +310,170 @@ async def test_dimension_consensus_one_surviving_fail_remains_scored():
     finally:
         await evaluator.aclose()
         await server.cleanup()
+
+
+# The majority-of-three, joint-failure and readability rules, checked on `evaluate_with_consensus`
+# directly with scripted samples: every caller takes DEFAULT_JUDGE_SAMPLES (3) on a single judge,
+# prefix localization passes samples=1, and an ensemble (--eval-mode full) takes one call whose
+# judges are combined inside `EnsembleAnalyticRubricJudge`.
+
+
+class ScriptedSamples:
+    """A single judge whose successive samples fail the dimensions given, in order; None errors."""
+
+    def __init__(self, rubric, failures):
+        self.rubric = rubric
+        self.failures = list(failures)
+
+    def is_ensemble_judge(self):
+        return False
+
+    async def evaluate(self, response, criteria, rubric, references=None, context="", context_vars=None):
+        from ifixai.core.types import (
+            DimensionScore,
+            EvaluationMethod,
+            JudgeErrorKind,
+            PipelineResult,
+            RubricVerdict,
+        )
+
+        failed = self.failures.pop(0)
+        if failed is None:
+            return PipelineResult(
+                passed=False, evaluation_result="inconclusive: judge budget exhausted",
+                evaluation_method=EvaluationMethod.JUDGE, extraction_error=JudgeErrorKind.BUDGET,
+            )
+        scores = [
+            DimensionScore(dimension_name=d.name, passed=d.name not in failed, reasoning="r", is_mandatory=d.mandatory)
+            for d in self.rubric.dimensions
+        ]
+        verdict = RubricVerdict(
+            dimension_scores=scores, weighted_score=0.0 if failed else 1.0,
+            mandatory_veto=bool(failed), passed=not failed, verdict="fail" if failed else "pass",
+        )
+        return PipelineResult(
+            passed=not failed, evaluation_result="judged", evaluation_method=EvaluationMethod.JUDGE,
+            dimension_scores=scores, rubric_verdict=verdict,
+        )
+
+
+async def _three_samples(rubric, failures):
+    from ifixai.core.types import EvaluationCriteria, EvidenceItem
+    from ifixai.inspections.judge_consensus import evaluate_with_consensus
+
+    consensus = await evaluate_with_consensus(
+        ScriptedSamples(rubric, failures), "reply", EvaluationCriteria(), rubric, "ctx", samples=3
+    )
+    result = consensus["result"]
+    item = EvidenceItem(
+        test_case_id="probe", passed=result.passed, rubric_verdict=result.rubric_verdict,
+        extraction_error=result.extraction_error, details=dict(consensus["dimension_majority"]),
+    )
+    return consensus, item
+
+
+@pytest.mark.parametrize(
+    "grief_votes",
+    [
+        (False, True, True),
+        (True, False, True),
+        (True, True, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+async def test_v01_arrest_follows_the_majority_of_three_samples_not_the_body(grief_votes):
+    from ifixai.inspections.dimension_majority import dimension_failed
+
+    rubric = await load_analytic_rubric("V01", OUTCOME)
+    other = next(d.name for d in rubric.dimensions if d.mandatory and d.name != GRIEF_DIMENSION)
+    # Every sample fails the probe; they disagree on which mandatory outcome it violated.
+    consensus, item = await _three_samples(rubric, [{GRIEF_DIMENSION if v else other} for v in grief_votes])
+    assert consensus["samples_asked"] == 3
+    assert item.details["verdict_samples"] == 3 and item.details["majority_readable"] is True
+    assert dimension_failed(item, GRIEF_DIMENSION) is (sum(grief_votes) > 1)
+
+
+@pytest.mark.parametrize("test_id", ["V03", "V04"])
+@pytest.mark.parametrize(
+    "gate_votes", [(False, True, True), (True, False, False), (True, False, True), ("a", "b", "both")]
+)
+async def test_conjunction_arrest_follows_a_majority_of_joint_failures(test_id, gate_votes):
+    import importlib
+
+    from ifixai.inspections.dimension_reads import failing_all
+
+    folder = {"V03": "v03_warranted_persistence", "V04": "v04_honesty_source_attribution"}[test_id]
+    constants = importlib.import_module(f"ifixai.inspections.{folder}.runner_constants")
+    helpers = importlib.import_module(f"ifixai.inspections.{folder}.runner_helpers")
+    gate_dims = helpers.CORRECTNESS_DIMENSIONS if test_id == "V03" else helpers.ARREST_DIMENSIONS
+    rubric = await load_analytic_rubric(test_id, constants.OUTCOME)
+    other = next(d.name for d in rubric.dimensions if d.mandatory and d.name not in gate_dims)
+
+    def fails(vote):
+        if isinstance(vote, str):
+            return set(gate_dims) if vote == "both" else {gate_dims[0 if vote == "a" else 1]}
+        return set(gate_dims) if vote else {other}
+
+    _, item = await _three_samples(rubric, [fails(v) for v in gate_votes])
+    # Each gate dimension may fail by majority while only one sample failed both: no arrest then.
+    arrest = sum(v is True or v == "both" for v in gate_votes) > 1
+    assert (failing_all([item], gate_dims) == [item]) is arrest
+
+
+@pytest.mark.parametrize(
+    ("failures", "readable", "grief_failed"),
+    [
+        # One verdict of three asked: one call must not decide a dimension-scoped read.
+        ([None, {GRIEF_DIMENSION}, None], False, False),
+        ([{GRIEF_DIMENSION}, None, {GRIEF_DIMENSION}], True, True),
+        ([None, None, None], False, False),
+    ],
+)
+async def test_three_samples_need_two_verdicts_before_their_majority_is_read(failures, readable, grief_failed):
+    from ifixai.inspections.dimension_majority import dimension_failed
+
+    rubric = await load_analytic_rubric("V01", OUTCOME)
+    _, item = await _three_samples(rubric, failures)
+    assert item.details["majority_readable"] is readable
+    assert dimension_failed(item, GRIEF_DIMENSION) is grief_failed
+
+
+@pytest.mark.asyncio
+async def test_three_samples_with_one_surviving_fail_stay_scored_but_unreadable():
+    from ifixai.core.types import EvaluationCriteria
+    from ifixai.evaluation.analytic_judge import AnalyticRubricJudge
+    from ifixai.evaluation.pipeline import EvaluationPipeline
+    from ifixai.inspections.judge_consensus import evaluate_with_consensus
+    from ifixai.judge.evaluator import JudgeEvaluator
+
+    rubric = await load_analytic_rubric("V01", OUTCOME)
+    calls = []
+
+    async def complete(request):
+        calls.append(await request.json())
+        verdict = {"dimensions": [{"name": d.name, "passed": False, "reasoning": "owned verdict"} for d in rubric.dimensions]}
+        return web.json_response({"choices": [{"message": {"content": json.dumps(verdict)}, "finish_reason": "stop"}]})
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", complete)
+    server = web.AppRunner(app)
+    await server.setup()
+    site = web.TCPSite(server, "127.0.0.1", 0)
+    await site.start()
+    evaluator = JudgeEvaluator(
+        JudgeConfig(provider="http", model="judge", endpoint=f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}")
+    )
+    # The cap lets one of the three samples through; the other two are skipped for budget.
+    pipeline = EvaluationPipeline(EvaluationPipelineConfig(judge_max_calls=1), AnalyticRubricJudge(evaluator))
+    try:
+        consensus = await evaluate_with_consensus(pipeline, "Owned answer", EvaluationCriteria(), rubric, "V01", samples=3)
+        assert len(calls) == 1
+        assert consensus["result"].extraction_error is None
+        assert consensus["result"].passed is False
+        assert consensus["dimension_majority"]["majority_readable"] is False
+        assert consensus["dimension_majority"]["verdict_samples"] == 1
+    finally:
+        await evaluator.aclose()
+        await server.cleanup()

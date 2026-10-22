@@ -24,9 +24,12 @@ from ifixai.core.types import (
     TestResult,
     TestRunResult,
     TestStatus,
+    ungraded_reason_of,
 )
 from ifixai.evaluation.checkpoint import save_checkpoint
 from ifixai.evaluation.errors import JudgeUnavailableError
+from ifixai.evaluation.pipeline import UNGRADED_LABELS
+from ifixai.evaluation.run_stop import RunStopped
 from ifixai.harness.registry import ALL_SPECS, SPEC_BY_ID
 from ifixai.judge.config import JudgeConfig, JudgeProviderSpec
 from ifixai.providers.governance_fixture import GovernanceFixture
@@ -395,7 +398,7 @@ class BenchmarkProgressDisplay:
                         status = f"{_YELLOW}INCONCLUSIVE{_RESET}"
                         lines.append(
                             f"  {icon} {_BOLD}{test_id}{_RESET} {name} "
-                            f"... {status} (insufficient evidence)"
+                            f"... {status} ({_inconclusive_note(result)})"
                         )
                         continue
                     if result.passing:
@@ -457,6 +460,14 @@ def _print_category_summary(result: TestRunResult) -> None:
     click.echo()
 
 
+def _inconclusive_note(result: TestResult) -> str:
+    """Why an inspection is INCONCLUSIVE, for its progress line."""
+    reason = ungraded_reason_of(result)
+    if reason is not None:
+        return UNGRADED_LABELS[reason]
+    return "insufficient evidence"
+
+
 def _progress_callback_plain(
     bid: str,
     index: int,
@@ -467,7 +478,7 @@ def _progress_callback_plain(
     if bench_result.insufficient_evidence:
         click.echo(
             f"  [{index}/{total}] {bid} {bench_result.name} ... "
-            f"{click.style('INCONCLUSIVE', fg='yellow')} (insufficient evidence)"
+            f"{click.style('INCONCLUSIVE', fg='yellow')} ({_inconclusive_note(bench_result)})"
         )
         return
     status_label = (
@@ -599,10 +610,13 @@ async def execute_tests(
 
     effective_callback = _checkpointing_callback
 
-    def _partial_result(abort_reason: str) -> TestRunResult | None:
+    def _partial_result(
+        abort_reason: str, not_run_reason: str = "aborted", keep_empty: bool = False
+    ) -> TestRunResult | None:
         """Salvage a scorecard from `completed` when the run aborts; None if
-        nothing finished (there is nothing to save)."""
-        if not completed:
+        nothing finished (there is nothing to save), unless `keep_empty`: a run that
+        stopped still reports what it never ran."""
+        if not completed and not keep_empty:
             return None
         planned = [tid for tid, _ in _build_display_tests(strategic, test_ids)]
         if test_ids:
@@ -625,6 +639,7 @@ async def execute_tests(
                     resolve_provider(provider), sut_temperature, model, endpoint
                 ),
                 sut_seed=sut_seed,
+                not_run_reason=not_run_reason,
             )
         except Exception:
             # The checkpoint on disk still has every completed result; a
@@ -634,6 +649,10 @@ async def execute_tests(
         partial.self_judged = self_judged
         return partial
 
+    # Each way a run stops says so in one line, with how to resume; the caller only lists what
+    # never ran.
+    resume = f" --resume {checkpoint_run_id}" if checkpoint_run_id else ""
+    rest = f" Run the rest with{resume}." if resume else ""
     try:
         # Every explicit subset, including a single inspection, goes through
         # run_selected so it gets the same scoring: grade, category scores and
@@ -719,6 +738,20 @@ async def execute_tests(
             governance=governance,
         )
 
+    except RunStopped as exc:
+        # The judge's key or credit ran out, the judge never answered, or the run spent its judge
+        # budget: one plain line with the fix, then the scorecard of what finished and what never ran.
+        if display:
+            display.stop()
+            display = None
+        click.echo(
+            click.style(
+                f"\nRun stopped: {exc.what}. {exc.fix}, then run again with{resume or ' the same flags'}.",
+                fg="red",
+            ),
+            err=True,
+        )
+        return _partial_result(exc.what, not_run_reason=exc.not_run, keep_empty=True)
     except JudgeUnavailableError as exc:
         # Fail-fast: the judge went unreachable after its retries. Stop the run
         # with a clear message instead of a traceback (BaseException, so the
@@ -728,11 +761,11 @@ async def execute_tests(
             display.stop()
             display = None
         click.echo(
-            click.style(f"\n*** RUN STOPPED *** {exc.detail}", fg="red"), err=True
+            click.style(f"\n*** RUN STOPPED *** {exc.detail}{rest}", fg="red"), err=True
         )
         return _partial_result(exc.detail)
     except Exception as exc:  # noqa: BLE001 — top-level run guard; report any failure to the user
-        click.echo(click.style(f"Test execution failed: {exc}", fg="red"))
+        click.echo(click.style(f"*** RUN STOPPED *** Test execution failed: {exc}{rest}", fg="red"))
         return _partial_result(str(exc))
 
     else:

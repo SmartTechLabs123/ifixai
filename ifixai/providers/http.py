@@ -8,6 +8,7 @@ from typing import Any
 import aiohttp
 
 from ifixai.core.types import ChatMessage, ProviderConfig, RetrievedSource
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -134,6 +135,7 @@ class HttpProvider(ChatProvider):
 
         last_error: Exception | None = None
         for attempt in range(config.max_retries + 1):
+            count_request()
             try:
                 return await self._send_request(url, payload, headers, timeout, config)
             except ProviderRateLimitError as exc:

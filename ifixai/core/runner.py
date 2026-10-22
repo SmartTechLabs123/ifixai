@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import copy
 from datetime import datetime, timezone
 from typing import Optional
@@ -22,6 +22,7 @@ from ifixai.evaluation.analytic_judge import (
     EnsembleAnalyticRubricJudge,
 )
 from ifixai.evaluation.pipeline import EvaluationPipeline
+from ifixai.evaluation.run_stop import RUN_STOP, drop_stopped_task_reports
 from ifixai.harness.consistency import CrossHookValidator
 from ifixai.harness.registry import ALL_SPECS, INSPECTION_REGISTRY
 from ifixai.judge.config import JudgeConfig
@@ -119,6 +120,8 @@ async def run_all(
     )
 
     to_run, reused_results = _split_cached(INSPECTION_REGISTRY, cached_results)
+    # Every call of the run, in every phase and inspection task, checks the run's stop.
+    run_stop = RUN_STOP.set(pipeline.run_stop if pipeline is not None else None)
     try:
         test_results = await _execute_inspections(
             inspections=to_run,
@@ -161,7 +164,7 @@ async def run_all(
             fixture_name=fixture.metadata.name,
             provider_name=config.provider,
             run_mode="full",
-            judge_stats=judge.get_stats() if judge else None,
+            judge_stats=_judge_stats(judge, pipeline),
             provider_capabilities=capabilities,
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
             consistency_warnings=consistency_warnings,
@@ -173,6 +176,7 @@ async def run_all(
         )
         return result
     finally:
+        RUN_STOP.reset(run_stop)
         await _aclose_judge(judge)
 
 
@@ -207,6 +211,8 @@ async def run_strategic(
     strategic_specs = [s for s in ALL_SPECS if s.test_id in STRATEGIC_TEST_IDS]
     to_run, reused_results = _split_cached(strategic_inspections, cached_results)
 
+    # Every call of the run, in every phase and inspection task, checks the run's stop.
+    run_stop = RUN_STOP.set(pipeline.run_stop if pipeline is not None else None)
     try:
         test_results = await _execute_inspections(
             inspections=to_run,
@@ -249,7 +255,7 @@ async def run_strategic(
             fixture_name=fixture.metadata.name,
             provider_name=config.provider,
             run_mode="strategic",
-            judge_stats=judge.get_stats() if judge else None,
+            judge_stats=_judge_stats(judge, pipeline),
             selected_ids=set(STRATEGIC_TEST_IDS),
             provider_capabilities=capabilities,
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
@@ -262,6 +268,7 @@ async def run_strategic(
         )
         return result
     finally:
+        RUN_STOP.reset(run_stop)
         await _aclose_judge(judge)
 
 
@@ -310,6 +317,8 @@ async def run_selected(
     selected_specs = [s for s in ALL_SPECS if s.test_id in test_ids]
     to_run, reused_results = _split_cached(selected_inspections, cached_results)
 
+    # Every call of the run, in every phase and inspection task, checks the run's stop.
+    run_stop = RUN_STOP.set(pipeline.run_stop if pipeline is not None else None)
     try:
         test_results = await _execute_inspections(
             inspections=to_run,
@@ -352,7 +361,7 @@ async def run_selected(
             fixture_name=fixture.metadata.name,
             provider_name=config.provider,
             run_mode="selected",
-            judge_stats=judge.get_stats() if judge else None,
+            judge_stats=_judge_stats(judge, pipeline),
             selected_ids=set(test_ids),
             provider_capabilities=capabilities,
             warnings=scorecard_warnings(judge_config, config.provider, config.model),
@@ -365,6 +374,7 @@ async def run_selected(
         )
         return result
     finally:
+        RUN_STOP.reset(run_stop)
         await _aclose_judge(judge)
 
 
@@ -396,6 +406,8 @@ async def run_single(
     pipeline = _build_pipeline(
         pipeline_config, judge, sut_model=config.model, sut_provider=config.provider
     )
+    # Every call of the run, in every phase and inspection task, checks the run's stop.
+    run_stop = RUN_STOP.set(pipeline.run_stop if pipeline is not None else None)
 
     try:
         return await inspection.execute(
@@ -407,6 +419,7 @@ async def run_single(
             pipeline=pipeline,
         )
     finally:
+        RUN_STOP.reset(run_stop)
         await _aclose_judge(judge)
 
 
@@ -470,14 +483,18 @@ def build_partial_result(
     run_mode: str,
     sut_temperature: float | None = 0.0,
     sut_seed: int | None = None,
+    not_run_reason: str = "aborted",
 ) -> TestRunResult:
     """Scorecard for whatever finished before an aborted run stopped.
 
-    Marked `partial` and never PASS: missing mandatory inspections read as
-    unevaluated gate failures, and the warning below says exactly what did
-    not run. The point is to not discard paid-for results on abort.
+    Marked `partial` and never PASS: a mandatory inspection that never ran is
+    a gate not checked, never a fail, and the warning below says exactly what
+    did not run, labelled with `not_run_reason`. The point is to not discard
+    paid-for results on abort.
     """
     abort_reason = _summarize_abort_reason(abort_reason)
+    completed_ids = {r.test_id for r in completed}
+    missing = [tid for tid in planned_ids if tid not in completed_ids]
     result = _build_result(
         test_results=sorted(completed, key=lambda r: r.test_id),
         system_name=system_name,
@@ -487,16 +504,14 @@ def build_partial_result(
         run_mode=run_mode,
         sut_temperature=sut_temperature,
         sut_seed=sut_seed,
-        # A scoped run reports unselected mandatory minimums as not run, the
-        # same as when it completes; planned-but-missing ones still fail.
-        selected_ids=None if run_mode == "full" else set(planned_ids),
+        selected_ids=set(planned_ids),
+        not_run_ids=missing,
     )
     result.partial = True
     result.abort_reason = abort_reason
     result.passed = False
-    completed_ids = {r.test_id for r in completed}
-    missing = [tid for tid in planned_ids if tid not in completed_ids]
     result.not_run_test_ids = missing
+    result.not_run_reason = not_run_reason
     if len(missing) > 10:
         missing_label = f"{', '.join(missing[:10])} and {len(missing) - 10} more"
     else:
@@ -505,7 +520,7 @@ def build_partial_result(
         0,
         f"PARTIAL RUN — aborted before completion: {abort_reason}. "
         f"{len(completed_ids)} of {len(planned_ids)} inspections completed; "
-        f"not run: {missing_label}. Scores reflect only what ran and are not "
+        f"not run ({not_run_reason}): {missing_label}. Scores reflect only what ran and are not "
         "comparable to a full run.",
     )
     return result
@@ -523,6 +538,7 @@ async def _execute_inspections(
     pipeline: EvaluationPipeline | None = None,
     governor: ConcurrencyGovernor | None = None,
 ) -> list[TestResult]:
+    drop_stopped_task_reports(asyncio.get_running_loop())
     if governor is None or governor.is_sequential:
         return await _run_sequential(
             inspections,
@@ -690,6 +706,19 @@ async def _run_parallel(
     return results
 
 
+def _judge_stats(
+    judge: JudgeEvaluator | EnsembleJudgeEvaluator | None,
+    pipeline: EvaluationPipeline | None,
+) -> dict[str, object] | None:
+    """The judge's own call counts, with the cap the pipeline held them to."""
+    if judge is None:
+        return None
+    stats = judge.get_stats()
+    if pipeline is not None:
+        stats.update(pipeline.cap_stats())
+    return stats
+
+
 def _build_judge_evaluator(
     judge_config: JudgeConfig | None,
 ) -> JudgeEvaluator | EnsembleJudgeEvaluator | None:
@@ -745,6 +774,7 @@ def _build_result(
     sut_temperature: float | None = 0.0,
     sut_seed: int | None = None,
     selected_ids: set[str] | None = None,
+    not_run_ids: Sequence[str] = (),
 ) -> TestRunResult:
 
     test_weights = {spec.test_id: spec.weight for spec in ALL_SPECS}
@@ -758,7 +788,9 @@ def _build_result(
 
     raw_overall = compute_overall_score(category_scores, GRADED_CATEGORY_WEIGHTS)
 
-    minimums_result = check_mandatory_minimums(test_results, selected_ids)
+    minimums_result = check_mandatory_minimums(
+        test_results, selected_ids, unchecked_ids=set(not_run_ids)
+    )
     minimums_passed = minimums_result["minimums_passed"]
     minimum_status = minimums_result["minimum_status"]
     overall_score = cap_score_if_minimums_failed(
