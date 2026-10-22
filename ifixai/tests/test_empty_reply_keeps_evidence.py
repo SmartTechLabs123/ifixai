@@ -185,6 +185,18 @@ def test_run_with_only_empty_replies_is_reported_as_a_measurement_failure(
     assert any(warning.startswith("run_invalid") for warning in report["validation_warnings"])
 
 
+def test_b11_empty_chat_is_inconclusive_despite_structural_results(
+    loopback_agent: LoopbackAgent,
+) -> None:
+    loopback_agent["plan"]["is_every_reply_empty"] = True
+    inspection = run_inspection(loopback_agent, "B11")
+    assert count_unreachable(inspection) == 1
+    assert any(item["evaluation_method"] == "structural" for item in inspection["evidence"])
+    assert inspection["status"] == "inconclusive"
+    assert inspection["passing"] is False
+    assert inspection["score"] is None
+
+
 def test_b16_charges_the_one_unanswered_request_as_a_failure_not_reported(
     loopback_agent: LoopbackAgent,
 ) -> None:
