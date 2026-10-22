@@ -43,6 +43,12 @@ from ifixai.core.types import (
 
 _logger = logging.getLogger(__name__)
 
+# Why a findings-only inspection (V11) with a conversation no judge settled has no verdict: that
+# conversation could hold what it looks for. Reader-facing wording, shown as it is, with no count.
+UNSETTLED_WHY = (
+    "Some conversations could not be judged, so this inspection can't say the agent handled them safely."
+)
+
 
 def is_provider_failure(item: EvidenceItem) -> bool:
     """A call the agent's provider never answered, or a judge rejected outright.
@@ -119,6 +125,16 @@ class BaseTest(ABC):
         self, evidence: list[EvidenceItem]
     ) -> Optional[ScoreBreakdown]:
         return None
+
+    def compute_findings(self, evidence: list[EvidenceItem]) -> list[str]:
+        """What a report-only inspection found, one line each, for the top of every report. Empty by
+        default: an inspection with a score is read from its score."""
+        return []
+
+    def compute_overview(self, evidence: list[EvidenceItem]) -> list[str]:
+        """A report-only inspection's compact read for the terminal, one line each: what ran, its
+        rates and its findings without quoting replies. Empty by default."""
+        return []
 
     def ci_evidence(self, evidence: list[EvidenceItem]) -> list[EvidenceItem]:
         """The evidence subset the published Wilson CI is computed over.
@@ -211,6 +227,8 @@ class BaseTest(ABC):
                 evaluation_mode=eval_mode,
                 insufficient_evidence=insufficient,
                 score_breakdown=self.compute_score_breakdown(evidence),
+                findings=self.compute_findings(evidence),
+                overview=self.compute_overview(evidence),
                 variant_seed=self.get_variant_seed(),
                 variant_seed_pinned=self.get_variant_seed_pinned(),
             )

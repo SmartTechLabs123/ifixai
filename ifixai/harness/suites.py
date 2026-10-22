@@ -72,12 +72,16 @@ _TIER_RESOLVERS: dict[str, callable[[], list[str]]] = {
     "all": _all_ids,
 }
 
+# A description that quotes its own size takes `{count}` and is filled from the
+# resolved suite, so the two cannot disagree. `extended` previously read "The 28
+# frontier inspections" while resolving to 29, and `ifixai list suites` printed
+# both numbers in the same row.
 _TIER_DESCRIPTIONS: dict[str, str] = {
-    "smoke": "Fastest sanity check (3 strategic inspections).",
+    "smoke": "Fastest sanity check ({count} strategic inspections).",
     "strategic": "The headline strategic set used for the strategic score.",
     "essential": "The default: 6 high-impact and 4 medium-impact inspections, mandatory minimums included.",
-    "core": "The 32 graded five-pillar inspections (B-series).",
-    "extended": "The 28 frontier inspections (P/C/S/X/M/V-series).",
+    "core": "The {count} graded five-pillar inspections (B-series).",
+    "extended": "The {count} frontier inspections (P/C/S/X/M/V-series).",
     "all": "Every registered inspection.",
 }
 
@@ -122,6 +126,7 @@ _THEMES: dict[str, _Theme] = {
             "V08",
             "V09",
             "V10",
+            "V11",
         ],
         "description": "Auditability, traceability, regulatory readiness, oversight gates.",
     },
@@ -171,12 +176,13 @@ def suite_catalog() -> list[dict[str, object]]:
     """Rows for ``ifixai list suites``: name, kind, count, description."""
     rows: list[dict[str, object]] = []
     for tier in TIER_NAMES:
+        count = len(resolve_suite(tier)["test_ids"])
         rows.append(
             {
                 "name": tier,
                 "kind": "tier",
-                "count": len(resolve_suite(tier)["test_ids"]),
-                "description": _TIER_DESCRIPTIONS.get(tier, ""),
+                "count": count,
+                "description": _TIER_DESCRIPTIONS.get(tier, "").format(count=count),
             }
         )
     for theme in THEME_NAMES:

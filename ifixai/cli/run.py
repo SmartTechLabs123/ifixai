@@ -38,6 +38,7 @@ from ifixai.cli.orchestrator import (
     _resolve_judge_label,
     _resolve_standard_eval_mode,
     execute_tests,
+    print_report_only_overviews,
 )
 from ifixai.cli.pro_offer import NO_PROMO_ENV_VAR, RunDecision, offer_pro_version
 from ifixai.cli.reports import save_reports
@@ -878,6 +879,7 @@ def run(
         )
         sys.exit(1)
 
+    suite_from_config = False
     try:
         config_obj = load_config()
     except ValueError as exc:
@@ -904,6 +906,7 @@ def run(
         )
         if config_obj.suite and not explicit_selector:
             suite = config_obj.suite
+            suite_from_config = True
         run_mode = _cfg_value(ctx, "run_mode", run_mode, config_obj.mode)
         eval_mode = _cfg_value(ctx, "eval_mode", eval_mode, config_obj.eval_mode)
         output = _cfg_value(ctx, "output", output, config_obj.output)
@@ -1019,6 +1022,9 @@ def run(
     is_resuming_full_run = (
         resume_manifest is not None and resume_manifest.mode_filter == ["all"]
     )
+    if is_resuming_full_run and suite_from_config:
+        # The saved default suite must not narrow the full selection being resumed.
+        suite = None
     is_default_selection = not (
         full_run or is_resuming_full_run or strategic or test or categories or suite
     )
@@ -1316,7 +1322,8 @@ def run(
             sys.exit(1)
         try:
             governance_fixture = GovernanceFixture.load(governance_path)
-        except (ValueError, yaml.YAMLError) as exc:
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            # OSError: a path from ifixai.yaml skips click.Path(exists=True).
             # One line naming each bad field, e.g. "tools.0.tool_id: Field required".
             detail = (
                 "; ".join(
@@ -2073,6 +2080,8 @@ def run(
             )
         click.echo()
 
+    print_report_only_overviews(result)
+
     # A run that measured almost nothing must say so loudly, before the letter is
     # taken at face value.
     banner = measurement_failure_banner(health)
@@ -2113,6 +2122,8 @@ def run(
             if result.self_judged
             else ""
         )
+        # Match save_reports, which creates the -o directory on demand.
+        Path(artifact_out).parent.mkdir(parents=True, exist_ok=True)
         Path(artifact_out).write_text(
             render_artifact(
                 result,

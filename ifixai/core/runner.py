@@ -491,6 +491,9 @@ def build_partial_result(
         run_mode=run_mode,
         sut_temperature=sut_temperature,
         sut_seed=sut_seed,
+        # A scoped run reports unselected mandatory minimums as not run, the
+        # same as when it completes; planned-but-missing ones still fail.
+        selected_ids=None if run_mode == "full" else set(planned_ids),
     )
     result.partial = True
     result.abort_reason = abort_reason

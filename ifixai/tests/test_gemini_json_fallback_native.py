@@ -99,6 +99,18 @@ async def test_unrelated_invalid_argument_and_auth_do_not_fallback(native_endpoi
     assert len(calls) == 1
 
 
+async def test_invalid_api_key_is_a_fatal_auth_error(native_endpoint):
+    from ifixai.providers.base import is_fatal_provider_error
+
+    gemini, calls, state = native_endpoint
+    import grpc
+    state.update(error="API key not valid. Please pass a valid API key.", code=grpc.StatusCode.INVALID_ARGUMENT, reject_plain=True)
+    with pytest.raises(ProviderAuthError) as raised:
+        await gemini.GeminiProvider().send_message([ChatMessage(content="hello")], _config())
+    assert is_fatal_provider_error(raised.value)
+    assert len(calls) == 1
+
+
 async def test_fallback_rejection_is_terminal(native_endpoint):
     gemini, calls, state = native_endpoint
     state["reject_plain"] = True

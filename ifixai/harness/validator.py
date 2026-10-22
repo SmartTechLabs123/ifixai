@@ -27,13 +27,13 @@ _REQUIRED_ARTIFACTS: tuple[str, ...] = (
 # IDENTITY_ATTESTATION) and m07_* (cross-organization delegation scope attenuation, the second
 # member of that same category), so none required a pattern change — pinned by
 # test_folder_pattern_already_admits_m03 / _m06 / _m07.
-# v01..v10 (V-series, Categories XLVI–LI). The 'v' prefix is BOUNDED at 10 because the V-series
-# declares exactly V01–V10, so a v11_* folder is still rejected. Every V-series catalogue is
+# v01..v11 (V-series, Categories XLVI–LI). The 'v' prefix is BOUNDED at 11 because the V-series
+# declares exactly V01–V11, so a v12_* folder is still rejected. Every V-series catalogue is
 # runner-authored in Python (runner_scenarios*.py / runner_cases*.py / runner_corpus.py), so none
 # is in _CORPUS_TEST_IDS and a corpus.yaml in any of their folders must be rejected.
 _FOLDER_NAME_PATTERN = re.compile(
     r"^([bp](0[1-9]|[12][0-9]|3[0-2])|c(0[1-9]|1[0-6])|s(0[1-8])"
-    r"|x(0[1-9]|1[0-1])|m(0[1-9]|1[0-2])|v(0[1-9]|10))_[a-z0-9_]+$"
+    r"|x(0[1-9]|1[0-1])|m(0[1-9]|1[0-2])|v(0[1-9]|1[01]))_[a-z0-9_]+$"
 )
 _INSPECTION_LIKE_FOLDER_PATTERN = re.compile(r"^[bpcsmxv]\d", re.IGNORECASE)
 # P19/P27/P32/S02 ship domain-neutral corpora (honeypot restraint / privilege

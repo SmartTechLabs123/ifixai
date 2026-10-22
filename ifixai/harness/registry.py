@@ -341,6 +341,12 @@ from ifixai.inspections.v10_care_under_vulnerability.runner import (
 from ifixai.inspections.v10_care_under_vulnerability.runner import (
     V10CareUnderVulnerability,
 )
+from ifixai.inspections.v11_guilt_tripping.runner import (
+    SPEC as V11_SPEC,
+)
+from ifixai.inspections.v11_guilt_tripping.runner import (
+    V11GuiltTripping,
+)
 from ifixai.inspections.x04_detection_performance_gate.runner import (
     SPEC as X04_SPEC,
 )
@@ -416,6 +422,7 @@ ALL_SPECS = [
     V08_SPEC,
     V09_SPEC,
     V10_SPEC,
+    V11_SPEC,
 ]
 
 SPEC_BY_ID: dict[str, object] = {spec.test_id: spec for spec in ALL_SPECS}
@@ -446,17 +453,17 @@ SPEC_BY_ID: dict[str, object] = {spec.test_id: spec for spec in ALL_SPECS}
 # the pattern to the full X-series range), and the M alternative (01..12) — added for M02 —
 # already admits M03, M06 and M07, so none required a pattern change (pinned by
 # test_id_pattern_already_admits_m03 / _m06 / _m07).
-# V-series: V01..V10 (Categories XLVI–LI). The 'V' alternative is BOUNDED at 10 rather than opened
-# to 0[1-9]|[1-9][0-9], because the V-series declares exactly V01–V10: a widening admits what exists
-# rather than what might, so V11 is still rejected. BALANCE_INTEGRITY (XLVI) holds V01/V02,
+# V-series: V01..V11 (Categories XLVI–LI). The 'V' alternative is BOUNDED at 11 rather than opened
+# to 0[1-9]|[1-9][0-9], because the V-series declares exactly V01–V11: a widening admits what exists
+# rather than what might, so V12 is still rejected. BALANCE_INTEGRITY (XLVI) holds V01/V02,
 # FRANKNESS_CORRECTNESS_LINK (XLVII) V03/V04, GRADER_VALIDITY (XLVIII) V05/V06,
 # BENCHMARK_CONTAMINATION (XLIX) V07, TRAINING_DISPOSITION_PROVENANCE (L) V08/V09 and
-# VULNERABLE_USER_CARE (LI) V10. V08 is a structural judge-edge gate with no SUT contact; the other
-# nine are full judge-path inspections.
+# VULNERABLE_USER_CARE (LI) V10/V11. V08 is a structural judge-edge gate with no SUT contact; the
+# other ten are full judge-path inspections.
 _TEST_ID_PATTERN = re.compile(
     r"^(B(0[1-9]|[12][0-9]|3[0-2])|P(0[1-9]|[12][0-9]|3[0-2])"
     r"|C(0[1-9]|1[0-6])|S(0[1-8])|X(0[1-9]|1[0-1])|M(0[1-9]|1[0-2])"
-    r"|V(0[1-9]|10))$"
+    r"|V(0[1-9]|1[01]))$"
 )
 _LEGACY_PREFIXES = ("SSCI-",)
 
@@ -476,7 +483,7 @@ def normalize_test_id(value: str) -> str:
     if not _TEST_ID_PATTERN.match(candidate):
         raise ValueError(
             f"Unknown test id: {value!r}. Expected B01..B32, P01..P32, C01..C16, "
-            "S01..S08, X01..X11, M01..M12 or V01..V10 (bare form)."
+            "S01..S08, X01..X11, M01..M12 or V01..V11 (bare form)."
         )
     return candidate
 
@@ -543,6 +550,7 @@ def create_inspection(spec_id: str) -> BaseTest:
         "V08": V08TrainingMisuseGuardrail,
         "V09": V09PromptOverrideResistance,
         "V10": V10CareUnderVulnerability,
+        "V11": V11GuiltTripping,
     }
     inspection_class = registry.get(spec_id)
     if inspection_class is None:

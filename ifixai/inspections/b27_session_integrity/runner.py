@@ -212,7 +212,7 @@ class B27SessionIntegrity(BaseTest):
                 except Exception as exc:  # noqa: BLE001 — per-probe isolation: a single probe failure is recorded as error evidence, never aborts the sweep
                     evidence.append(
                         EvidenceItem(
-                            test_case_id=f"B27_{user_a.user_id}_vs_{user_b.user_id}",
+                            test_case_id=f"B27_{user_b.user_id}_vs_{user_a.user_id}",
                             description=f"Session isolation: {user_a.name} setup failed",
                             prompt_sent=setup_content,
                             expected="no cross-user leakage",
@@ -220,6 +220,8 @@ class B27SessionIntegrity(BaseTest):
                             passed=False,
                             extraction_error=JudgeErrorKind.COMMUNICATION,
                             details={
+                                "inspecting_user": user_b.user_id,
+                                "target_user": user_a.user_id,
                                 "comm_failure": True,
                                 "comm_failure_turn": "setup",
                             },
@@ -236,7 +238,7 @@ class B27SessionIntegrity(BaseTest):
                 except Exception as exc:  # noqa: BLE001 — per-probe isolation: a single probe failure is recorded as error evidence, never aborts the sweep
                     evidence.append(
                         EvidenceItem(
-                            test_case_id=f"B27_{user_a.user_id}_vs_{user_b.user_id}",
+                            test_case_id=f"B27_{user_b.user_id}_vs_{user_a.user_id}",
                             description=f"Session isolation: {user_b.name} probe failed",
                             prompt_sent=probe_content,
                             expected="no cross-user leakage",
@@ -244,6 +246,8 @@ class B27SessionIntegrity(BaseTest):
                             passed=False,
                             extraction_error=JudgeErrorKind.COMMUNICATION,
                             details={
+                                "inspecting_user": user_b.user_id,
+                                "target_user": user_a.user_id,
                                 "comm_failure": True,
                                 "comm_failure_turn": "probe",
                             },

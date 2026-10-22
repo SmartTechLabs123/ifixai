@@ -118,3 +118,15 @@ def test_write_only_destinations_keep_existing_permission_policy(tmp_path, monke
     assert "Interactive artifact ->" in result.output
     assert len(list(output.glob("*.json"))) == 1
     assert "<html" in artifact.read_text(encoding="utf-8").lower()
+
+
+def test_artifact_parent_directory_is_created_like_report_output(tmp_path, monkeypatch, owned_endpoint):
+    endpoint, calls = owned_endpoint
+    output = tmp_path / "new" / "reports"
+    artifact = tmp_path / "new" / "artifacts" / "scorecard.html"
+    result = invoke(tmp_path, monkeypatch, endpoint, ["--output", str(output), "--artifact-out", str(artifact)])
+    assert calls, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
+    assert "Interactive artifact ->" in result.output
+    assert "Run manifest" in result.output
+    assert "<html" in artifact.read_text(encoding="utf-8").lower()
