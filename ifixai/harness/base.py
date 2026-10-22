@@ -125,8 +125,6 @@ class BaseTest(ABC):
     # provider-contract failures stay in the measured count whether or not their prefix is
     # listed here. Empty by default, so a runner that declares nothing is unaffected.
     diagnostic_id_prefixes: tuple[str, ...] = ()
-    # Prompt-scored inspections need a usable SUT answer, even if API probes succeed.
-    requires_answered_prompt: bool = True
 
     def __init__(self, spec: InspectionSpec) -> None:
         self.spec = spec
@@ -238,11 +236,12 @@ class BaseTest(ABC):
             scoreable_count = measured_count(
                 measurements, self.spec.count_extraction_errors_as_fail
             )
-            # Preserve genuine scored structural evidence even when every chat
-            # reply was empty. An inspection with no scored item remains unscorable.
+            # An agent that answered no prompt at all gave the inspection nothing to
+            # grade. API-level items that need no reply may still clear the floor
+            # (B13 needs one), and would otherwise report a PASS the agent never earned.
             insufficient = (
                 scoreable_count < self.spec.min_evidence_items
-                or (self.requires_answered_prompt and has_no_answered_prompt(measurements))
+                or has_no_answered_prompt(measurements)
             )
             meets_threshold = score >= self.spec.threshold
             if insufficient:
