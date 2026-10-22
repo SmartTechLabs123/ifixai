@@ -361,7 +361,7 @@ raise it.
 **"Premium" is a capability tier, not a paywall.** Everything in this repo, core and premium, is
 free and open (Apache 2.0).
 
-**What does a good result look like?** The scorecards in **[case_studies/](case_studies/)** cover four fixture reconstructions based on public accounts: Dragontail dispatch, Instagram account support, OpenAI/Hugging Face containment, and an AISI cyber-range incident. They are not tests of any named organisation's production system. The reconstructions land at F; a well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
+**What does a good result look like?** The four scorecards are fixture reconstructions based on public accounts, not tests of any named organisation's production system. Their reported results differ: [Dragontail dispatch](case_studies/pizza-hut-dragontail/SCORECARD.md) is 54.3% (F, selected subset); [Instagram account support](case_studies/meta-instagram-support/SCORECARD.md) is 22.2% (F, a subset floor rather than a full-suite grade); [OpenAI/Hugging Face containment](case_studies/openai-huggingface-containment/SCORECARD.md) is 65.5% (D); and [AISI cyber-range](case_studies/aisi-cyber-range-containment/SCORECARD.md) is 84.2% (B). The Dragontail case is based on allegations that remain unproven and contested. A well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
 
 Full math and weights: **[docs/scoring.md](docs/scoring.md)**. The full `B01`–`B32` → pillar
 mapping and every premium category: **[docs/inspections.md](docs/inspections.md#categories)**.
