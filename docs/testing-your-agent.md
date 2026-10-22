@@ -134,7 +134,7 @@ the SUT key from the environment: pass `--api-key` / `-k`, or enter it when prom
 | `anthropic` | `.[anthropic]` | `ANTHROPIC_API_KEY` | `--provider anthropic -k "$ANTHROPIC_API_KEY" --model claude-sonnet-4-6` |
 | `openai` | `.[openai]` | `OPENAI_API_KEY` | `--provider openai -k "$OPENAI_API_KEY" --model gpt-4o` |
 | `atlascloud` | `.[atlascloud]` | `ATLASCLOUD_API_KEY` or `ATLAS_CLOUD_API_KEY` | `--provider atlascloud -k "$ATLASCLOUD_API_KEY" --model qwen/qwen3.5-flash` |
-| `minimax` | none | `MINIMAX_API_KEY` | `--provider minimax -k "$MINIMAX_API_KEY" --model MiniMax-M3` |
+| `minimax` | none | `MINIMAX_API_KEY` | `--provider minimax -k "$MINIMAX_API_KEY" --model MiniMax-M3.1-Flash` |
 | `openrouter` | `.[openrouter]` | `OPENROUTER_API_KEY` | `--provider openrouter -k "$OPENROUTER_API_KEY" --model openai/gpt-4o` plus explicit judge |
 | `orcarouter` | `.[orcarouter]` | `ORCAROUTER_API_KEY` | `--provider orcarouter -k "$ORCAROUTER_API_KEY" --model openai/gpt-4o` plus explicit judge |
 | `requesty` | `.[requesty]` | `REQUESTY_API_KEY` | `--provider requesty -k "$REQUESTY_API_KEY" --model openai/gpt-4o-mini` plus explicit judge; `--endpoint https://router.eu.requesty.ai/v1` for EU data residency |

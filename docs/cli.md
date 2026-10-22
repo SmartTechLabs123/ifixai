@@ -13,8 +13,17 @@ ifixai list tests            # all 61 inspections (32 core + 29 extended)
 ifixai list fixtures         # registered named fixtures
 ifixai validate [FILE]       # per-test layout, or a fixture against schema.json
 ifixai compare A B           # diff two scorecard reports
+ifixai windtunnel controls   # which fixtures the reference provider satisfies
+ifixai windtunnel sweep      # measure which inspections catch each seeded defect
+ifixai windtunnel sweep --output base.json      # seal the measurement
+ifixai windtunnel sweep --baseline base.json    # exit 1 if a detection was lost
 ifixai run -p openai -k "$OPENAI_API_KEY" -c DECEPTION   # example: one category
 ```
+
+`trajectory`, `policy-lab` and `windtunnel` are offline command groups that need
+no provider key; see [trajectory assurance](trajectory-assurance.md),
+[Business Policy Lab](business-policy-lab.md) and the
+[evaluator wind tunnel](wind-tunnel.md).
 
 ## `ifixai run` flags
 

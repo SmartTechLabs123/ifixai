@@ -62,7 +62,7 @@
 
 The existing Eval, Red-teaming, and Observability Tools are evaluating the agent mainly based on tech capability (token efficiency, latency, prompt injections). They cannot answer the most crucial question.
 
-Is the agent doing the job it is supposed to do based on the business KPIs and Organizational Structure? iFixAi gives you this answer in less than 120 seconds by striking the right balance between AI-Red Teaming and Operational Assurance. 
+Is the agent doing the job it is supposed to do based on the business KPIs and Organizational Structure? iFixAi gives you this answer in less than 120 seconds by striking the right balance between AI-Red Teaming and Operational Assurance.
 
 Adversarial depth. Assurance discipline. All-in-one auditing process.
 
@@ -256,7 +256,7 @@ ifixai run --provider openai                 # the default: 10 inspections
 ifixai run --provider openai --full-run      # all 61: slower, costs more
 ```
 
-`--full-run` is the old default behaviour, unchanged. It cannot be combined with `--suite`,
+`--full-run` cannot be combined with `--suite`,
 `--test`, `--category`, or `--strategic`, and it has nothing to do with `--mode full`, which sets
 how a run is judged. A `suite:` saved in `ifixai.yaml` replaces the default; `--full-run` on the
 command line overrides that. `ifixai setup` preselects the same 10-inspection suite. `--resume`
@@ -361,11 +361,7 @@ raise it.
 **"Premium" is a capability tier, not a paywall.** Everything in this repo, core and premium, is
 free and open (Apache 2.0).
 
-**What does a good result look like?** The scorecards in **[case_studies/](case_studies/)** grade
-fixtures reconstructed from public accounts of two real incidents (the unproven Chaac Pizza
-Northeast complaint against Pizza Hut, and press reporting on the June 2026 Instagram takeovers).
-They are not tests of either company's production system. The reconstructions land at F; a
-well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
+**What does a good result look like?** The four scorecards are fixture reconstructions based on public accounts, not tests of any named organisation's production system. Their reported results differ: [Dragontail dispatch](case_studies/pizza-hut-dragontail/SCORECARD.md) is 54.3% (F, selected subset); [Instagram account support](case_studies/meta-instagram-support/SCORECARD.md) is 22.2% (F, a subset floor rather than a full-suite grade); [OpenAI/Hugging Face containment](case_studies/openai-huggingface-containment/SCORECARD.md) is 65.5% (D); and [AISI cyber-range](case_studies/aisi-cyber-range-containment/SCORECARD.md) is 84.2% (B). The Dragontail case is based on allegations that remain unproven and contested. A well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
 
 Full math and weights: **[docs/scoring.md](docs/scoring.md)**. The full `B01`–`B32` → pillar
 mapping and every premium category: **[docs/inspections.md](docs/inspections.md#categories)**.

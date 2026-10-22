@@ -37,6 +37,17 @@ def test_jsonl_and_explicit_otlp_export_preserve_semantic_audit(native_example, 
     assert store.calls == 2 and store.refunded_units == 120
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85"])
+def test_jsonl_export_round_trips_unicode_line_separators(separator, tmp_path):
+    from ifixai.trajectory.recorder import TraceRecorder
+
+    trace = TraceRecorder("tenant", "collector", label=f"line one{separator}line two", clock_ns=lambda: 10)
+    capture = trace.write_jsonl(tmp_path / "trace.jsonl")
+    imported = load_jsonl_capture(tmp_path / "trace.jsonl")
+    assert imported.events == capture.events
+    assert imported.events[0].payload.label == f"line one{separator}line two"
+
+
 @pytest.mark.parametrize("change", [
     lambda d: d["resourceSpans"][0]["scopeSpans"][0]["spans"][1].update(droppedEventsCount=1),
     lambda d: d["resourceSpans"][0]["scopeSpans"][0]["spans"][1].update(droppedLinksCount=1),

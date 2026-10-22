@@ -35,13 +35,16 @@ from ifixai.reporting.scorecard import (
     _dominant_evaluation_path,
     _format_method_mix,
     _format_run_verdict,
+    absent_score_reason,
     format_evaluation_date,
 )
 
 
-def _stability_note(overall: float | None, margin: float = 0.02) -> str:
+def _stability_note(
+    overall: float | None, absent_reason: str, margin: float = 0.02
+) -> str:
     if overall is None:
-        return "No overall score (insufficient evidence)."
+        return absent_reason[:1].upper() + absent_reason[1:]
     distance = min(abs(overall - b) for b in _GRADE_BOUNDARIES)
     if distance <= margin:
         return (
@@ -262,12 +265,16 @@ def _build_payload(
                 if overall is not None
                 else "inconclusive"
             ),
-            "overall_pct": "n/a (insufficient evidence)" if overall is None else f"{overall * 100:.1f}%",
-            "score_before_cap": None if result.overall_score_before_cap is None
-            else f"{result.overall_score_before_cap * 100:.1f}%",
+            "overall_pct": "n/a" if overall is None else f"{overall * 100:.1f}%",
+            # Only when the cap lowered the score, as the JSON's cap_applied.
+            "score_before_cap": f"{result.overall_score_before_cap * 100:.1f}%"
+            if overall is not None
+            and result.overall_score_before_cap is not None
+            and result.overall_score_before_cap > overall
+            else None,
             "verdict": _format_run_verdict(result),
             "strategic_pct": f"{result.strategic_score * 100:.1f}%",
-            "stability": _stability_note(overall),
+            "stability": _stability_note(overall, absent_score_reason(result)),
             "mm_passed": result.mandatory_minimums_passed,
             "mm_label": minimum_label,
             "mm_status": {

@@ -145,7 +145,7 @@ def compute_insights(result: TestRunResult) -> dict[str, object]:
         "exploratory": exploratory,
         "overall_score": result.overall_score,
         "strategic_score": result.strategic_score,
-        "grade": result.grade.value,
+        "grade": "n/a" if result.overall_score is None else result.grade.value,
         "strategic_overall_delta": delta,
         "passed": result.passed,
     }
@@ -647,7 +647,8 @@ def build_overall_section(result: TestRunResult) -> dict[str, object]:
     section: dict[str, object] = {
         "score": None if overall is None else round(overall, 4),
         "score_pct": "n/a" if overall is None else f"{overall:.1%}",
-        "grade": result.grade.value,
+        # No overall score means no grade (as in the Markdown and console views).
+        "grade": "n/a" if overall is None else result.grade.value,
         "strategic_score": round(result.strategic_score, 4),
         "strategic_score_pct": f"{result.strategic_score:.1%}",
         "passed": result.passed,
@@ -951,7 +952,9 @@ _STATUS_LABELS: Final[dict[TestStatus, str]] = {
 
 
 def _format_test_status(br: TestResult) -> str:
-    if br.error:
+    # An empty SUT reply is INCONCLUSIVE with ``error`` set (see BaseTest.run);
+    # keep the label consistent with the JSON and HTML exports.
+    if br.error and br.status != TestStatus.INCONCLUSIVE:
         return _STATUS_LABELS[TestStatus.ERROR]
     return _STATUS_LABELS.get(br.status, _STATUS_LABELS[TestStatus.FAIL])
 
@@ -1298,11 +1301,17 @@ def render_evidence_appendix(result: TestRunResult) -> str:
             actual_display = ev.actual_response or ev.actual
             if len(actual_display) > _ACTUAL_DISPLAY_CAP:
                 actual_display = actual_display[:_ACTUAL_DISPLAY_CAP] + "..."
-            ev_status = "PASS" if ev.passed else "FAIL"
             actual_line = f"`{actual_display}`"
+            # Match the interactive scorecard: an ungraded item or an operator
+            # diagnostic is not a failed answer, whatever its `passed` default.
+            if ev.is_diagnostic:
+                ev_status = "DIAGNOSTIC"
+            elif ev.extraction_error is not None:
+                ev_status = "NOT JUDGED" if br.findings_only else "GRADING UNAVAILABLE"
+            else:
+                ev_status = "PASS" if ev.passed else "FAIL"
             if br.findings_only:
-                # An item the judge never graded is not a fail; a transcript keeps its own lines.
-                ev_status = "NOT JUDGED" if ev.extraction_error is not None else ev_status
+                # A transcript keeps its own lines.
                 actual_line = actual_markdown(actual_display)
             judges = scrub_secrets(describe_votes(ev.details))
 

@@ -49,7 +49,8 @@ class CaptureHeader(StrictModel):
 
 
 def load_jsonl_capture(path: str | Path) -> TraceCapture:
-    lines = [line for line in read_input(path).splitlines() if line.strip()]
+    # JSON strings may contain raw U+2028, U+2029 and U+0085; only newline separates rows.
+    lines = [line for line in read_input(path).split("\n") if line.strip()]
     if not lines or len(lines) > MAX_EVENTS + 1:
         raise ValueError("JSONL requires a header and at most 100000 events")
     header = CaptureHeader.model_validate(strict_json(lines[0]))
