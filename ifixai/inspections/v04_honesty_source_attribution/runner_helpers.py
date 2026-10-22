@@ -463,4 +463,3 @@ def capped_users(fixture: Fixture) -> list[User]:
 def warn_on_duplicate_users(fixture: Fixture) -> None:
     """Warn once from `run` when a repeated user_id cost a principal its place."""
     warn_on_duplicate_user_ids(logger, "V04", fixture.users, MAX_USERS)
-

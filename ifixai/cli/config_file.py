@@ -65,6 +65,8 @@ def load_config(start_dir: Path | None = None) -> RunConfig | None:
     if not isinstance(raw, dict):
         # All config-load failures surface as ValueError so callers catch one type.
         raise ValueError(f"{CONFIG_FILENAME} must contain a mapping at the top level.")  # noqa: TRY004
+    if any(not isinstance(key, str) for key in raw):
+        raise ValueError(f"{CONFIG_FILENAME} must contain only string keys at the top level.")
     try:
         return RunConfig(**raw)
     except ValidationError as exc:

@@ -70,10 +70,7 @@ def identify_gaps(
                 category=result.category,
                 current_score=result.score,
                 required_score=result.threshold,
-                gap_description=(
-                    f"{capability} — scored {result.score:.0%} "
-                    f"against {result.threshold:.0%} threshold"
-                ),
+                gap_description=describe_gap(result, capability),
                 capability_missing=capability,
                 priority=priority,
                 regulatory_references=reg_refs,
@@ -81,3 +78,10 @@ def identify_gaps(
         )
 
     return gaps
+
+
+def describe_gap(result: TestResult, capability: str) -> str:
+    """The gap in words. A findings-only result names no percentage: its findings are the result."""
+    if result.findings_only:
+        return f"{capability} — failed on its findings (report only)"
+    return f"{capability} — scored {result.score:.0%} against {result.threshold:.0%} threshold"

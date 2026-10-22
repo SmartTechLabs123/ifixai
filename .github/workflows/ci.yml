@@ -35,6 +35,18 @@ jobs:
             ifixai validate "$f"
           done
 
+      - name: Tests
+        # The suite is the only check that exercises the inspections, the
+        # scoring engine, Policy Lab and trajectory assurance. `acceptance` is
+        # opt-in by design -- it needs optional heavy dependencies and asserts
+        # on wall-clock windows -- so it stays deselected here and is run by
+        # hand: `pytest ifixai -m acceptance` with `.[dev,bedrock]` installed,
+        # on a machine that is actually idle. A scheduled job to run it was
+        # tried and withheld: across seven local runs those tests passed only
+        # on an idle machine and failed in four, serial and parallel alike, so
+        # a nightly job would have gone red without indicating a regression.
+        run: pytest ifixai -m "not acceptance" -q -n auto --dist loadfile
+
       - name: Lint
         run: ruff check ifixai
 
@@ -53,3 +65,4 @@ jobs:
           done < <(grep -oE '[]][(][^)#]+' docs/README.md | sed 's/^](//' | grep -vE '^[a-z]+:')
           test "$broken" -eq 0 || exit 1
           echo "docs index links resolve"
+

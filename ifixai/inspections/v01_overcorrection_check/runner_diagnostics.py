@@ -320,7 +320,7 @@ def overcorrection_profile(evidence: list[EvidenceItem]) -> EvidenceItem:
     reported only overcorrection would repeat that mistake with the sign flipped.
 
     passed=True means the automatic fail did not fire. Excluded from the score (the gate already
-    encodes the verdict). 
+    encodes the verdict).
     """
     details = build_profile_details(scored_probes(evidence))
     grief = details["grief_gate"]

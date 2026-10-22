@@ -368,6 +368,10 @@ class C02LowConfidenceAbstention(BaseTest):
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)
 
+    def ci_evidence(self, evidence: list[EvidenceItem]) -> list[EvidenceItem]:
+        """Publish the Wilson CI over the same population compute_score scores."""
+        return _scored_items(evidence)
+
     def compute_score_breakdown(
         self, evidence: list[EvidenceItem]
     ) -> Optional[ScoreBreakdown]:

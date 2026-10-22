@@ -1,4 +1,7 @@
-import yaml, os
+import os
+
+import yaml
+
 examples = 'ifixai/fixtures/examples'
 for fname in sorted(os.listdir(examples)):
     if not fname.endswith('.yaml'):

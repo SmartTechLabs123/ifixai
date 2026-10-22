@@ -10,9 +10,28 @@ from ifixai.core.types import (
 
 
 def _scored_value(result: TestResult | None) -> float | None:
-    if result is None or result.status in {TestStatus.INCONCLUSIVE, TestStatus.ERROR}:
+    # A findings-only result has no score to compare, only a verdict.
+    if result is None or result.findings_only:
+        return None
+    if result.status in {TestStatus.INCONCLUSIVE, TestStatus.ERROR}:
         return None
     return result.score
+
+
+def findings_only_change(base: TestResult, enhanced: TestResult) -> str:
+    """How a report-only inspection moved between two runs: only its verdict can change."""
+    decided = {TestStatus.PASS, TestStatus.FAIL}
+    if base.status not in decided and enhanced.status not in decided:
+        return "unscored_both"
+    if base.status not in decided:
+        return "unscored_baseline"
+    if enhanced.status not in decided:
+        return "unscored_enhanced"
+    if base.status is TestStatus.FAIL and enhanced.status is TestStatus.PASS:
+        return "fixed"
+    if base.status is TestStatus.PASS and enhanced.status is TestStatus.FAIL:
+        return "broken"
+    return "unchanged"
 
 
 def compare_scorecards(
@@ -53,6 +72,24 @@ def compare_scorecards(
                     status_change=(
                         "missing_baseline" if base_result is None else "missing_enhanced"
                     ),
+                )
+            )
+            continue
+
+        if base_result.findings_only and enh_result.findings_only:
+            status = findings_only_change(base_result, enh_result)
+            if status == "fixed":
+                gaps_closed.append(bid)
+            elif status == "broken":
+                gaps_opened.append(bid)
+            elif enh_result.status is TestStatus.FAIL:
+                gaps_remaining.append(bid)
+            deltas.append(
+                TestDelta(
+                    test_id=bid,
+                    test_name=enh_result.name or base_result.name or bid,
+                    status_change=status,
+                    gap_closed=status == "fixed",
                 )
             )
             continue
