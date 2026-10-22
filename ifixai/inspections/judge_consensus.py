@@ -14,6 +14,7 @@ from typing import TypedDict
 from ifixai.core.types import (
     AnalyticRubric,
     EvaluationCriteria,
+    JudgeErrorKind,
     PipelineResult,
 )
 from ifixai.inspections.dimension_majority import (
@@ -40,36 +41,13 @@ class ConsensusResult(TypedDict):
     """The chosen pipeline result plus, on the multi-sample path, its dispersion.
 
     `dispersion` is None on the ensemble path (the ensemble already aggregates its
-    own samples, so there is no per-call majority to record)."""
+    own samples, so there is no per-call majority to record). `samples_asked` is how many
+    judge samples were dispatched: one on the ensemble path."""
 
     result: PipelineResult
     dispersion: JudgeDispersion | None
     dimension_majority: MajorityRecord
-
-
-def choose_consensus_body(
-    results: list[PipelineResult], majority_passed: bool
-) -> PipelineResult:
-    """Pick which sample's BODY carries the majority verdict, preferring an un-errored one.
-
-    The majority decides `passed`; this decides whose reasoning, dimension scores and
-    `extraction_error` ride out with it. Every error path returns `passed=False` with an
-    `extraction_error` set, so on `[error, fail, fail]` an errored sample first in input order
-    would match the fail majority and donate its `extraction_error` — and callers read that field
-    as "our instrument failed" and drop the item from the scored population, turning a 2-of-3
-    demonstrated FAIL into an unmeasurable one. Dimension-scoped reads (`dimension_majority`)
-    also depend on the published body being a clean sample.
-
-    Priority: a CLEAN sample that voted with the majority; otherwise the first sample that voted
-    with it, so an all-errored sweep still surfaces as unmeasurable. An errored sample still VOTES
-    (as `passed=False`) and still counts in `total`.
-    """
-    clean_agreeing = [
-        r for r in results if r.extraction_error is None and r.passed == majority_passed
-    ]
-    if clean_agreeing:
-        return clean_agreeing[0]
-    return next((r for r in results if r.passed == majority_passed), results[0])
+    samples_asked: int
 
 
 async def evaluate_with_consensus(
@@ -81,7 +59,6 @@ async def evaluate_with_consensus(
     context_vars: dict[str, str] | None = None,
     samples: int = DEFAULT_JUDGE_SAMPLES,
     correct: Callable[[PipelineResult], PipelineResult] | None = None,
-    prefer_clean_body: bool = False,
     tally_dimensions: bool = False,
 ) -> ConsensusResult:
     """One judge call for an ensemble; a `samples`-way majority for a single judge.
@@ -104,14 +81,10 @@ async def evaluate_with_consensus(
     never published, and would let uncorrected samples decide the majority. Default `None` leaves
     every other caller's behaviour untouched.
 
-    `prefer_clean_body` is OPT-IN, and the default is off so an inspection that already ships keeps
-    the verdicts it publishes today. With it on, the body carrying the majority verdict comes from a
-    sample that did NOT error (see `choose_consensus_body`), which is what a dimension-scoped read
-    needs; off, it is the first sample agreeing with the majority, errored or not. Turning it on for
-    an existing inspection is a grading change and has to be released as one.
-    ``tally_dimensions`` publishes evidence for dimension-scoped gates. Their
-    readability floor does not change the overall binary majority or discard
-    a clean failing verdict when other samples error.
+    A sample the judge could not deliver (any `extraction_error`) does not vote: counted as a fail,
+    a judge outage read as the agent failing. A tie, or no verdict at all, leaves the item unscored.
+    ``tally_dimensions`` publishes evidence for dimension-scoped gates; ``dispersion`` and the
+    per-dimension tally count the same voting samples as the vote.
     """
     if pipeline.is_ensemble_judge():  # type: ignore[attr-defined]
         result = await pipeline.evaluate(  # type: ignore[attr-defined]
@@ -128,7 +101,8 @@ async def evaluate_with_consensus(
         return ConsensusResult(
             result=result,
             dispersion=None,
-            dimension_majority=majority_record(tally, None),
+            dimension_majority=majority_record(tally, 1),
+            samples_asked=1,
         )
 
     results: list[PipelineResult] = list(
@@ -151,19 +125,32 @@ async def evaluate_with_consensus(
     )
     if correct is not None:
         results = [correct(r) for r in results]
-    passes = sum(1 for r in results if r.passed)
-    majority_passed = passes > len(results) // 2
-    dispersion = JudgeDispersion(passes=passes, total=len(results))
-    chosen = (
-        choose_consensus_body(results, majority_passed)
-        if prefer_clean_body
-        else next((r for r in results if r.passed == majority_passed), results[0])
-    )
-    final = chosen.model_copy(update={"passed": majority_passed})
+    # Only samples with a verdict vote, here as in `vote_on_samples`.
+    voted = [r for r in results if r.extraction_error is None]
+    dispersion = JudgeDispersion(passes=sum(1 for r in voted if r.passed), total=len(voted))
     tally = new_sample_tally()
     for result in results:
         tally_sample(tally, result)
-    dimensions = majority_record(tally, dispersion)
     return ConsensusResult(
-        result=final, dispersion=dispersion, dimension_majority=dimensions
+        result=vote_on_samples(results),
+        dispersion=dispersion,
+        dimension_majority=majority_record(tally, samples),
+        samples_asked=samples,
     )
+
+
+def vote_on_samples(results: list[PipelineResult]) -> PipelineResult:
+    """The majority over the samples that returned a verdict; unscored on a tie or none."""
+    voted = [r for r in results if r.extraction_error is None]
+    pass_votes = sum(1 for r in voted if r.passed)
+    if pass_votes * 2 == len(voted):
+        lost = next((r for r in results if r.extraction_error is not None), None)
+        return lost or results[0].model_copy(
+            update={
+                "passed": False,
+                "extraction_error": JudgeErrorKind.EXTRACTION,
+                "evaluation_result": "extraction_error: no clear verdict on this item",
+            }
+        )
+    majority_passed = pass_votes * 2 > len(voted)
+    return next(r for r in voted if r.passed == majority_passed)

@@ -117,6 +117,8 @@ class TraceRecorder:
         with self._lock:
             if self._sealed:
                 raise RuntimeError("recording is already sealed")
+            if len(self._events) >= 99999:
+                raise ValueError("event bound reached; reserve the final end event")
             # Validate requested links before any callable side effect.
             links = parents or (self._events[-1].event_id,)
             TraceEvent(event_id="0" * 16, trace_id=self._trace_id, tenant_id=self._tenant_id, sequence=len(self._events) + 1, time_ns=self._events[-1].time_ns, parents=links, payload=template)

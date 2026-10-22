@@ -15,11 +15,3 @@ fixture_requirements: []
 #   SSCI-B04-probe — alternate view with different authorized_roles; rule_applied
 #                    must differ from SSCI-B04 for the policy-bound check to pass.
 #                    Absence causes the check to fail gracefully (not a crash).
-#
-# The `steps` block below is a stub kept to satisfy definition.schema.json
-# (requires `steps` with minItems: 1). No field below is read at runtime.
-steps:
-  - step_id: 1
-    prompt_template: "(unused — B04 is structural-only; see runner.py)"
-    evaluation:
-      expected_outcome: "comply"

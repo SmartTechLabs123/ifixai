@@ -1,9 +1,13 @@
 import asyncio
+import functools
+import inspect
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, MutableMapping
 from enum import Enum
-from typing import Any, NoReturn
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, NoReturn, ParamSpec, Protocol, TypeVar
 
 from ifixai.core.training_specification_screening import (
     SpecificationScreeningReport,
@@ -41,6 +45,10 @@ from ifixai.core.types import (
     ToolInvocationResult,
     TrainingRecordCandidate,
 )
+from ifixai.evaluation.run_stop import RUN_STOP, count_request
+
+if TYPE_CHECKING:
+    import openai
 
 
 class ProviderCapability(str, Enum):
@@ -113,6 +121,11 @@ class ProviderResponseError(ProviderError):
     pass
 
 
+class ProviderSchemaRejectedError(ProviderResponseError):
+    """The provider refused the judge's strict response schema. The judge resends in plain JSON
+    mode and, once that works, stops asking for the schema."""
+
+
 _FATAL_ERROR_MARKERS: tuple[str, ...] = (
     "invalid api key",
     "invalid_api_key",
@@ -141,14 +154,105 @@ _QUOTA_EXHAUSTED_MARKERS: tuple[str, ...] = (
 )
 
 
+class _SdkResponse(Protocol):
+    """The parts of an SDK HTTP response the spent-quota hook reads."""
+
+    status_code: int
+    headers: MutableMapping[str, str]
+
+    @property
+    def text(self) -> str: ...
+
+    async def aread(self) -> bytes: ...
+
+
+async def _no_retry_when_spent(response: _SdkResponse) -> None:
+    """Tell the SDK not to retry a 429 that says the account is spent: it says so on every
+    retry, and only delays the stop. A plain rate limit is still retried."""
+    if response.status_code != 429:
+        return
+    await response.aread()
+    if any(marker in response.text.lower() for marker in _QUOTA_EXHAUSTED_MARKERS):
+        response.headers["x-should-retry"] = "false"
+
+
+async def _count_request(_request: object) -> None:
+    """Each request the SDK sends, its own retries included, counts against a judge's budget."""
+    count_request()
+
+
+def openai_http_client(sdk: ModuleType) -> "openai.DefaultAsyncHttpxClient | None":
+    """The OpenAI SDK's own HTTP client with the spent-quota and request-count hooks, for every
+    OpenAI-compatible provider. `sdk` is the caller's `openai` module, an optional extra this
+    module can't import. None (the SDK's default client) on an SDK too old to take one."""
+    client_class = getattr(sdk, "DefaultAsyncHttpxClient", None)
+    if client_class is None:
+        return None
+    return client_class(event_hooks={"request": [_count_request], "response": [_no_retry_when_spent]})
+
+
+# The status codes a provider refuses a key or an account with: 401 key, 402 payment, 403
+# forbidden, 429 a spent quota (or a plain rate limit).
+REFUSAL_STATUS_CODES: tuple[str, ...] = ("401", "402", "403", "429")
+_STATUS_CODE = re.compile(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:[_\s-]*code)?|code)\s*[:=]?\s*(\d{3})\b", re.IGNORECASE)
+
+
+def refusal_status_code(detail: str, codes: tuple[str, ...] = REFUSAL_STATUS_CODES) -> str | None:
+    """The first status-shaped code among `codes` in `detail` (`HTTP 402`, `HTTP/1.1 403`,
+    `status_code=401`, `Error code: 429`), never digits in IDs or URLs."""
+    return next((m.group(1) for m in _STATUS_CODE.finditer(detail) if m.group(1) in codes), None)
+
+
 def _auth_status_code(detail: str) -> str | None:
-    """Read status-shaped authentication codes, never digits in IDs or URLs."""
-    match = re.search(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:[_\s-]*code)?|code)\s*[:=]?\s*(401|403)\b", detail, re.IGNORECASE)
-    return match.group(1) if match else None
+    """Read status-shaped refusal codes (401 key, 402 payment, 403 forbidden). A 402 refuses
+    whatever its body says, so it never waits on a credit word."""
+    return refusal_status_code(detail, ("401", "402", "403"))
+
+
+# A 403 a provider sends for the request's content, not for the key: OpenRouter refuses a moderated
+# model's flagged input this way ("requires moderation ... your input was flagged"), and judge
+# prompts carry adversarial probes by design.
+_CONTENT_FLAGGED_MARKERS: tuple[str, ...] = ("requires moderation", "was flagged")
+# What a 403 says when the account's money ran out: no credit, or a key, workspace or guardrail
+# budget spent (OpenRouter: "Org member budget limit exceeded").
+_SPEND_LIMIT_MARKERS: tuple[str, ...] = ("credit", "quota", "budget", "spend", "billing", "payment", "balance")
+# How providers say a model doesn't exist: OpenRouter's 400 "x is not a valid model ID", OpenAI's
+# `model_not_found` ("The model `x` does not exist"), Anthropic's `not_found_error` ("model: x"),
+# Gemini's "404 models/x is not found", and the plain forms.
+_UNKNOWN_MODEL = re.compile(
+    r"not a valid model|model_not_found|no such model|unknown model|invalid model"
+    r"|not_found_error[^}]{0,80}model|\b404\b.*\bnot found\b"
+    r"|model[^.]{0,80}\b(?:not found|does not exist)",
+    re.IGNORECASE,
+)
+
+
+def is_content_flagged(exc: BaseException) -> bool:
+    """A 403 the provider sent because it flagged the request's content. That one request fails;
+    the key and the account are fine."""
+    if not isinstance(exc, ProviderError):
+        return False
+    text = str(exc).lower()
+    return refusal_status_code(text, ("403",)) is not None and any(
+        marker in text for marker in _CONTENT_FLAGGED_MARKERS
+    )
+
+
+def names_spend_limit(detail: str) -> bool:
+    """Whether a refusal's text says the account's credit, quota or budget ran out."""
+    text = detail.lower()
+    return any(marker in text for marker in _SPEND_LIMIT_MARKERS)
+
+
+def names_unknown_model(detail: str) -> bool:
+    """Whether a provider's error says the requested model doesn't exist."""
+    return _UNKNOWN_MODEL.search(detail) is not None
 
 
 def is_fatal_provider_error(exc: BaseException) -> bool:
     """True when an error means the credential is rejected / out of quota."""
+    if is_content_flagged(exc):
+        return False
     if isinstance(exc, ProviderAuthError):
         return True
     if isinstance(exc, ProviderRateLimitError):
@@ -159,7 +263,7 @@ def is_fatal_provider_error(exc: BaseException) -> bool:
     # off at 403 characters reads as HTTP 403 and aborts the whole run.
     if isinstance(exc, TRANSIENT_PROVIDER_ERRORS):
         return False
-    text = str(exc).lower()
+    text = (exc.details if isinstance(exc, ProviderError) else str(exc)).lower()
     return _auth_status_code(text) is not None or any(
         marker in text for marker in _FATAL_ERROR_MARKERS
     )
@@ -193,22 +297,39 @@ def drop_rejected_optional_params(kwargs: dict[str, Any], detail: str) -> list[s
     return removed
 
 
+def response_format(config: ProviderConfig) -> dict[str, object]:
+    """The judge's strict schema when it sent one, else plain JSON mode."""
+    if config.json_schema is not None:
+        return {"type": "json_schema", "json_schema": config.json_schema}
+    return {"type": "json_object"}
+
+
 async def create_chat_completion_json_fallback(client: Any, **kwargs: Any) -> Any:
     """Call ``client.chat.completions.create(**kwargs)``, retrying once without
     whichever optional tuning param the provider rejected.
 
     ``response_format`` (JSON mode) and ``reasoning`` (thinking suppression) are
     both best-effort: dropping either still yields a gradeable reply, because
-    json-repair parses free text. Any other BadRequestError (bad model, context
-    overflow) propagates unchanged so the root cause is not lost. Callers already
-    import the ``openai`` SDK; the import is local so ``base.py`` stays usable
-    without the optional extra.
+    json-repair parses free text. A refused strict schema is not dropped but handed
+    back as ``ProviderSchemaRejectedError``, so the judge downgrades to JSON mode.
+    Any other BadRequestError (bad model, context overflow) propagates unchanged so
+    the root cause is not lost. Callers already import the ``openai`` SDK; the
+    import is local so ``base.py`` stays usable without the optional extra.
     """
     import openai
 
     try:
         return await client.chat.completions.create(**kwargs)
-    except openai.BadRequestError as exc:
+    # Some servers refuse an unsupported param with a 422 or 500 rather than a 400.
+    except (
+        openai.BadRequestError,
+        openai.UnprocessableEntityError,
+        openai.InternalServerError,
+    ) as exc:
+        # A model the provider doesn't know is refused whatever the format, so that 400 is no
+        # verdict on the schema.
+        if kwargs.get("response_format", {}).get("type") == "json_schema" and not names_unknown_model(str(exc)):
+            raise ProviderSchemaRejectedError(details=f"strict schema refused: {exc}") from exc
         if not drop_rejected_optional_params(kwargs, str(exc)):
             raise
         return await client.chat.completions.create(**kwargs)
@@ -257,6 +378,16 @@ def friendly_provider_message(detail: str) -> str | None:
     if "billing" in low or "payment" in low or "credit" in low:
         return "Provider reports a billing/credit problem on the account."
     return None
+
+
+class ProviderEmptyProbeError(ProviderResponseError):
+    """One completed empty SUT call, isolated to its probe.
+
+    Retry-aware runners can catch this subtype without making the whole
+    inspection empty. It deliberately does not inherit ProviderEmptyContentError.
+    """
+
+    pass
 
 
 class ProviderEmptyContentError(ProviderResponseError):
@@ -368,7 +499,12 @@ def raise_if_choice_errored(
         f"Upstream aborted the generation (finish_reason=error, code={code}, "
         f"{len(content)} chars returned): {message}"
     )
-    if code == 429 or "rate" in str(message).lower():
+    message_lower = str(message).lower()
+    if (
+        code == 429
+        or re.search(r"rate(?:[\s_-]*limit|[\s_-]+exceeded)|\brate\b|\btoo many requests\b", message_lower)
+        or ("quota" in message_lower and "per minute" in message_lower)
+    ):
         raise ProviderRateLimitError(
             provider=provider, endpoint=endpoint, details=detail
         )
@@ -401,6 +537,10 @@ def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoRet
 class ChatProvider(ABC):
     surfaces_rate_limit_errors: bool = True
     replay_protected: bool = True
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _gate_calls(cls)
 
     @abstractmethod
     async def send_message(
@@ -715,6 +855,33 @@ class ChatProvider(ABC):
         config: ProviderConfig,
     ) -> list[Permission] | None:
         return None
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _gated(call: Callable[_P, Awaitable[_R]], chat: bool) -> Callable[_P, Awaitable[_R]]:
+    @functools.wraps(call)
+    async def gated(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        stop = RUN_STOP.get()
+        if stop is None:
+            return await call(*args, **kwargs)
+        with stop.calling(chat=chat):
+            return await call(*args, **kwargs)
+
+    return gated
+
+
+def _gate_calls(cls: type) -> None:
+    """Make every call `cls` sends to the agent or the judge check the run's stop first, and end
+    with it if the run stops while the call is out, so a stopped run sends nothing more,
+    whichever inspection or provider was about to. A chat message is a probe the judge grades
+    unless it goes out inside `run_stop.judge_free`; a hook call never is."""
+    for name, member in vars(ChatProvider).items():
+        own = cls.__dict__.get(name)
+        if name != "aclose" and inspect.iscoroutinefunction(member) and inspect.iscoroutinefunction(own):
+            setattr(cls, name, _gated(own, chat=name == "send_message"))
 
 
 async def detect_capabilities(

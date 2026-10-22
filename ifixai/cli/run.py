@@ -29,6 +29,11 @@ from ifixai.cli._branding import (
 )
 from ifixai.cli.config_file import CONFIG_FILENAME, load_config
 from ifixai.cli.inspection_seeds import inspection_seeds
+from ifixai.cli.judge_estimate import (
+    describe_judge_cap,
+    estimate_judge_grades,
+    judge_call_cap,
+)
 from ifixai.cli.orchestrator import (
     _build_judge_config,
     _eval_mode_declaration,
@@ -38,12 +43,12 @@ from ifixai.cli.orchestrator import (
     _resolve_judge_label,
     _resolve_standard_eval_mode,
     execute_tests,
+    print_report_only_overviews,
 )
 from ifixai.cli.pro_offer import NO_PROMO_ENV_VAR, RunDecision, offer_pro_version
 from ifixai.cli.reports import save_reports
 from ifixai.cli.schemas import InteractiveConfig
 from ifixai.core.concurrency import (
-    JUDGE_CALL_CAP,
     MAX_CONCURRENCY_LIMIT,
     ConcurrencyGovernor,
 )
@@ -61,6 +66,7 @@ from ifixai.core.types import (
     EvaluationPipelineConfig,
     ProviderConfig,
     RunMode,
+    TestGrade,
     TestResult,
     TestStatus,
 )
@@ -110,6 +116,8 @@ from ifixai.reporting.health import (
 from ifixai.reporting.scorecard import (
     DEFAULT_TEMPERATURE_WARNINGS,
     absent_score_reason,
+    run_verdict,
+    run_verdict_label,
     scoped_gate_decides,
 )
 from ifixai.scoring.category_weights import STRATEGIC_TEST_IDS
@@ -341,10 +349,7 @@ def _print_concurrency_banner(resolved: int) -> None:
             err=True,
         )
         return
-    click.echo(
-        f"Concurrency: {resolved} (effective). Global judge-call cap: {JUDGE_CALL_CAP}.",
-        err=True,
-    )
+    click.echo(f"Concurrency: {resolved} (effective).", err=True)
     if resolved > 5:
         click.echo(
             f"Note: concurrency={resolved} is above default 5. Dial down if you see 429s.",
@@ -369,6 +374,12 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
     if not 0 <= value <= 1:
         raise click.BadParameter("must be a finite number between 0 and 1", ctx=ctx, param=param)
     return value
+
+
+def _reject_profile(ctx: click.Context, param: click.Parameter, value: str | None) -> None:
+    # Old scripts still pass --profile; Click alone would suggest --provider.
+    if value is not None:
+        raise click.UsageError("--profile was removed. Use --mode standard or --mode full.", ctx=ctx)
 
 
 @click.command()
@@ -595,11 +606,11 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
 )
 @click.option(
     "--profile",
-    type=click.Choice(["quick", "full"], case_sensitive=False),
-    default="quick",
-    show_default=True,
-    help="DEPRECATED -- use --mode instead. quick -> standard, full -> full. "
-    "Accepted for one release as a migration alias.",
+    hidden=True,
+    expose_value=False,
+    is_flag=False,
+    flag_value="",  # a bare --profile also reaches the callback
+    callback=_reject_profile,
 )
 @click.option(
     "--mode",
@@ -641,7 +652,10 @@ def _validate_min_score(ctx: click.Context, param: click.Parameter, value: float
     type=int,
     default=0,
     show_default=True,
-    help="Max judge LLM calls for the entire run. 0 = unlimited.",
+    help="Judge budget for the entire run, in calls to the judge's provider (retries and "
+    "fallback models count; with --eval-mode full, each judge's call). The run may go 25% over "
+    "it, then stops and lists what it never finished as not run. 0 = a runaway guard of 10x the "
+    "estimate, at least 2000.",
 )
 @click.option(
     "--concurrency",
@@ -830,7 +844,6 @@ def run(
     judge_provider: tuple[str, ...],
     judge_api_key: tuple[str, ...],
     judge_model: tuple[str, ...],
-    profile: str,
     run_mode: str | None,
     reliability_out: str,
     resume_run_id: str | None,
@@ -878,6 +891,7 @@ def run(
         )
         sys.exit(1)
 
+    suite_from_config = False
     try:
         config_obj = load_config()
     except ValueError as exc:
@@ -904,6 +918,7 @@ def run(
         )
         if config_obj.suite and not explicit_selector:
             suite = config_obj.suite
+            suite_from_config = True
         run_mode = _cfg_value(ctx, "run_mode", run_mode, config_obj.mode)
         eval_mode = _cfg_value(ctx, "eval_mode", eval_mode, config_obj.eval_mode)
         output = _cfg_value(ctx, "output", output, config_obj.output)
@@ -1019,6 +1034,9 @@ def run(
     is_resuming_full_run = (
         resume_manifest is not None and resume_manifest.mode_filter == ["all"]
     )
+    if is_resuming_full_run and suite_from_config:
+        # The saved default suite must not narrow the full selection being resumed.
+        suite = None
     is_default_selection = not (
         full_run or is_resuming_full_run or strategic or test or categories or suite
     )
@@ -1037,30 +1055,8 @@ def run(
     resolved_concurrency = _resolve_concurrency(concurrency, no_parallel)
     _print_concurrency_banner(resolved_concurrency)
     concurrency_governor = ConcurrencyGovernor(resolved_concurrency)
-    if run_mode is not None and profile is not None and profile != "quick":
-        click.echo(
-            click.style(
-                "Error: --mode and --profile cannot be used together. "
-                "Drop --profile and use --mode standard|full.",
-                fg="red",
-            )
-        )
-        sys.exit(1)
     if run_mode is None:
-        if profile.lower() == "full":
-            click.echo(
-                click.style(
-                    "Warning: --profile is deprecated; use --mode full instead.",
-                    fg="yellow",
-                ),
-                err=True,
-            )
-            run_mode = "full"
-        elif profile.lower() == "quick":
-            run_mode = "standard"
-        else:
-            run_mode = "standard"
-    profile = "full" if run_mode == "full" else "quick"
+        run_mode = "standard"
 
     if provider is None:
         interactive = gather_interactive_config()
@@ -1249,32 +1245,34 @@ def run(
             )
             sys.exit(1)
 
+    if test:
+        selected_ids = list(dict.fromkeys(tid.upper() for tid in test))
+    elif strategic:
+        selected_ids = list(STRATEGIC_TEST_IDS)
+    else:
+        selected_ids = list(SPEC_BY_ID)
+    if eval_mode == "deterministic":
+        judges_per_grade = 0
+    elif eval_mode == "full":
+        judges_per_grade = len(judge_provider)
+    else:
+        judges_per_grade = 1
+    estimated_calls = estimate_judge_grades(selected_ids, ensemble=eval_mode == "full") * judges_per_grade
+    effective_judge_cap = judge_call_cap(estimated_calls, judge_budget)
+    judge_cap_label = describe_judge_cap(effective_judge_cap, judge_budget)
+
     if dry_run:
-        if test:
-            estimated_tests = len(test)
-        elif strategic:
-            estimated_tests = 8
-        else:
-            estimated_tests = len(SPEC_BY_ID)
-        estimated_inspections = estimated_tests * 10
-        if eval_mode == "deterministic":
-            judge_calls_per_inspection = 0
-        elif eval_mode == "full":
-            judge_calls_per_inspection = len(judge_provider)
-        else:
-            judge_calls_per_inspection = 1
-        estimated_judge_calls = estimated_inspections * judge_calls_per_inspection
         click.echo()
         click.echo(
             click.style("Dry run -- no API calls will be made", bold=True, fg="yellow")
         )
-        click.echo(f"  Profile:               {profile}")
+        click.echo(f"  Mode:                  {run_mode}")
         click.echo(f"  Provider:              {provider}")
         click.echo(f"  Fixture:               {fixture}")
-        click.echo(f"  Estimated tests:  {estimated_tests}")
-        click.echo(f"  Estimated inspections:      {estimated_inspections}")
-        click.echo(f"  Judge calls per inspection: {judge_calls_per_inspection}")
-        click.echo(f"  Estimated judge calls: {estimated_judge_calls}")
+        click.echo(f"  Estimated tests:  {len(selected_ids)}")
+        click.echo(f"  Judges per grade:      {judges_per_grade}")
+        click.echo(f"  Estimated judge calls: {estimated_calls}")
+        click.echo(f"  Judge-call cap:        {judge_cap_label}")
         if is_default_selection:
             click.echo(f"  {describe_default_selection(len(test))}")
         click.echo()
@@ -1316,7 +1314,8 @@ def run(
             sys.exit(1)
         try:
             governance_fixture = GovernanceFixture.load(governance_path)
-        except (ValueError, yaml.YAMLError) as exc:
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            # OSError: a path from ifixai.yaml skips click.Path(exists=True).
             # One line naming each bad field, e.g. "tools.0.tool_id: Field required".
             detail = (
                 "; ".join(
@@ -1577,6 +1576,8 @@ def run(
         click.echo(f"             {describe_default_selection(len(test))}")
     click.echo(f"  Mode:      {run_mode}")
     click.echo(f"  Judge:     {judge_label}")
+    if eval_mode != "deterministic":
+        click.echo(f"  Judge-call cap: {judge_cap_label}")
     click.echo(f"  Timeout:   {timeout}s")
     click.echo()
 
@@ -1590,7 +1591,9 @@ def run(
         )
         pipeline_config = EvaluationPipelineConfig(
             mode=internal_mode,
-            judge_max_calls=judge_budget if judge_budget > 0 else 0,
+            # A soft budget: the run stops at its ceiling, so no hard cap skips a grade first.
+            judge_max_calls=0,
+            judge_budget=effective_judge_cap,
             b12_seed=effective_b12_seed,
             b14_seed=effective_b14_seed,
             b28_seed=effective_b28_seed,
@@ -1616,11 +1619,7 @@ def run(
         judge_providers=judge_provider,
         judge_api_keys=judge_api_key,
         judge_models=judge_model,
-        max_calls=(
-            judge_budget
-            if judge_budget > 0
-            else (pipeline_config.judge_max_calls if pipeline_config else 50)
-        ),
+        max_calls=effective_judge_cap,
         timeout=timeout,
     )
 
@@ -1741,7 +1740,7 @@ def run(
         spec = SPEC_BY_ID.get(tid)
         test_versions[tid] = spec.version if spec is not None else "1.0.0"
 
-    manifest_mode = RunMode.FULL if profile.lower() == "full" else RunMode.STANDARD
+    manifest_mode = RunMode.FULL if run_mode == "full" else RunMode.STANDARD
     model_descriptor = ModelDescriptor(
         provider=provider or "unknown",
         model_id=model or "unknown",
@@ -1945,23 +1944,9 @@ def run(
     if result is None:
         sys.exit(1)
 
-    if result.partial:
-        click.echo()
-        click.echo(
-            click.style(
-                f"*** PARTIAL RESULTS *** run aborted: {result.abort_reason}",
-                fg="red",
-                bold=True,
-            )
-        )
-        click.echo(
-            click.style(
-                f"Writing a scorecard for the {len(result.test_results)} "
-                f"completed inspection(s). Run the rest with "
-                f"--resume {manifest.run_id}.",
-                fg="yellow",
-            )
-        )
+    # The run already said why it stopped and how to resume, in one line.
+    if result.partial and result.not_run_test_ids:
+        click.echo(f"Not run ({result.not_run_reason}): {', '.join(result.not_run_test_ids)}")
     if cached_results:
         result.resumed_run_id = manifest.run_id
         result.reused_result_count = len(cached_results)
@@ -1999,6 +1984,7 @@ def run(
     # same on every output surface.
     health = run_health(result)
     if health.invalid:
+        result.grade = TestGrade.F
         result.validation_warnings.append(
             "run_invalid: measurement failure — "
             f"errored={health.errored}/{health.n_inspections} inspections, "
@@ -2029,11 +2015,6 @@ def run(
             else ""
         )
         score_label = "Partial Score:" if coverage_suffix else "Overall Score:"
-        verdict = (
-            click.style("PASS", fg="green")
-            if result.passed
-            else click.style("FAIL", fg="red")
-        )
         # overall_score is None when every selected inspection came back
         # inconclusive/insufficient (docs/scoring.md "Insufficient evidence").
         score_text = (
@@ -2046,19 +2027,18 @@ def run(
         grade_text = "n/a" if result.overall_score is None else result.grade.value
         click.echo(f"  Grade:            {grade_text}")
         click.echo(f"  Strategic Score:  {result.strategic_score:.1%}")
+        verdict = click.style(run_verdict_label(result), fg=ui.VERDICT_COLORS[run_verdict(result)])
+        click.echo(f"  Passed:           {verdict}")
         if result.overall_score is None:
             reason = absent_score_reason(result)
-            click.echo("  Passed:           n/a")
             click.echo(f"  {reason[:1].upper()}{reason[1:]}")
-        else:
-            click.echo(f"  Passed:           {verdict}")
         if result.mandatory_minimums_not_run:
             click.echo(
                 "  "
                 + click.style(
                     "⚠ safety gate not evaluated — "
                     f"{', '.join(result.mandatory_minimums_not_run)} were not in this "
-                    "run. The grade reflects only what ran.",
+                    "run or the judge could not grade them. The grade reflects only what ran.",
                     fg="yellow",
                 )
             )
@@ -2072,6 +2052,8 @@ def run(
                 )
             )
         click.echo()
+
+    print_report_only_overviews(result)
 
     # A run that measured almost nothing must say so loudly, before the letter is
     # taken at face value.
@@ -2113,6 +2095,8 @@ def run(
             if result.self_judged
             else ""
         )
+        # Match save_reports, which creates the -o directory on demand.
+        Path(artifact_out).parent.mkdir(parents=True, exist_ok=True)
         Path(artifact_out).write_text(
             render_artifact(
                 result,
@@ -2136,9 +2120,9 @@ def run(
     telemetry.emit_completed()
 
     if result.partial:
-        # Reports and checkpoint are on disk; a partial run still exits
-        # non-zero so CI can never mistake it for a full result.
-        sys.exit(1)
+        # Reports and checkpoint are on disk; a partial run still exits non-zero so CI can
+        # never mistake it for a full result, and with the fail code when its verdict is FAIL.
+        sys.exit(2 if run_verdict(result) == "FAIL" else 1)
 
     # The RUN INVALID banner above says why: a few surviving probes can still
     # score above --min-score, and CI must not read that as a pass.

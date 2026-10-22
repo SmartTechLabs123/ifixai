@@ -1,9 +1,40 @@
 import asyncio
+from contextlib import nullcontext
 
 from ifixai.core.types import ChatMessage, ClassifierPair, ProviderConfig
+from ifixai.evaluation.errors import judge_fail_fast_enabled
+from ifixai.evaluation.run_stop import RUN_STOP, RunStopped, StopKind
 from ifixai.judge.config import JudgeConfig, JudgeProviderSpec
-from ifixai.providers.base import ChatProvider
+from ifixai.providers.base import (
+    ChatProvider,
+    ProviderAuthError,
+    ProviderError,
+    is_fatal_provider_error,
+    names_spend_limit,
+    refusal_status_code,
+)
 from ifixai.providers.resolver import resolve_provider
+
+
+def judge_refusal(exc: BaseException | None) -> RunStopped | None:
+    """The run stop for a call the judge's provider refused for its key or account (a rejected
+    key, a spent quota or budget, no credit), following the causes. Any 403 counts, except one
+    the provider sent because it flagged the request's content (`is_content_flagged`). None for
+    any other failure: a call that can still succeed later never stops the run."""
+    while exc is not None and not isinstance(exc, ProviderError):
+        exc = exc.__cause__
+    if exc is None or not is_fatal_provider_error(exc):
+        return None
+    status = refusal_status_code(exc.details)
+    where = f" ({exc.provider}, HTTP {status})" if status else f" ({exc.provider})"
+    spent = status == "403" and names_spend_limit(exc.details)
+    if (isinstance(exc, ProviderAuthError) or status in {"401", "403"}) and not spent:
+        what = f"the judge's provider refused its API key{where}"
+        fix = "Swap in another key with --judge-api-key, or top up the judge's account"
+    else:
+        what = f"the judge's account ran out of credit or quota{where}"
+        fix = "Top up the judge's account or swap in another key with --judge-api-key"
+    return RunStopped(StopKind.JUDGE_REFUSED, what, fix, "the judge's key or credit ran out")
 
 
 class _ClassifierJudgeProvider(ChatProvider):
@@ -44,13 +75,24 @@ class JudgeEvaluator:
     async def send_message(
         self, messages: list[ChatMessage], config: ProviderConfig
     ) -> str:
-        """Count provider sends, including failed and retried grading attempts.
+        """Count provider sends, including failed and retried grading attempts, each against
+        the run's judge budget too.
 
-        Internal HTTP/SDK retries belong to the adapter and are not observable
-        here. The pipeline's separate budget still counts logical evaluations.
+        The retries the provider or its SDK makes inside one send count against
+        the budget too (see `run_stop.count_request`), not in this count. A stopped
+        run sends nothing, and neither does one whose budget's ceiling is spent; a
+        refused key or account stops it at once.
         """
-        self._call_count += 1
-        return await self._provider.send_message(messages, config)
+        stop = RUN_STOP.get()
+        try:
+            with nullcontext() if stop is None else stop.calling(judge=True):
+                self._call_count += 1
+                return await self._provider.send_message(messages, config)
+        except ProviderError as exc:
+            refusal = judge_refusal(exc)
+            if stop is not None and refusal is not None and judge_fail_fast_enabled():
+                stop.stop(refusal)
+            raise
 
     def provider_pair(self) -> ClassifierPair:
         return ClassifierPair(
@@ -65,6 +107,12 @@ class JudgeEvaluator:
         into ``_provider_config``.
         """
         return self._provider_config.provider
+
+    @property
+    def panel_identity(self) -> str:
+        """`provider:model` as configured: how a panel vote names this judge."""
+        model = self._provider_config.model or "<provider default>"
+        return f"{self._provider_config.provider}:{model}"
 
     def note_fallback_grade(self, model: str) -> None:
         """Record that `model` graded a probe in place of the configured judge.

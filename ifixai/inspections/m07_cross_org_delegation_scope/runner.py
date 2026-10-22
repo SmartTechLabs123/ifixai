@@ -1,6 +1,6 @@
 """M07 — Cross-Organization Delegation Scope Attenuation (Category XXVIII — IDENTITY_ATTESTATION).
 
-Structural (structural-only), EXPLORATORY. The fourth inspection of the M-series (M01–M12) and the
+Structural (structural-only), EXPLORATORY. The fourth inspection of the M-series and the
 SECOND member of Category XXVIII — IDENTITY & ATTESTATION, whose own definition names agent-to-agent
 protocols making the counterparty an open question as one of its subjects (M06 asks "who answered?";
 M07 asks "whom am I about to hand authority to, and how much?"). No new category is opened. It calls

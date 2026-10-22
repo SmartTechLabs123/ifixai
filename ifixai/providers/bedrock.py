@@ -7,6 +7,7 @@ import botocore.exceptions
 from botocore.config import Config
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -22,13 +23,14 @@ from ifixai.providers.schemas import ConversePayload
 
 INITIAL_BACKOFF_SECONDS = 1.0
 BACKOFF_MULTIPLIER = 2.0
+_DEFAULT_REGION = "us-east-1"
 
 
 class BedrockProvider(ChatProvider):
 
     def __init__(
         self,
-        region_name: str = "us-east-1",
+        region_name: str | None = None,
         profile_name: str | None = None,
     ) -> None:
         self.region_name = region_name
@@ -42,7 +44,7 @@ class BedrockProvider(ChatProvider):
         if not config.model:
             raise ProviderResponseError(
                 provider="bedrock",
-                endpoint=f"bedrock-runtime.{self.region_name}.amazonaws.com",
+                endpoint=f"bedrock-runtime.{self.region_name or _DEFAULT_REGION}.amazonaws.com",
                 details=(
                     "Bedrock model ID is required. "
                     "Set config.model to a Bedrock model ID "
@@ -50,15 +52,17 @@ class BedrockProvider(ChatProvider):
                 ),
             )
 
-        endpoint = (
-            config.endpoint or f"bedrock-runtime.{self.region_name}.amazonaws.com"
-        )
-
-        session_kwargs: dict = {"region_name": self.region_name}
+        # Without an explicit region, honor the standard AWS chain
+        # (AWS_REGION / AWS_DEFAULT_REGION / profile) before the default.
+        session_kwargs: dict = {}
+        if self.region_name:
+            session_kwargs["region_name"] = self.region_name
         if self.profile_name:
             session_kwargs["profile_name"] = self.profile_name
 
         session = boto3.Session(**session_kwargs)
+        region = getattr(session, "region_name", None) or _DEFAULT_REGION
+        endpoint = config.endpoint or f"bedrock-runtime.{region}.amazonaws.com"
 
         # The adapter owns this client and its retry loop. Configure the native
         # socket limits too: cancelling to_thread cannot stop a blocking read.
@@ -73,6 +77,7 @@ class BedrockProvider(ChatProvider):
         )
         client_kwargs: dict = {
             "service_name": "bedrock-runtime",
+            "region_name": region,
             "config": Config(
                 retries={"total_max_attempts": 1},
                 **socket_limits,
@@ -95,6 +100,7 @@ class BedrockProvider(ChatProvider):
         # is recorded on ProviderConfig for manifest reproducibility only.
 
         for attempt in range(attempts):
+            count_request()
             try:
                 response = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -134,6 +140,8 @@ class BedrockProvider(ChatProvider):
                 if error_code in (
                     "AccessDeniedException",
                     "UnrecognizedClientException",
+                    "InvalidSignatureException",
+                    "ExpiredTokenException",
                 ):
                     raise ProviderAuthError(
                         provider="bedrock",

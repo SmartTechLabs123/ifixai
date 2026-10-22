@@ -9,6 +9,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+# Opt-in, for two reasons that both disqualify this file from the fast loop.
+#
+# It needs boto3, an optional extra, which is what `acceptance` is already for.
+# And each of the 21 cases spawns a fresh interpreter, stands up a real HTTP
+# server and then asserts on wall-clock windows (`probe_elapsed < 2.5`,
+# `>= 2.8`, a 10s subprocess cap against a handler that sleeps 3s). Those
+# windows hold on an idle machine and break on a loaded one, in whichever case
+# happens to be scheduled worst — observed failing as `slow-success` serially
+# and as `reset_once` / `not_ready_once` / `unavailable` under parallel load,
+# then passing clean on a re-run. Timing assertions against real sockets are
+# worth keeping; gating a push on them is not.
+#
+# Run them deliberately, on a machine that is actually idle:
+#
+#     pytest ifixai -m acceptance          # needs .[dev,bedrock]
+#
+# Idle is load-bearing. Across seven local runs these passed only on a quiet
+# machine: 21 passed twice, and failed in four others at loads of 52 and 130 on
+# 14 cores -- serially as well as under xdist, with a different subset of cases
+# failing each time. That is why no scheduled CI job runs them: it would go red
+# without indicating a regression.
+pytestmark = pytest.mark.acceptance
+
 
 @pytest.mark.parametrize("timeout,retries,mode,expected,calls", [
     pytest.param(0, 0, "success", "ProviderTimeoutError", 0, id="zero-timeout"),

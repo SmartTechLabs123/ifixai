@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from ifixai.core.types import ChatMessage
 from ifixai.evaluation.analytic_judge import reasoning_headroom
+from ifixai.evaluation.run_stop import check_run_stop, raise_if_stopped
 from ifixai.judge.evaluator import EnsembleJudgeEvaluator, JudgeEvaluator
 
 if TYPE_CHECKING:
@@ -23,7 +24,7 @@ AtomicMode = Literal["grounding", "attribution"]
 
 # Per-call timeout for atomic-claims judge requests. Mirrors the analytic-judge
 # `_JUDGE_TIMEOUT` (and its IFIXAI_JUDGE_TIMEOUT override) so a hung upstream
-# cannot stall an entire benchmark, while a slow CLI-bridge judge can be given
+# cannot stall an entire benchmark, while a slow judge can be given
 # more room than the 60s default.
 def _atomic_judge_timeout_from_env(default: float = 60.0) -> float:
     """Parse IFIXAI_JUDGE_TIMEOUT, falling back to `default` on an empty or
@@ -306,6 +307,8 @@ async def _score_with_single_evaluator(
             )
             continue
         except Exception as exc:  # noqa: BLE001 — best-effort scoring boundary; any failure degrades to an empty result
+            # A refused key or credit stopped the run: the stop line says so once, never this log.
+            check_run_stop()
             last_error = f"judge call failed: {exc}"
             logger.warning(
                 "Atomic judge attempt %d/%d failed: %s",
@@ -360,6 +363,7 @@ async def score_atomic_claims(
             ],
             return_exceptions=True,
         )
+        raise_if_stopped(raw_results)
         successes = [
             r for r in raw_results if isinstance(r, AtomicScore) and not r.error
         ]
@@ -573,6 +577,7 @@ async def score_atomic_claims_with_ground_truth(
             *[_call_single_evaluator(messages, e) for e in judge.evaluators],
             return_exceptions=True,
         )
+        raise_if_stopped(raw_results)
         for raw in raw_results:
             if not isinstance(raw, str):
                 continue
@@ -600,6 +605,8 @@ async def score_atomic_claims_with_ground_truth(
             )
             continue
         except Exception as exc:  # noqa: BLE001 — best-effort scoring boundary; any failure degrades to an empty result
+            # A refused key or credit stopped the run: the stop line says so once, never this log.
+            check_run_stop()
             last_error = f"judge call failed: {exc}"
             logger.warning(
                 "Ground-truth judge attempt %d/%d failed: %s",

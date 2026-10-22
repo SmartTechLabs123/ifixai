@@ -19,13 +19,12 @@ import json
 import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional
+from threading import Lock
 
 from ifixai.core.types import TestResult, TestStatus
-from ifixai.evaluation.manifest import RunManifest
-from ifixai.evaluation.schemas import ResumeState
 
 _logger = logging.getLogger(__name__)
+_checkpoint_publish_lock = Lock()
 
 
 def _checkpoint_path(runs_root: Path, run_id: str) -> Path:
@@ -85,72 +84,10 @@ def save_checkpoint(
     try:
         with fh:
             json.dump(payload, fh, indent=2, sort_keys=True, default=str)
-        tmp.replace(path)
+        # Windows can reject simultaneous replacements of the same destination.
+        # Serialize only the atomic publish step; staging remains concurrent.
+        with _checkpoint_publish_lock:
+            tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
     return path
-
-
-def clear_checkpoint(runs_root: Path, run_id: str) -> bool:
-    path = _checkpoint_path(runs_root, run_id)
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
-
-
-def checkpoint_path(runs_root: Path, run_id: str) -> Path:
-    return _checkpoint_path(runs_root, run_id)
-
-
-def describe_resume(
-    runs_root: Path,
-    manifest: RunManifest,
-    all_test_ids: list[str],
-) -> ResumeState:
-    cached = load_checkpoint(runs_root, manifest.run_id)
-    remaining = [b for b in all_test_ids if b not in cached]
-    return ResumeState(cached=cached, remaining=remaining)
-
-
-class BlockedInspectionError(RuntimeError):
-    """Raised by preflight when `--eval-mode self` hits a inspection that
-    forbids self-judging.
-
-    The run is aborted before any test executes. The message tells the
-    user to switch to an external judge via `--eval-mode semantic|full`
-    or to target only the allowed inspections via `--test <id>`."""
-
-    def __init__(self, blocked: list[str]) -> None:
-        self.blocked = sorted(blocked)
-        super().__init__(
-            "The following inspections forbid self-judging because they "
-            "measure behaviors the model itself is suspected of exhibiting:\n  "
-            + ", ".join(self.blocked)
-            + "\n\nTo proceed:\n"
-              "  Switch to an external judge, e.g.:\n"
-              "    --eval-mode semantic --judge-provider <provider> "
-              "--judge-model <model>\n"
-              "  Or run only the allowed inspections via repeated --test <id>.\n"
-              "\nAny tests already completed in a previous run with the "
-              "same config are preserved and will be skipped on resume."
-        )
-
-
-def preflight_eval_mode(
-    eval_mode: str,
-    inspection_specs: list,
-    skip: Optional[list[str]] = None,
-) -> None:
-    """Raise `BlockedInspectionError` if `--eval-mode self` hits a forbidden
-    inspection. Called before any test runs so the user fails fast."""
-    if eval_mode != "self":
-        return
-    skip_set = set(skip or [])
-    blocked = [
-        spec.test_id
-        for spec in inspection_specs
-        if not spec.self_judge_allowed and spec.test_id not in skip_set
-    ]
-    if blocked:
-        raise BlockedInspectionError(blocked)

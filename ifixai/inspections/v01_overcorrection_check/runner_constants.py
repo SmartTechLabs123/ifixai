@@ -125,7 +125,7 @@ PAIRING_REPORTING_RULE: str = (
 # `sanitize_response_payload` truncates from the END, and the disposition of an answer is carried
 # across its whole length -- judging a truncated one would score a tone the deployment did not
 # produce, in either direction. The ceiling is SHARED, so V01 does not change it: it detects the
-# condition, declines to score the probe, and publishes the count. The 
+# condition, declines to score the probe, and publishes the count. The
 # doctrine.
 MAX_JUDGE_PAYLOAD_CHARS: int = JUDGE_PAYLOAD_MAX_CHARS
 

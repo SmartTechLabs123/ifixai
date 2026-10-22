@@ -28,18 +28,23 @@ from ifixai.reporting.grading import (
 from ifixai.reporting.grading import (
     GRADE_CLASS as _GRADE_CLASS,
 )
+from ifixai.reporting.judge_votes import describe_votes
+from ifixai.reporting.rates import per_class_line
 from ifixai.reporting.regulatory import build_regulatory_summary
 from ifixai.reporting.scorecard import (
     _dominant_evaluation_path,
     _format_method_mix,
-    _format_run_verdict,
+    absent_score_reason,
     format_evaluation_date,
+    run_verdict,
 )
 
 
-def _stability_note(overall: float | None, margin: float = 0.02) -> str:
+def _stability_note(
+    overall: float | None, absent_reason: str, margin: float = 0.02
+) -> str:
     if overall is None:
-        return "No overall score (insufficient evidence)."
+        return absent_reason[:1].upper() + absent_reason[1:]
     distance = min(abs(overall - b) for b in _GRADE_BOUNDARIES)
     if distance <= margin:
         return (
@@ -72,7 +77,7 @@ def _evidence_payload(ev) -> dict[str, Any]:
                 "mandatory": ds.is_mandatory,
             }
         )
-    return {
+    payload: dict[str, Any] = {
         "description": _scrub(ev.description or ""),
         "prompt": _scrub(ev.prompt_sent or ""),
         "expected": _scrub(ev.expected or ev.expected_behavior or ""),
@@ -87,6 +92,11 @@ def _evidence_payload(ev) -> dict[str, Any]:
         "reasoning": _scrub(reasoning),
         "dimensions": dims,
     }
+    # Only an item a judge panel graded carries votes; every other item's payload stays as it was.
+    judges = describe_votes(ev.details)
+    if judges:
+        payload["judges"] = _scrub(judges)
+    return payload
 
 
 def _check_payload(br) -> dict[str, Any]:
@@ -94,7 +104,7 @@ def _check_payload(br) -> dict[str, Any]:
     ci = None
     if br.confidence_interval and not unscored:
         ci = [round(br.confidence_interval.lower, 2), round(br.confidence_interval.upper, 2)]
-    return {
+    payload: dict[str, Any] = {
         "test_id": br.test_id,
         "name": br.name,
         "category": br.category.value,
@@ -109,6 +119,21 @@ def _check_payload(br) -> dict[str, Any]:
         "error": br.error_message or br.error or "",
         "evidence": [_evidence_payload(ev) for ev in br.evidence],
     }
+    if br.findings_only:
+        # Its evidence and status, never a percentage, threshold or interval; its findings and
+        # per-class rates head its card.
+        payload.update(
+            findings_only=True,
+            score=None,
+            score_pct="n/a" if unscored else "report only",
+            threshold_pct=None,
+            ci=None,
+            findings=[_scrub(line) for line in br.findings],
+        )
+        per_class = (br.score_breakdown or {}).get("per_class_pass_rate")
+        if per_class:
+            payload["per_class"] = per_class_line(per_class)
+    return payload
 
 
 def _diff_payload(result: TestRunResult, previous: dict[str, Any]) -> dict[str, Any]:
@@ -163,8 +188,12 @@ def _diff_payload(result: TestRunResult, previous: dict[str, Any]) -> dict[str, 
             changes.append({
                 "test_id": tid, "kind": kind,
                 "prev_status": prev_status, "new_status": new_status,
-                "prev_pct": prev.get("score_pct", "n/a"),
-                "new_pct": "n/a" if new_score is None else f"{new_score * 100:.1f}%",
+                "prev_pct": "report only" if cur.findings_only else prev.get("score_pct", "n/a"),
+                "new_pct": (
+                    "report only" if cur.findings_only
+                    else "n/a" if new_score is None
+                    else f"{new_score * 100:.1f}%"
+                ),
             })
     return {
         "overall_delta": overall_delta,
@@ -211,7 +240,8 @@ def _build_payload(
     failed = [
         f"{br.test_id} ({br.score * 100:.1f}% < {br.threshold:.0%})"
         for br in sorted(result.test_results, key=lambda b: b.test_id)
-        if br.status == TestStatus.FAIL
+        # A findings-only inspection has no score to fall below; its findings head its card.
+        if br.status == TestStatus.FAIL and not br.findings_only
     ]
 
     payload: dict[str, Any] = {
@@ -235,12 +265,16 @@ def _build_payload(
                 if overall is not None
                 else "inconclusive"
             ),
-            "overall_pct": "n/a (insufficient evidence)" if overall is None else f"{overall * 100:.1f}%",
-            "score_before_cap": None if result.overall_score_before_cap is None
-            else f"{result.overall_score_before_cap * 100:.1f}%",
-            "verdict": _format_run_verdict(result),
+            "overall_pct": "n/a" if overall is None else f"{overall * 100:.1f}%",
+            # Only when the cap lowered the score, as the JSON's cap_applied.
+            "score_before_cap": f"{result.overall_score_before_cap * 100:.1f}%"
+            if overall is not None
+            and result.overall_score_before_cap is not None
+            and result.overall_score_before_cap > overall
+            else None,
+            "verdict": run_verdict(result),
             "strategic_pct": f"{result.strategic_score * 100:.1f}%",
-            "stability": _stability_note(overall),
+            "stability": _stability_note(overall, absent_score_reason(result)),
             "mm_passed": result.mandatory_minimums_passed,
             "mm_label": minimum_label,
             "mm_status": {
@@ -416,6 +450,7 @@ function evidence(ev){
     ${fld('Expected',ev.expected)}
     ${fld('Actual',ev.actual)}
     ${ev.reasoning?fld('Why',ev.reasoning):''}
+    ${ev.judges?fld('Judges',ev.judges):''}
     ${ev.evaluation_result?`<div class="kvp dim">Result: ${esc(ev.evaluation_result)}</div>`:''}
     ${dims?`<table><thead><tr><th>Dimension</th><th>Conf.</th><th>Reasoning</th></tr></thead><tbody>${dims}</tbody></table>`:''}
   </div>`;
@@ -423,15 +458,18 @@ function evidence(ev){
 
 function checkNode(c){
   const ci = c.ci?` [${c.ci[0]}, ${c.ci[1]}]`:'';
-  const score = c.score==null?'n/a':c.score_pct;
+  const score = c.findings_only?c.score_pct:(c.score==null?'n/a':c.score_pct);
+  const thr = c.threshold_pct==null?'':` / thr ${c.threshold_pct}`;
   const d = el(`<details class="check" data-id="${esc(c.test_id)}" data-status="${esc(c.status)}">
     <summary><span class="tid">${esc(c.test_id)}</span><span class="cname">${esc(c.name)} <span class="dim">· ${esc(c.category)}</span></span>
-      <span class="scorecol">${esc(score)}${esc(ci)} / thr ${esc(c.threshold_pct)}</span>
+      <span class="scorecol">${esc(score)}${esc(ci)}${esc(thr)}</span>
       <span class="tag ${esc(c.status)}">${esc(c.status)}</span></summary>
     <div class="body"></div></details>`);
   const body = d.querySelector('.body');
   let html = `<div class="sub">Path: ${esc(c.path)} · Method: ${esc(c.method)} · ${c.evidence_count} evidence item(s)</div>`;
   if(c.error) html += `<div class="banner bad">Error: ${esc(c.error)}</div>`;
+  if(c.findings) html += `<div class="banner ${c.status==='fail'?'bad':''}"><b>Findings</b>${c.findings.map(f=>`<div>${esc(f)}</div>`).join('')}</div>`;
+  if(c.per_class) html += `<div class="kvp"><b>Pass rate by class</b>${esc(c.per_class)}</div>`;
   if(c.evidence.length) html += c.evidence.map(evidence).join('');
   else html += `<div class="empty">No evidence captured for this inspection.</div>`;
   body.innerHTML = html;

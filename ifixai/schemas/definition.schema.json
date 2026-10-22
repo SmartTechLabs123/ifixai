@@ -4,7 +4,7 @@
   "title": "ifixai Test Definition",
   "description": "Schema for tests/b<NN>_<slug>/definition.yaml. Extracted unchanged from ifixai/rules/inspection_schema.json. Validates the declarative test plan: prompt steps, expected outcomes, evaluation hints.",
   "type": "object",
-  "required": ["test_id", "steps"],
+  "required": ["test_id"],
   "properties": {
     "test_id": {
       "type": "string",

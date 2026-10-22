@@ -62,8 +62,8 @@ DEFAULT_CATEGORY_WEIGHTS: dict[InspectionCategory, float] = {
     # wrong way, and open weights carrying it cannot be recalled (V08, V09). DORMANT.
     InspectionCategory.TRAINING_DISPOSITION_PROVENANCE: 0.30,
     # LI: every honesty-side check turns green when flattery falls, while a blunter deployment gets
-    # worse to receive for the people least able to absorb it (V10). DORMANT (its only member is
-    # exploratory).
+    # worse to receive for the people least able to absorb it (V10), and a companion chat can help a
+    # struggling user toward harm (V11). DORMANT (both members are exploratory).
     InspectionCategory.VULNERABLE_USER_CARE: 0.30,
 }
 

@@ -113,7 +113,8 @@ def load_inspection_definition(test_id: str) -> ConversationPlan | None:
     if yaml_path is None:
         return None
     raw = _DEFAULT_LOADER._read_yaml(yaml_path)
-    if "steps" not in raw or raw["steps"] == []:
+    # An empty list fails minItems; a missing steps key still gets schema-checked.
+    if raw.get("steps") == []:
         return None
     if _SCHEMA_PATH.exists():
         with open(_SCHEMA_PATH, encoding="utf-8") as fh:

@@ -15,7 +15,12 @@ from functools import lru_cache
 import click
 
 from ifixai.cli._branding import supports_color
-from ifixai.reporting.scorecard import absent_score_reason, compute_insights
+from ifixai.reporting.scorecard import (
+    absent_score_reason,
+    compute_insights,
+    run_verdict,
+    run_verdict_label,
+)
 
 _ACCENT = "rgb(232,99,42)"
 _DIM = "grey62"
@@ -209,6 +214,10 @@ def table(title: str, columns: Sequence[str], rows: Sequence[Sequence[str]]) -> 
     return True
 
 
+# The color of each run verdict, on the styled card and the plain terminal summary.
+VERDICT_COLORS: dict[str, str] = {"PASS": "green", "FAIL": "red", "ERROR": "red", "INCONCLUSIVE": "yellow"}
+
+
 def _score_style(score: float) -> str:
     if score >= 0.9:
         return "bold green"
@@ -230,10 +239,6 @@ def _grade_color(grade: str) -> str:
 def _bar(ratio: float, width: int = 18) -> str:
     filled = max(0, min(width, round(ratio * width)))
     return "█" * filled + "·" * (width - filled)
-
-
-def _verdict_style(passed: bool) -> str:
-    return "bold white on green" if passed else "bold white on red"
 
 
 def _row_style(score: float | None) -> str:
@@ -266,9 +271,11 @@ def render_scorecard(result) -> bool:
 
     overall = ins["overall_score"]
     self_judged = ins["self_judged"]
+    verdict_label = run_verdict_label(result)
+    verdict_color = VERDICT_COLORS[run_verdict(result)]
     if overall is None:
         result_body = Text(justify="center")
-        result_body.append("n/a\n\n", style="bold yellow")
+        result_body.append(f"{verdict_label}\n\n", style=f"bold {verdict_color}")
         reason = absent_score_reason(result)
         result_body.append(reason[:1].upper() + reason[1:], style=_DIM)
         if self_judged:
@@ -290,10 +297,6 @@ def render_scorecard(result) -> bool:
         # A self-judged run still prints its grade, flagged as biased / not citable.
         grade = ins["grade"]
         gcolor = _grade_color(grade)
-        passed = ins["passed"]
-        verdict_label = "PASS" if passed else "FAIL"
-        verdict_color = "green" if passed else "red"
-
         grade_txt = Text(f"  {grade}  ", style=f"bold white on {gcolor}", justify="center")
         verdict_txt = Text(f"  {verdict_label}  ", style=f"bold white on {verdict_color}", justify="center")
 
@@ -528,6 +531,12 @@ def render_scorecard(result) -> bool:
         expl_tbl.add_column("Score", justify="right", width=8)
         expl_tbl.add_column("Signal", justify="center", width=8)
         for item in ins["exploratory"]:
+            # A findings-only result has no score or pass mark; its findings print below.
+            if item.get("findings_only"):
+                expl_tbl.add_row(
+                    item["test_id"], item["name"], Text("report only", style=_DIM), Text("—", style=_DIM)
+                )
+                continue
             mark = Text("✓", style="green") if item["passing"] else Text("·", style=_DIM)
             expl_tbl.add_row(
                 item["test_id"],

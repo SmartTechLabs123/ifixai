@@ -12,7 +12,7 @@
     },
     "version": {
       "type": "string",
-      "description": "Optional version tag for the corpus. Used by version_enforcement to detect drift."
+      "description": "Optional version tag for the corpus."
     },
     "payloads": {
       "type": "array",

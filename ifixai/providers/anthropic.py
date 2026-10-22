@@ -4,6 +4,7 @@ import logging
 import anthropic
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -100,6 +101,7 @@ class AnthropicProvider(ChatProvider):
         backoff = INITIAL_BACKOFF_SECONDS
 
         for attempt in range(attempts):
+            count_request()
             try:
                 kwargs: dict = {
                     "model": model,

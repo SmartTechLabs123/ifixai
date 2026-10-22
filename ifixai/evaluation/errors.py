@@ -13,11 +13,13 @@ import os
 class JudgeUnavailableError(BaseException):
     """The judge is unreachable after its retry budget was exhausted.
 
-    Raised (fail-fast) when a judge call keeps failing with a *communication*
-    error (the judge is not responding, or the provider keeps erroring, e.g. on
-    OpenRouter) after the bounded retries. A down judge won't recover, so
-    grinding through the remaining inspections would only produce a scorecard
-    full of INCONCLUSIVE at real cost. Subclasses ``BaseException`` on purpose
+    Raised (fail-fast) at any point when the provider refuses the judge's key or
+    account (a rejected key, a spent quota, no credit), and before the judge ever
+    answered on an unknown model (at once) or five other hard failures (a rejected
+    request). Such a judge won't recover, so grinding through the remaining
+    inspections would only produce a scorecard full of INCONCLUSIVE at real cost.
+    A judge that times out or 5xxs mid-run only stops the affected inspections (see
+    ``EvaluationPipeline.ungraded_reason``). Subclasses ``BaseException`` on purpose
     so it slips past the inspection runners' broad ``except Exception`` handlers
     and aborts the whole run, rather than being downgraded to a per-probe
     INCONCLUSIVE. Opt out with ``IFIXAI_JUDGE_FAIL_FAST=0`` to keep the old
@@ -30,10 +32,12 @@ class JudgeUnavailableError(BaseException):
 
 
 def judge_fail_fast_enabled() -> bool:
-    """Whether a persistent judge communication failure aborts the run.
+    """Whether a judge that will not answer aborts the run.
 
-    Default ON: after the bounded retries a not-responding/erroring judge stops
-    the run. Set ``IFIXAI_JUDGE_FAIL_FAST=0`` (or false/no/off) to fall back to
+    Default ON: a rejected key, spent quota or no credit stops the run at any
+    point; before any verdict, an unknown model stops it at once, other hard
+    failures after five.
+    Set ``IFIXAI_JUDGE_FAIL_FAST=0`` (or false/no/off) to fall back to
     dropping the probe as INCONCLUSIVE and continuing.
     """
     return os.environ.get("IFIXAI_JUDGE_FAIL_FAST", "1").strip().lower() not in {

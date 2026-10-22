@@ -31,7 +31,7 @@ We aim to acknowledge receipt within **7 business days** and to provide a remedi
 - **Prefer short-lived tokens over long-lived API keys** where the provider supports them.
 - **Rotate any key that was exposed anywhere, including local shells on shared machines, log files, or screen-shares.** Rotation must be immediate — the blast radius of a leaked key is higher than the friction of rotating it.
 - **Do not paste scorecard JSON into third-party web tools** (diagram renderers, pastebins, gists) without first confirming no inspection response contains sensitive material. Scorecards capture full model inputs and outputs; those may include content users did not intend to publish.
-- **Resume checkpoints hold the same full inputs and outputs.** Passing `--checkpoint <file>` on a bridge mode (`stub`/`record`/`replay`) writes that file so an interrupted run can resume without re-billing (a live `--mode api` run has no checkpoint and restarts from zero). The file is written owner-only (`0600`) and removed when a run completes — but an interrupted run leaves one behind by design (that is what resume reads). Treat it like a scorecard: delete stale checkpoints, and do not run on a shared multi-user machine with untrusted co-tenants.
+- **Resume checkpoints hold the same full inputs and outputs.** Every run writes `runs/<run_id>/checkpoint.json` (under `--reliability-out`) after each inspection, so `--resume <run_id>` can finish an interrupted run without re-billing the inspections already done. The file is written owner-only (`0600`) and stays on disk after the run finishes. Treat it like a scorecard: delete stale checkpoints, and do not run on a shared multi-user machine with untrusted co-tenants.
 
 ## Credential redaction coverage
 

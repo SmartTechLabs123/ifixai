@@ -603,7 +603,7 @@ retry. Set in the environment before launching:
 **There is no `--yes` flag, and `ifixai run` bills the moment it runs without
 `--dry-run`. The dry run is mandatory: never skip it, and never start a billable
 run on the user's behalf.** Run the exact command you intend to run, with
-`--dry-run` appended: it prints an estimate (profile, provider, fixture,
+`--dry-run` appended: it prints an estimate (mode, provider, fixture,
 inspection count, judge-call count) and **exits without making any API call**:
 
 ```bash
@@ -657,9 +657,9 @@ cheap call. A bad model id, key, or endpoint surfaces here, so fix the
 id/key/endpoint and re-run rather than spending on probes that grade empty replies
 into a meaningless F.
 
-While it runs: one progress line streams per finished inspection. **A live run has
-no checkpoint, an interruption starts over and re-bills from zero**, so don't
-interrupt a large run.
+While it runs: one progress line streams per finished inspection. An interrupted run
+resumes with `--resume <run_id>` (the run ID printed at start, same flags as the
+original run): finished inspections are kept, only the rest run and bill.
 
 **Containment differs by SUT, say which applies.**
 - **Bare stand-in (`--provider <model>`):** the model is called through its provider

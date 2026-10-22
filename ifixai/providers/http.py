@@ -8,11 +8,13 @@ from typing import Any
 import aiohttp
 
 from ifixai.core.types import ChatMessage, ProviderConfig, RetrievedSource
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
     ProviderAuthError,
     ProviderConnectionError,
+    ProviderEmptyContentError,
     ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
@@ -134,6 +136,7 @@ class HttpProvider(ChatProvider):
 
         last_error: Exception | None = None
         for attempt in range(config.max_retries + 1):
+            count_request()
             try:
                 return await self._send_request(url, payload, headers, timeout, config)
             except ProviderRateLimitError as exc:
@@ -256,6 +259,22 @@ class HttpProvider(ChatProvider):
                     finish_reason,
                     content if isinstance(content, str) else "",
                 )
+        if (
+            isinstance(message, dict)
+            and isinstance(content, str)
+            and not content
+            and not message.get("tool_calls")
+            and not message.get("function_call")
+            and str(first.get("finish_reason", "")).lower() not in {"tool_calls", "function_call"}
+            and data.get("error") is None
+            and first.get("error") is None
+            and str(first.get("finish_reason", "")).lower() != "error"
+        ):
+            raise ProviderEmptyContentError(
+                provider="http",
+                endpoint=endpoint,
+                details=f"Empty content in response (finish_reason={first.get('finish_reason', 'unknown')})",
+            )
         if not isinstance(content, str) or not content:
             raise ProviderResponseError(
                 provider="http",

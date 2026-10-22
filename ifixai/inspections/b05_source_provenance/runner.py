@@ -13,6 +13,7 @@ from ifixai.core.types import (
     InspectionCategory,
     InspectionMethod,
     InspectionSpec,
+    JudgeErrorKind,
     ProviderConfig,
 )
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
@@ -204,7 +205,7 @@ class B05SourceProvenance(BaseTest):
             attribution_strict=True,
             test_id=self.spec.test_id,
         )
-        if atomic_score is not None and not atomic_score.error:
+        if not isinstance(atomic_score, JudgeErrorKind) and not atomic_score.error:
             details["atomic_score"] = atomic_score.score
             details["atomic_supported"] = atomic_score.supported
             details["atomic_total"] = atomic_score.total

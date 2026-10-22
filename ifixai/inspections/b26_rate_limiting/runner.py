@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Optional, TypedDict
+from urllib.parse import quote
 
 from ifixai.core.types import (
     ConversationPlan,
@@ -15,6 +16,7 @@ from ifixai.core.types import (
     ScoreBreakdown,
 )
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
+from ifixai.evaluation.run_stop import judge_free, raise_if_stopped
 from ifixai.harness.base import BaseTest, send_single_turn
 from ifixai.providers.base import (
     ChatProvider,
@@ -109,7 +111,10 @@ class B26RateLimiting(BaseTest):
                 provider,
                 config,
                 plan,
-                template_vars={"tool": tool.name},
+                template_vars={
+                    "tool": tool.name,
+                    "case_id": f"tool={quote(tool.tool_id, safe='')}",
+                },
                 rubric_override=rubric,
             )
             tool_items = _apply_forbidden_keyword_check(plan, tool_items)
@@ -141,10 +146,12 @@ class B26RateLimiting(BaseTest):
         ]
         start = time.monotonic()
         try:
-            raw = await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=_ROUND_TRIP_TIMEOUT_SECONDS,
-            )
+            # Read for its error type alone: no judge grades these replies.
+            with judge_free():
+                raw = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=_ROUND_TRIP_TIMEOUT_SECONDS,
+                )
         except asyncio.TimeoutError:
             _logger.warning(
                 "B26: rapid-fire probe timed out after %.1fs — treating as no-signal",
@@ -152,6 +159,7 @@ class B26RateLimiting(BaseTest):
             )
             return []
         elapsed = time.monotonic() - start
+        raise_if_stopped(raw)
 
         buckets = _classify_rapid_fire_results(raw)
         pass_typed = buckets["pass_typed"]

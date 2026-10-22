@@ -4,24 +4,8 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Optional, TypedDict, TypeVar
-
-from ifixai.evaluation.analytic_judge import load_analytic_rubric
-from ifixai.evaluation.errors import JudgePipelineRequiredError
-from ifixai.providers.base import (
-    ChatProvider,
-    ProviderEmptyContentError,
-    ProviderError,
-    ProviderRateLimitError,
-)
-from ifixai.reporting.health import measured_count, scored_evidence
-from ifixai.rules.loader import load_inspection_definition
-from ifixai.scoring.engine import compute_test_ci
-from ifixai.shared.evidence import flag_diagnostics
-from ifixai.utils.template_renderer import render
-
-if TYPE_CHECKING:
-    from ifixai.evaluation.pipeline import EvaluationPipeline
+from dataclasses import dataclass
+from typing import Any, TypedDict, TypeVar, cast
 
 from ifixai.core.types import (
     AnalyticRubric,
@@ -39,18 +23,72 @@ from ifixai.core.types import (
     ScoreBreakdown,
     TestResult,
     TestStatus,
+    UngradedReason,
 )
+from ifixai.evaluation.analytic_judge import load_analytic_rubric
+from ifixai.evaluation.errors import JudgePipelineRequiredError
+from ifixai.evaluation.pipeline import (
+    CURRENT_INSPECTION,
+    UNGRADED_MESSAGES,
+    EvaluationPipeline,
+)
+from ifixai.providers.base import (
+    ChatProvider,
+    ProviderEmptyContentError,
+    ProviderEmptyProbeError,
+    ProviderError,
+    ProviderRateLimitError,
+)
+from ifixai.reporting.health import scored_evidence
+from ifixai.rules.loader import load_inspection_definition
+from ifixai.scoring.engine import compute_test_ci
+from ifixai.shared.evidence import flag_diagnostics
+from ifixai.utils.template_renderer import render
 
 _logger = logging.getLogger(__name__)
 
+# Why a findings-only inspection (V11) with a conversation no judge settled has no verdict: that
+# conversation could hold what it looks for. Reader-facing wording, shown as it is, with no count.
+UNSETTLED_WHY = (
+    "Some conversations could not be judged, so this inspection can't say the agent handled them safely."
+)
+
 
 def is_provider_failure(item: EvidenceItem) -> bool:
-    """A call the agent's provider never answered, or a judge rejected outright.
-    A judge that only timed out on an item is not one."""
-    return item.extraction_error in (
-        JudgeErrorKind.COMMUNICATION,
-        JudgeErrorKind.JUDGE_UNREACHABLE,
-    )
+    """A call the agent's provider never answered. A judge that failed is the judge's gap, which
+    the run reports as judge unavailable, never as the agent's outage."""
+    return item.extraction_error is JudgeErrorKind.COMMUNICATION
+
+
+@dataclass
+class _InspectionResponses:
+    """Observe only this invocation's SUT calls, including custom runner paths."""
+
+    provider: ChatProvider
+    attempts: int = 0
+    empty: int = 0
+    first_empty: ProviderEmptyContentError | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        # Preserve every capability method and provider flag. Judge transports
+        # belong to the pipeline and never pass through this SUT wrapper.
+        return getattr(self.provider, name)
+
+    async def send_message(
+        self, messages: list[ChatMessage], config: ProviderConfig,
+    ) -> str:
+        self.attempts += 1
+        try:
+            return await self.provider.send_message(messages, config)
+        except ProviderEmptyContentError as exc:
+            self.empty += 1
+            if self.first_empty is None:
+                self.first_empty = exc
+            # Keep a catchable empty-probe type for bounded retries without
+            # triggering a runner's whole-inspection empty-content boundary.
+            raise ProviderEmptyProbeError(
+                provider=exc.provider, endpoint=exc.endpoint, details=exc.details,
+            ) from exc
 
 
 def build_system_message(
@@ -117,8 +155,18 @@ class BaseTest(ABC):
 
     def compute_score_breakdown(
         self, evidence: list[EvidenceItem]
-    ) -> Optional[ScoreBreakdown]:
+    ) -> ScoreBreakdown | None:
         return None
+
+    def compute_findings(self, evidence: list[EvidenceItem]) -> list[str]:
+        """What a report-only inspection found, one line each, for the top of every report. Empty by
+        default: an inspection with a score is read from its score."""
+        return []
+
+    def compute_overview(self, evidence: list[EvidenceItem]) -> list[str]:
+        """A report-only inspection's compact read for the terminal, one line each: what ran, its
+        rates and its findings without quoting replies. Empty by default."""
+        return []
 
     def ci_evidence(self, evidence: list[EvidenceItem]) -> list[EvidenceItem]:
         """The evidence subset the published Wilson CI is computed over.
@@ -133,9 +181,13 @@ class BaseTest(ABC):
         upward. `docs/scoring.md` § Noise tells readers to compare runs by CI overlap, so
         the two must measure the same thing.
         """
+        return self.scored_evidence(evidence)
+
+    def scored_evidence(self, evidence: list[EvidenceItem]) -> list[EvidenceItem]:
+        """The items a score counts (see `counts_toward_score`)."""
         return scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
 
-    def get_variant_seed(self) -> Optional[int]:
+    def get_variant_seed(self) -> int | None:
         return None
 
     def get_variant_seed_pinned(self) -> bool:
@@ -155,10 +207,19 @@ class BaseTest(ABC):
         self._pipeline = pipeline
         self._fixture = fixture
         start = time.monotonic()
+        inspection = CURRENT_INSPECTION.set(self.spec.test_id)
+        responses = _InspectionResponses(provider)
+        evidence: list[EvidenceItem] = []
         try:
             evidence = self._flag_declared_diagnostics(
-                await self.run(provider, config, fixture)
+                await self.run(cast(ChatProvider, responses), config, fixture)
             )
+            if (
+                responses.attempts > 0
+                and responses.empty == responses.attempts
+                and responses.first_empty is not None
+            ):
+                raise responses.first_empty  # noqa: TRY301 — existing execute guard maps an all-empty inspection
             score = self.compute_score(evidence)
             duration = time.monotonic() - start
 
@@ -176,14 +237,17 @@ class BaseTest(ABC):
             # excludes them, and a floor cleared by items the score ignores means the two
             # disagree on the denominator.
             measurements = [e for e in evidence if not e.is_diagnostic]
-            scoreable_count = measured_count(
-                measurements, self.spec.count_extraction_errors_as_fail
-            )
-            # An agent that answered no prompt at all gave the inspection nothing to
-            # grade. API-level items that need no reply may still clear the floor
-            # (B13 needs one), and would otherwise report a PASS the agent never earned.
+            scoreable_count = len(self.scored_evidence(measurements))
+            graded_count = sum(1 for e in measurements if e.extraction_error is None)
+            ungraded = self._ungraded_reason()
+            # A judge gap leaves it INCONCLUSIVE only below the floor: with enough graded
+            # probes the score stands on them, whatever the judge did to the rest. An agent
+            # that answered no prompt at all gave nothing to grade, whatever API-level items
+            # cleared the floor (B13 needs one), so that is never a PASS it earned.
+            floor = self.spec.min_evidence_items
             insufficient = (
-                scoreable_count < self.spec.min_evidence_items
+                scoreable_count < floor
+                or (ungraded is not None and graded_count < floor)
                 or has_no_answered_prompt(measurements)
             )
             meets_threshold = score >= self.spec.threshold
@@ -211,10 +275,19 @@ class BaseTest(ABC):
                 evaluation_mode=eval_mode,
                 insufficient_evidence=insufficient,
                 score_breakdown=self.compute_score_breakdown(evidence),
+                findings=self.compute_findings(evidence),
+                overview=self.compute_overview(evidence),
                 variant_seed=self.get_variant_seed(),
                 variant_seed_pinned=self.get_variant_seed_pinned(),
+                error_message=UNGRADED_MESSAGES[ungraded] if insufficient and ungraded else None,
+                ungraded_reason=ungraded,
             )
         except ProviderEmptyContentError as exc:
+            empty_error = (
+                responses.first_empty
+                if responses.empty == responses.attempts and responses.first_empty is not None
+                else exc
+            )
             # Empty SUT response is unscorable, not misconfigured. The run
             # completed; the model produced no scoreable output. Map to
             # INCONCLUSIVE so it routes through the existing inconclusive
@@ -231,11 +304,13 @@ class BaseTest(ABC):
                 passed=False,
                 passing=False,
                 status=TestStatus.INCONCLUSIVE,
-                evidence=[],
+                # Empty replies are ordinary unscorable measurements. Retain
+                # their communication-failure flags for the run-health gate.
+                evidence=evidence,
                 duration_seconds=duration,
                 duration_ms=duration * 1000,
-                error=str(exc),
-                error_message=str(exc),
+                error=str(empty_error),
+                error_message=str(empty_error),
                 insufficient_evidence=True,
             )
         except Exception as exc:  # noqa: BLE001 — top-level inspection guard: any failure becomes a failed TestResult, never aborts the run
@@ -256,6 +331,15 @@ class BaseTest(ABC):
                 error=str(exc),
                 error_message=str(exc),
             )
+        finally:
+            CURRENT_INSPECTION.reset(inspection)
+
+    def _ungraded_reason(self) -> UngradedReason | None:
+        """Why the judge left some of this inspection's probes ungraded (see
+        `EvaluationPipeline.ungraded_reason`)."""
+        if not isinstance(self._pipeline, EvaluationPipeline):
+            return None
+        return self._pipeline.ungraded_reason(self.spec.test_id)
 
     def load_inspection_data(self) -> ConversationPlan | None:
         plan = load_inspection_definition(self.spec.test_id)
@@ -267,7 +351,7 @@ class BaseTest(ABC):
         return plan
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:
-        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
+        scored = self.scored_evidence(evidence)
         if not scored:
             return 0.0
         total = sum(
@@ -287,7 +371,7 @@ class BaseTest(ABC):
         a correct response below threshold. Judge extraction-errors are excluded
         (-> INCONCLUSIVE) unless the spec counts them as failures.
         """
-        scored = scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
+        scored = self.scored_evidence(evidence)
         if not scored:
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)
@@ -532,7 +616,7 @@ def build_unanswered_step_items(
     error = turn["error"]
     failure = (
         "empty reply (unscorable)"
-        if isinstance(error, ProviderEmptyContentError)
+        if isinstance(error, (ProviderEmptyContentError, ProviderEmptyProbeError))
         else "provider error (unreachable)"
     )
     items: list[EvidenceItem] = []

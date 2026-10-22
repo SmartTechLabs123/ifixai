@@ -1,5 +1,5 @@
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -53,8 +53,8 @@ class InspectionCategory(str, Enum):
     # is morally superior.
     STAKEHOLDER_CONFLICT = "STAKEHOLDER_CONFLICT"  # Stakeholder & Multi-Principal Integrity (Category XVIII)
     # Categories XIX–XXII are intentionally reserved (unallocated) — the remaining
-    # C-series slots (C01–C16 span XIV–XXI) and the remaining S-series slots
-    # (S01–S08, opened at XVIII) consume them as those inspections graduate. The
+    # C-series slots (spanning XIV–XXI) and the remaining S-series slots
+    # (opened at XVIII) consume them as those inspections graduate. The
     # X-series — Gap-closure — opens at Category XXII per the series numbering: the
     # failure CLASSES an objective separation-of-duties audit of verified real-world
     # AI failures found with no prior slot (fairness, perception-deployment
@@ -70,7 +70,7 @@ class InspectionCategory(str, Enum):
     # reserved; OVERSIGHT_ATROPHY (Category XXVI) is the automation-bias / pre-action
     # confirmation-gate member, home of X11 — a deployer / regulator assurance gate.
     OVERSIGHT_ATROPHY = "OVERSIGHT_ATROPHY"  # Human-Oversight Atrophy & Pre-Action Confirmation Gates (Category XXVI)
-    # Category XXVII — the M-series (Persistence, M01–M12) opens here because the
+    # Category XXVII: the M-series (Persistence) opens here because the
     # X-series' five failure classes consume XXII–XXVI in full. PERSISTENCE covers the
     # integrity of state that OUTLIVES the session: durable memory files, vector stores,
     # and self-scheduled work. The Mythos pathway analysis (poisoning future state,
@@ -106,7 +106,7 @@ class InspectionCategory(str, Enum):
     # roster-wide allocation: XXIX–XXXIII are held by M-series classes not carried here. Numeral
     # gaps are already the norm in this enum (XIII, XV–XVII, XIX–XXII, XXIV–XXV are unallocated).
     INFLUENCE = "INFLUENCE"  # The Relationship as a Failure Surface (Category XXXIV)
-    # Categories XLVI–LI — the V-series (V01–V10). Numerals are pinned to the roster-wide
+    # Categories XLVI–LI — the V-series (V01–V11). Numerals are pinned to the roster-wide
     # allocation, as INFLUENCE's is: XXXV–XLV are held by classes not carried here.
     #
     # XLVI: the first class whose finding attaches to an answer that is CORRECT IN SUBSTANCE.
@@ -158,7 +158,8 @@ class InspectionCategory(str, Enum):
     # BALANCE_INTEGRITY (XLVI): V01's cases leave the substance unquestioned and score what an
     # answer ADDS, where every case here declares substance that wounds and scores whether it
     # arrived with the care and safety floor owed. Not INFLUENCE (XXXIV), which is OVER-validation
-    # of a vulnerable user; this is harm by UNDER-care. Home of V10 (care under vulnerability).
+    # of a vulnerable user; this is harm by UNDER-care. Home of V10 (care under vulnerability) and
+    # V11 (Guilt Tripping: a struggling user across a four-turn companion chat).
     VULNERABLE_USER_CARE = "VULNERABLE_USER_CARE"  # Harm by Frankness to a Vulnerable User (Category LI)
 
 
@@ -202,12 +203,23 @@ class JudgeErrorKind(str, Enum):
     EXTRACTION = "extraction"
     CONTRACT = "contract"
     BUDGET = "budget"
-    # The judge rejected the request (bad key, unknown model) with fail-fast off.
-    # Never scored; counts as a failed call, like COMMUNICATION.
+    # The judge rejected the request (bad key, unknown model, no credit). Never scored;
+    # counts as a failed call, like COMMUNICATION.
     JUDGE_UNREACHABLE = "judge_unreachable"
     # Every judge model timed out, 5xx'd or cut off on this item. Never scored,
     # never the agent's fault: a flaky judge, not a dead one.
     JUDGE_TRANSIENT = "judge_transient"
+    # The judge wasn't asked (it is down for this inspection), or a classify or claim
+    # call to it failed. COMMUNICATION is the agent's.
+    UNAVAILABLE = "judge_unavailable"
+
+
+class UngradedReason(str, Enum):
+    """Why the judge, not the agent, left an inspection's probes ungraded."""
+
+    JUDGE_UNAVAILABLE = "judge_unavailable"
+    JUDGE_UNUSABLE = "judge_unusable"
+    BUDGET = "budget"
 
 
 class EvaluationMode(str, Enum):
@@ -254,6 +266,14 @@ class ProviderConfig(BaseModel):
             "back to free text if the model rejects it; a no-op on providers with no "
             "JSON mode (anthropic, bedrock, huggingface), where the json-repair "
             "parser handles free text."
+        ),
+    )
+    json_schema: Optional[dict[str, object]] = Field(
+        default=None,
+        description=(
+            "Judge-only: the strict JSON schema a reply must match. The openai and "
+            "openrouter providers send it as response_format=json_schema in place of "
+            "json_object; every other provider ignores it."
         ),
     )
     reject_truncated: bool = Field(
@@ -1784,6 +1804,9 @@ class InspectionSpec(BaseModel):
     is_exploratory: bool = False
     is_advisory: bool = False
     is_attestation: bool = False
+    # A report-only inspection whose result is its findings: every display drops its percentage
+    # and threshold. Only valid beside an exclusion flag, since a graded score cannot be hidden.
+    findings_only: bool = False
     count_extraction_errors_as_fail: bool = False
 
     @model_validator(mode="after")
@@ -1798,6 +1821,11 @@ class InspectionSpec(BaseModel):
             raise ValueError(
                 f"{self.test_id}: {', '.join(set_flags)} are mutually "
                 "exclusive; pick one"
+            )
+        if self.findings_only and not set_flags:
+            raise ValueError(
+                f"{self.test_id}: findings_only needs is_exploratory, is_advisory or "
+                "is_attestation; a graded score cannot be withheld"
             )
         return self
 
@@ -1922,6 +1950,32 @@ class RubricVerdict(BaseModel):
     passed: bool = False
     verdict: Literal["pass", "partial", "fail"] = "fail"
     per_judge: list["RubricVerdict"] = Field(default_factory=list)
+    # The transcript turn a multi-turn rubric asks the judge to name as where a mandatory dimension
+    # first failed. None when the rubric does not ask for it or the judge did not give a valid one.
+    onset_turn: Optional[int] = None
+    # Per dimension, the turn where it first failed, for a rubric that asks for `<dimension>_onset_turn`.
+    # Only dimensions the judge named a valid turn for appear.
+    dimension_onset_turns: dict[str, int] = Field(default_factory=dict)
+    # An ensemble keeps one entry per judge asked, in judge order, including the judges that gave none.
+    judge_votes: list["JudgeVote"] = Field(default_factory=list)
+
+
+class JudgeVote(BaseModel):
+    """One ensemble judge's answer on one probe. `verdict` is None when it gave none (it errored or
+    refused), with the error class kept, so a judge is never dropped without a trace."""
+
+    model_config = {"frozen": True}
+
+    judge: str
+    provider: str
+    verdict: Optional[RubricVerdict] = None
+    error_class: Optional[str] = None
+    error: str = ""
+    # The configured judge, set only when a backup it switched to graded in its place.
+    fell_back_from: Optional[str] = None
+
+
+RubricVerdict.model_rebuild()
 
 
 class ReferenceResponse(BaseModel):
@@ -1956,9 +2010,10 @@ class EvaluationPipelineConfig(BaseModel):
 
     mode: EvaluationMode = EvaluationMode.DETERMINISTIC
     judge_max_calls: int = 200
-    # SUT replies arrive over the bridge, where the Usage-Policy wall can surface
-    # as text and must be dropped; off for live APIs (a real refusal is graded).
-    sut_via_bridge: bool = False
+    # A soft judge budget, in calls to the judge's provider: the run may go 25% over it, then
+    # stops, and what it never finished is reported as not run. 0 = none, the hard
+    # `judge_max_calls` (in grades) alone.
+    judge_budget: int = 0
     ci_confidence_level: float = 0.95
     b12_seed: int = Field(default_factory=_random_seed)
     b14_seed: int = Field(default_factory=_random_seed)
@@ -2049,6 +2104,11 @@ class EvaluationPipelineConfig(BaseModel):
     v09_seed_pinned: bool = False
     v10_seed: int = Field(default_factory=_random_seed)
     v10_seed_pinned: bool = False
+    # V11 Guilt Tripping: the same posture as V10. The forty cases are enumerated in sorted order and
+    # never reach the cap, so the seeded subsample branch is unreached today; the seed is logged and
+    # published through get_variant_seed on every run either way.
+    v11_seed: int = Field(default_factory=_random_seed)
+    v11_seed_pinned: bool = False
     # V08 takes no seed: users are capped before the cross-product and its specification corpus
     # is frozen, so nothing is sampled.
     # P08, M03, M06 and M07 take no seed: each enumerates its scored set exhaustively in
@@ -2070,6 +2130,9 @@ class PipelineResult(BaseModel):
     rubric_verdict: Optional[RubricVerdict] = None
     judge_verdict: Optional[JudgeVerdict] = None
     extraction_error: Optional[JudgeErrorKind] = None
+    # An ensemble where no judge answered: who was asked and why each gave nothing. A verdict carries
+    # its own votes on `rubric_verdict`, so this is set only on that error path.
+    judge_votes: list[JudgeVote] = Field(default_factory=list)
 
 
 class EvidenceItem(BaseModel):
@@ -2110,6 +2173,9 @@ class ScoreBreakdown(TypedDict, total=False):
     trajectories_total: int
     weighted_mean: float
     per_category_pass_rate: dict[str, float]
+    # Pass rate per authored class of probe, for an inspection whose catalogue is balanced by class;
+    # None for a class with no scored probe, which a report shows as "not scored".
+    per_class_pass_rate: dict[str, Optional[float]]
     mandatory_veto_count: int
     rubric_pass_count: int
     rubric_total: int
@@ -2138,12 +2204,29 @@ class TestResult(BaseModel):
     inspection_method: InspectionMethod = InspectionMethod.TEXT
     confidence_interval: Optional[ConfidenceInterval] = None
     evaluation_mode: Optional[EvaluationMode] = None
-    judge_calls_used: int = 0
     score_breakdown: Optional[ScoreBreakdown] = None
     variant_seed: Optional[int] = None
     variant_seed_pinned: bool = False
     insufficient_evidence: bool = False
+    # Why the judge left some probes ungraded. It decides the verdict only when the result is
+    # short of evidence: then the gap is the run's, never the agent's.
+    ungraded_reason: Optional[UngradedReason] = None
     status: TestStatus = TestStatus.FAIL
+    # What a report-only inspection found, one line each, shown above its evidence on every report.
+    findings: list[str] = Field(default_factory=list)
+    # Its compact read for the terminal: what ran, its rates, its findings without quoted replies.
+    overview: list[str] = Field(default_factory=list)
+
+    @property
+    def findings_only(self) -> bool:
+        """A report-only result whose displays show its findings and no percentage or threshold."""
+        return bool(self.spec and self.spec.findings_only)
+
+
+def ungraded_reason_of(result: TestResult) -> UngradedReason | None:
+    """Why the judge left `result` short of evidence, or None when it isn't short or the judge
+    didn't."""
+    return result.ungraded_reason if result.insufficient_evidence else None
 
 
 class GovernanceGap(BaseModel):
@@ -2178,8 +2261,8 @@ class TestRunResult(BaseModel):
     system_version: str = "1.0"
     provider: str = ""
     fixture_name: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    evaluation_date: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    evaluation_date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     specification_version: str = "3.0"
 
     overall_score: Optional[float] = 0.0
@@ -2219,6 +2302,8 @@ class TestRunResult(BaseModel):
     partial: bool = False
     abort_reason: Optional[str] = None
     not_run_test_ids: list[str] = Field(default_factory=list)
+    # Why `not_run_test_ids` never finished, for their label: "budget", "aborted", ...
+    not_run_reason: str = "aborted"
     # Set when --resume merged checkpointed results from an earlier session,
     # so every report surface can disclose the mixed provenance.
     resumed_run_id: Optional[str] = None

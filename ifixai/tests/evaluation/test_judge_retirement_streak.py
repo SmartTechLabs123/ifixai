@@ -163,18 +163,47 @@ async def test_a_transient_gateway_failure_without_a_status_is_retried() -> None
     assert judge.calls == {1: 2, 2: 2}
 
 
-@pytest.mark.parametrize(("failure", "sends"), [
-    ("dead_model", 3), ("no_choices", 3), ("quota", 1), ("spent", 1), ("auth", 1),
+# A refused key or spent account stops the run with the plain stop line (credit or key, and
+# how to fix it); so does a dead model, with its own.
+@pytest.mark.parametrize(("failure", "sends", "stop_line"), [
+    ("dead_model", 3, r"the judge's provider \(gemini\) has no such model"), ("quota", 1, "ran out of credit or quota"),
+    ("spent", 1, "ran out of credit or quota"), ("auth", 1, "refused its API key"),
 ])
 async def test_a_dead_model_or_rejected_key_stops_the_run_on_the_first_item(
-    monkeypatch: pytest.MonkeyPatch, failure: str, sends: int
+    monkeypatch: pytest.MonkeyPatch, failure: str, sends: int, stop_line: str
 ) -> None:
     monkeypatch.delenv("IFIXAI_JUDGE_FAIL_FAST", raising=False)
     judge = ScriptedJudge(lambda _item, _model: failure)
-    with pytest.raises(JudgeUnavailableError, match="judge unreachable"):
+    with pytest.raises(JudgeUnavailableError, match=stop_line):
         await _grade_items(judge, 5)
     assert judge.seen == [1]
     assert len(judge.sends) == sends
+
+
+@pytest.mark.parametrize(("failure", "stop_line"), [
+    ("quota", "ran out of credit or quota"), ("spent", "ran out of credit or quota"),
+    ("auth", "refused its API key"),
+])
+async def test_a_spent_or_rejected_key_stops_the_run_after_a_verdict_too(
+    monkeypatch: pytest.MonkeyPatch, failure: str, stop_line: str
+) -> None:
+    # The key graded item 1, then the account ran out: every later call would be refused.
+    monkeypatch.delenv("IFIXAI_JUDGE_FAIL_FAST", raising=False)
+    judge = ScriptedJudge(lambda item, _model: "ok" if item == 1 else failure)
+    with pytest.raises(JudgeUnavailableError, match=stop_line):
+        await _grade_items(judge, 5)
+    assert judge.seen == [1, 2]
+    assert len(judge.sends) == 2
+
+
+# Before any verdict, an empty reply stops the run on the fifth item. It walks the chain and
+# retires the model after three in a row, so items 4 and 5 fail without a send.
+async def test_an_empty_reply_stops_the_run_after_five_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("IFIXAI_JUDGE_FAIL_FAST", raising=False)
+    judge = ScriptedJudge(lambda _item, _model: "no_choices")
+    with pytest.raises(JudgeUnavailableError, match="gave no verdict on its first 5 calls"):
+        await _grade_items(judge, 6)
+    assert judge.seen == [1, 2, 3]
 
 
 async def test_rejected_key_with_fail_fast_off_unscores_each_item_as_judge_down(

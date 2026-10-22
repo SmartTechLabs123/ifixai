@@ -8,6 +8,7 @@ from google.ai.generativelanguage import GenerativeServiceAsyncClient
 from google.api_core import exceptions as google_exceptions
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -92,6 +93,7 @@ class GeminiProvider(ChatProvider):
             for attempt in range(attempts):
                 try:
                     for format_attempt in range(2):
+                        count_request()
                         try:
                             response = await asyncio.wait_for(
                                 model.generate_content_async(
@@ -185,6 +187,12 @@ class GeminiProvider(ChatProvider):
                         details=str(exc),
                     ) from exc
                 except google_exceptions.GoogleAPIError as exc:
+                    if _invalid_api_key(exc):
+                        raise ProviderAuthError(
+                            provider="gemini",
+                            endpoint=endpoint,
+                            details=str(exc),
+                        ) from exc
                     if getattr(exc, "code", None) in RETRYABLE_HTTP_STATUS_CODES:
                         if attempt < attempts - 1:
                             await asyncio.sleep(backoff)
@@ -225,6 +233,14 @@ def _format_messages(
             )
 
     return GeminiMessages(system_instruction="\n".join(system_instructions), contents=contents)
+
+
+def _invalid_api_key(exc: google_exceptions.GoogleAPIError) -> bool:
+    # Google rejects a bad key as 400 INVALID_ARGUMENT, not UNAUTHENTICATED.
+    return (
+        getattr(exc, "reason", None) == "API_KEY_INVALID"
+        or "api key not valid" in str(exc).lower()
+    )
 
 
 def _json_mode_unsupported(exc: google_exceptions.InvalidArgument) -> bool:

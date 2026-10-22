@@ -5,6 +5,7 @@ from typing import Any, Final, Literal, TypedDict
 import aiohttp
 
 from ifixai.core.types import ChatMessage, ProviderConfig
+from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
@@ -36,7 +37,7 @@ class ModelMetadata(TypedDict):
 
 
 class PricingTier(TypedDict):
-    max_input_tokens: int | None
+    input_range: str
     pricing_usd_per_million_tokens: PricingMetadata
 
 
@@ -60,34 +61,34 @@ REGIONAL_ENDPOINTS: Final[dict[str, RegionalEndpoint]] = {
 }
 
 MODEL_METADATA: Final[dict[str, ModelMetadata]] = {
-    "MiniMax-M3": {
+    "MiniMax-M3.1-Flash": {
         "context_window": 1000000,
         "pricing_usd_per_million_tokens": {
-            "input": 0.6,
-            "output": 2.4,
-            "cache_read": 0.12,
+            "input": 0.15,
+            "output": 0.6,
+            "cache_read": 0.015,
             "cache_write": None,
         },
         "input_modalities": ["text", "image", "video"],
-        "thinking": ["adaptive", "disabled"],
+        "thinking": ["adaptive"],
     },
-    "MiniMax-M2.7": {
-        "context_window": 204800,
+    "MiniMax-M3": {
+        "context_window": 1000000,
         "pricing_usd_per_million_tokens": {
             "input": 0.3,
             "output": 1.2,
             "cache_read": 0.06,
-            "cache_write": 0.375,
+            "cache_write": None,
         },
-        "input_modalities": ["text"],
-        "thinking": ["always_on"],
+        "input_modalities": ["text", "image", "video"],
+        "thinking": ["adaptive", "disabled"],
     },
 }
 
 MODEL_PRICING_TIERS: Final[dict[str, list[PricingTier]]] = {
     "MiniMax-M3": [
         {
-            "max_input_tokens": 512000,
+            "input_range": "up to 512k input",
             "pricing_usd_per_million_tokens": {
                 "input": 0.3,
                 "output": 1.2,
@@ -96,7 +97,7 @@ MODEL_PRICING_TIERS: Final[dict[str, list[PricingTier]]] = {
             },
         },
         {
-            "max_input_tokens": None,
+            "input_range": "above 512k input",
             "pricing_usd_per_million_tokens": {
                 "input": 0.6,
                 "output": 2.4,
@@ -107,7 +108,7 @@ MODEL_PRICING_TIERS: Final[dict[str, list[PricingTier]]] = {
     ],
 }
 
-DEFAULT_MODEL = "MiniMax-M3"
+DEFAULT_MODEL = "MiniMax-M3.1-Flash"
 DEFAULT_BASE_URL = REGIONAL_ENDPOINTS["global_en"]["openai_base_url"]
 DEFAULT_MAX_TOKENS = 4096
 ANTHROPIC_VERSION = "2023-06-01"
@@ -272,6 +273,7 @@ class MiniMaxProvider(ChatProvider):
         last_error: Exception | None = None
 
         for attempt in range(config.max_retries + 1):
+            count_request()
             try:
                 return await self._send_request(request, timeout, config.reject_truncated)
             except (

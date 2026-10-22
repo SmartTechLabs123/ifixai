@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from typing import Final
 
@@ -11,7 +12,16 @@ from ifixai.core.types import (
 )
 from ifixai.judge.config import JudgeConfig
 from ifixai.mappings.loader import load_all_mappings
-from ifixai.reporting.health import gating_results, measured_count, run_health
+from ifixai.providers.secrets import scrub_secrets
+from ifixai.reporting.health import (
+    UNGRADED,
+    counts_toward_score,
+    gating_results,
+    measured_count,
+    run_health,
+)
+from ifixai.reporting.judge_votes import describe_votes
+from ifixai.reporting.rates import per_class_line
 from ifixai.reporting.regulatory import (
     build_regulatory_json_section,
     build_regulatory_summary,
@@ -71,7 +81,16 @@ def scoped_gate_decides(result: TestRunResult) -> bool:
 
 def absent_score_reason(result: TestRunResult) -> str:
     """Why a run has no headline score; every terminal and report surface shares it."""
-    unselected = ", ".join(sorted(result.mandatory_minimums_not_run))
+    if result.partial:
+        return "the run stopped early, so there is no headline score."
+    ran = {r.test_id for r in result.test_results}
+    not_run = sorted(result.mandatory_minimums_not_run)
+    unselected = ", ".join(t for t in not_run if t not in ran)
+    # A minimum that ran but an outage left ungraded withholds the score too, never as a fail.
+    ungraded = ", ".join(t for t in not_run if t in ran)
+    if ungraded:
+        also = f" and {unselected} not selected" if unselected else ""
+        return f"safety gate {ungraded} not evaluated{also}, so there is no headline score."
     gating = gating_results(result)
     if unselected and gating:
         kind = "strategic" if result.run_mode == "strategic" else "scoped"
@@ -109,8 +128,11 @@ def compute_insights(result: TestRunResult) -> dict[str, object]:
     total_categories = len(result.category_scores)
     scored_categories = len(scored)
 
+    # A findings-only result has no score, so it carries neither a score nor a pass mark.
     exploratory = [
-        {
+        {"test_id": br.test_id, "name": br.name, "findings_only": True}
+        if br.findings_only
+        else {
             "test_id": br.test_id,
             "name": br.name,
             "score": br.score,
@@ -138,7 +160,7 @@ def compute_insights(result: TestRunResult) -> dict[str, object]:
         "exploratory": exploratory,
         "overall_score": result.overall_score,
         "strategic_score": result.strategic_score,
-        "grade": result.grade.value,
+        "grade": "n/a" if result.overall_score is None else result.grade.value,
         "strategic_overall_delta": delta,
         "passed": result.passed,
     }
@@ -456,6 +478,7 @@ def generate_json_report(result: TestRunResult) -> str:
         "partial": result.partial,
         "abort_reason": result.abort_reason,
         "not_run_test_ids": list(result.not_run_test_ids),
+        "not_run_reason": result.not_run_reason if result.not_run_test_ids else None,
         "resumed_run_id": result.resumed_run_id,
         "reused_result_count": result.reused_result_count,
         "overall": build_overall_section(result),
@@ -480,7 +503,7 @@ def render_partial_banner(result: TestRunResult) -> str:
     if not result.partial:
         return ""
     return (
-        "> ⚠️ **PARTIAL RUN** — this run aborted before completion "
+        "> ⚠️ **PARTIAL RUN** — this run stopped early "
         f"({result.abort_reason or 'unknown reason'}). Scores cover only the "
         f"{len(result.test_results)} inspection(s) that finished and are not "
         "comparable to a full run. Resume the rest with `--resume <run id>`."
@@ -517,7 +540,7 @@ def render_not_run_section(result: TestRunResult) -> str:
     n = len(result.not_run_test_ids)
     lines = [
         f"## Not run ({n} inspection{'s' if n != 1 else ''})\n",
-        "The run aborted before these executed; they carry no score. "
+        "The run stopped before these finished; they carry no score. "
         "Resume with `--resume <run id>` to complete them.\n",
         "| ID | Inspection | Status |",
         "|---|---|---|",
@@ -525,7 +548,7 @@ def render_not_run_section(result: TestRunResult) -> str:
     for tid in result.not_run_test_ids:
         spec = SPEC_BY_ID.get(tid)
         name = getattr(spec, "name", tid) if spec is not None else tid
-        lines.append(f"| {tid} | {name} | not run (aborted) |")
+        lines.append(f"| {tid} | {name} | not run ({result.not_run_reason}) |")
     return "\n".join(lines)
 
 
@@ -541,6 +564,7 @@ def generate_markdown_report(result: TestRunResult) -> str:
 
     sections = [
         render_header(result),
+        render_findings_section(result),
         render_partial_banner(result),
         render_resumed_banner(result),
         render_summary(result),
@@ -574,6 +598,11 @@ def _render_top_failures(result: TestRunResult, limit: int = 8) -> str:
     lines = ["## Top failures", ""]
     for br in failed[:limit]:
         name = br.name or br.test_id
+        if br.findings_only:
+            lines.append(
+                f"- **{br.test_id}** {name} — findings, report only ({br.category.value})"
+            )
+            continue
         lines.append(
             f"- **{br.test_id}** {name} — {br.score:.0%} "
             f"(threshold {br.threshold:.0%}, {br.category.value})"
@@ -588,6 +617,7 @@ def generate_summary_report(result: TestRunResult) -> str:
     """Short scannable report: headline, insights, categories, top failures."""
     sections = [
         render_header(result),
+        render_findings_section(result),
         render_partial_banner(result),
         render_resumed_banner(result),
         render_default_temperature_banner(result),
@@ -633,11 +663,12 @@ def build_overall_section(result: TestRunResult) -> dict[str, object]:
     section: dict[str, object] = {
         "score": None if overall is None else round(overall, 4),
         "score_pct": "n/a" if overall is None else f"{overall:.1%}",
-        "grade": result.grade.value,
+        # No overall score means no grade (as in the Markdown and console views).
+        "grade": "n/a" if overall is None else result.grade.value,
         "strategic_score": round(result.strategic_score, 4),
         "strategic_score_pct": f"{result.strategic_score:.1%}",
         "passed": result.passed,
-        "verdict": _format_run_verdict(result).lower(),
+        "verdict": run_verdict(result).lower(),
         "mandatory_minimums_passed": result.mandatory_minimums_passed,
         "mandatory_minimums_inconclusive": list(result.mandatory_minimums_inconclusive),
     }
@@ -686,6 +717,17 @@ def build_mandatory_minimums_section(
     }
 
 
+def scrubbed(value: object) -> object:
+    """Every string inside a JSON-shaped value with secrets scrubbed, its shape unchanged."""
+    if isinstance(value, str):
+        return scrub_secrets(value)
+    if isinstance(value, dict):
+        return {key: scrubbed(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrubbed(item) for item in value]
+    return value
+
+
 def build_test_results_section(
     result: TestRunResult,
     frameworks: dict[str, RegulatoryFramework] | None = None,
@@ -723,14 +765,20 @@ def build_test_results_section(
                     for ds in ev.dimension_scores
                 ]
             if ev.rubric_verdict:
-                ev_dict["rubric_verdict"] = {
+                rubric_dict: dict[str, object] = {
                     "weighted_score": ev.rubric_verdict.weighted_score,
                     "weighted_score_pre_veto": ev.rubric_verdict.weighted_score_pre_veto,
                     "mandatory_veto": ev.rubric_verdict.mandatory_veto,
                     "passed": ev.rubric_verdict.passed,
                     "verdict": ev.rubric_verdict.verdict,
                 }
-            evidence_list.append(ev_dict)
+                # A findings-only inspection publishes its verdicts, never a score, per chat or overall.
+                if br.findings_only:
+                    del rubric_dict["weighted_score"], rubric_dict["weighted_score_pre_veto"]
+                ev_dict["rubric_verdict"] = rubric_dict
+            # A findings-only inspection's items carry whole transcripts, so its agent replies are
+            # scrubbed as they are on the HTML card.
+            evidence_list.append(scrubbed(ev_dict) if br.findings_only else ev_dict)
 
         is_inconclusive = br.status == TestStatus.INCONCLUSIVE
         is_error = br.status == TestStatus.ERROR
@@ -750,10 +798,17 @@ def build_test_results_section(
             "error": br.error,
             "regulatory_mappings": get_test_regulatory_mappings(br.test_id, frameworks),
         }
+        if br.findings_only:
+            for key in ("score", "score_pct", "threshold", "passing"):
+                del br_dict[key]
+            br_dict["findings_only"] = True
+        if br.findings:
+            br_dict["findings"] = [scrub_secrets(line) for line in br.findings]
         if br.error_message:
             br_dict["error_message"] = br.error_message
         br_dict["evaluation_path"] = _dominant_evaluation_path(br)
-        if br.confidence_interval:
+        # An interval around a score is a score; a findings-only result withholds it, as the HTML does.
+        if br.confidence_interval and not br.findings_only:
             br_dict["ci_lower"] = round(br.confidence_interval.lower, 4)
             br_dict["ci_upper"] = round(br.confidence_interval.upper, 4)
             br_dict["confidence_interval"] = {
@@ -770,8 +825,6 @@ def build_test_results_section(
             br_dict["variant_seed_pinned"] = br.variant_seed_pinned
         if br.evaluation_mode:
             br_dict["evaluation_mode"] = br.evaluation_mode.value
-        if br.judge_calls_used:
-            br_dict["judge_calls_used"] = br.judge_calls_used
         items.append(br_dict)
     return items
 
@@ -807,29 +860,43 @@ def _format_run_minimums_status(result: TestRunResult) -> str:
     statuses = result.mandatory_minimum_status.values()
     if any(s == TestStatus.FAIL for s in statuses):
         return "FAIL"
+    if result.partial and result.mandatory_minimums_not_run:
+        return "NOT CHECKED (the run stopped early)"
     if any(s == TestStatus.INCONCLUSIVE for s in statuses):
         return "INCONCLUSIVE"
     return "PASS"
 
 
-def _format_run_verdict(result: TestRunResult) -> str:
-    # ERROR outranks every other verdict: a misconfigured run cannot be
-    # interpreted as PASS, FAIL, or INCONCLUSIVE — operators must re-run
-    # with the configuration fixed before any verdict is trusted.
-    if any(br.status == TestStatus.ERROR for br in result.test_results):
-        return "ERROR"
-    if result.passed:
-        return "PASS"
+def run_verdict(result: TestRunResult) -> str:
+    """The run's verdict, the one the terminal, the styled card and every report show.
+
+    A mandatory minimum that ran and failed fails the run, whatever else errored or never ran: no
+    rerun undoes that finding (an ERROR inspection is still listed with the errors). Otherwise an
+    ERROR outranks the rest, since a misconfigured run can't be read as PASS, FAIL or INCONCLUSIVE,
+    and a run that stopped early never passes or fails as a whole.
+    """
     if result.mandatory_minimum_violations:
         return "FAIL"
+    if any(br.status == TestStatus.ERROR for br in result.test_results):
+        return "ERROR"
+    if result.partial:
+        return "INCONCLUSIVE"
+    if result.passed:
+        return "PASS"
     if result.overall_score is None or result.mandatory_minimums_inconclusive:
         return "INCONCLUSIVE"
     return "FAIL"
 
 
+def run_verdict_label(result: TestRunResult) -> str:
+    """The verdict as every surface words it, saying so when the run stopped early."""
+    verdict = run_verdict(result)
+    return f"{verdict} (the run stopped early)" if result.partial else verdict
+
+
 def render_summary(result: TestRunResult) -> str:
     minimums_status = _format_run_minimums_status(result)
-    verdict = _format_run_verdict(result)
+    verdict = run_verdict_label(result)
     overall_display = (
         f"n/a: {absent_score_reason(result)}"
         if result.overall_score is None
@@ -880,7 +947,11 @@ def render_mandatory_minimums(result: TestRunResult) -> str:
         # the status map. Only the second is a finding about the agent, so say
         # which one this is rather than let a reader assume the gate was tried.
         if test_id in not_run:
-            status = "NOT RUN (not selected for this run)"
+            ran = any(r.test_id == test_id for r in result.test_results)
+            if test_id in result.not_run_test_ids:
+                status = "NOT RUN (the run stopped before it)"
+            else:
+                status = "NOT RUN (the judge could not grade it)" if ran else "NOT RUN (not selected for this run)"
         lines.append(f"| {test_id} | {status} |")
 
     if not_run:
@@ -913,7 +984,9 @@ _STATUS_LABELS: Final[dict[TestStatus, str]] = {
 
 
 def _format_test_status(br: TestResult) -> str:
-    if br.error:
+    # An empty SUT reply is INCONCLUSIVE with ``error`` set (see BaseTest.run);
+    # keep the label consistent with the JSON and HTML exports.
+    if br.error and br.status != TestStatus.INCONCLUSIVE:
         return _STATUS_LABELS[TestStatus.ERROR]
     return _STATUS_LABELS.get(br.status, _STATUS_LABELS[TestStatus.FAIL])
 
@@ -987,9 +1060,9 @@ def render_test_table(result: TestRunResult) -> str:
                         )
                     rv = ev.rubric_verdict
                     veto_note = " | Mandatory veto: YES" if rv.mandatory_veto else ""
-                    lines.append(
-                        f"- Weighted score: {rv.weighted_score:.2f} | Verdict: {rv.verdict}{veto_note}\n"
-                    )
+                    # A findings-only inspection keeps its verdicts but publishes no score.
+                    weighted = "" if br.findings_only else f"Weighted score: {rv.weighted_score:.2f} | "
+                    lines.append(f"- {weighted}Verdict: {rv.verdict}{veto_note}\n")
 
     results_with_extras = [
         br
@@ -1020,16 +1093,14 @@ def render_test_table(result: TestRunResult) -> str:
                         for name, rate in sorted(per_dim.items())
                     )
                     lines.append(f"   Per-dimension pass rate: {parts}")
+                per_class = bd.get("per_class_pass_rate")
+                if per_class:
+                    lines.append(f"   Pass rate by class: {per_class_line(per_class)}")
             if br.variant_seed is not None:
                 pinned_label = "pinned" if br.variant_seed_pinned else "random"
                 lines.append(
                     f"**{br.test_id}** seed: {br.variant_seed} ({pinned_label})"
                 )
-
-    total_judge_calls = sum(br.judge_calls_used for br in result.test_results)
-    if total_judge_calls > 0:
-        lines.append("")
-        lines.append(f"**Judge calls used**: {total_judge_calls}")
 
     has_ci = any(
         br.confidence_interval is not None
@@ -1073,7 +1144,7 @@ def render_advisory_section(result: TestRunResult) -> str:
     for br in sorted(advisory, key=lambda b: b.test_id):
         method_mix = _format_method_mix(br)
         lines.append(
-            f"| {br.test_id} | {br.name} | {br.score:.1%} "
+            f"| {br.test_id} | {br.name} | {raw_score_cell(br)} "
             f"| {len(br.evidence)} | {method_mix} |"
         )
     return "\n".join(lines)
@@ -1100,9 +1171,72 @@ def render_exploratory_section(result: TestRunResult) -> str:
     ]
     for br in sorted(exploratory, key=lambda b: b.test_id):
         lines.append(
-            f"| {br.test_id} | {br.name} | {br.score:.1%} | {len(br.evidence)} |"
+            f"| {br.test_id} | {br.name} | {raw_score_cell(br)} | {len(br.evidence)} |"
         )
     return "\n".join(lines)
+
+
+# What markdown reads as markup mid-line, and what starts a list or heading at a line's start.
+MARKDOWN_INLINE_RE = re.compile(r"([\\`*_\[\]<>#|~])")
+MARKDOWN_LEADING_RE = re.compile(r"^([-+=])|^(\d+)([.)])")
+
+
+def markdown_line(text: str) -> str:
+    """Plain text, which may quote an agent's reply, as one literal markdown line: whitespace runs
+    collapsed so it cannot open a heading or block, and markup characters backslash-escaped."""
+    escaped = MARKDOWN_INLINE_RE.sub(r"\\\1", " ".join(text.split()))
+    return MARKDOWN_LEADING_RE.sub(
+        lambda m: f"\\{m.group(1)}" if m.group(1) else f"{m.group(2)}\\{m.group(3)}", escaped
+    )
+
+
+def longest_backtick_run(text: str) -> int:
+    return max((len(run) for run in re.findall(r"`+", text)), default=0)
+
+
+def code_span(text: str) -> str:
+    """`text` as one inline code span whose fence is longer than any backtick run inside it, padded
+    when the text starts or ends with a backtick, so the text cannot close the span early."""
+    fence = "`" * (longest_backtick_run(text) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def actual_markdown(text: str) -> str:
+    """An appendix item's Actual. One line stays an inline code span; text with line breaks, such as a
+    transcript, becomes a fenced block indented under the item, so a reply's blank lines, headings or
+    list markers stay inside it instead of ending the list."""
+    if "\n" not in text:
+        return code_span(text)
+    fence = "`" * max(3, longest_backtick_run(text) + 1)
+    body = "\n".join(f"    {line}" if line.strip() else "" for line in text.split("\n"))
+    return f"\n    {fence}\n{body}\n    {fence}"
+
+
+def findings_block(br: TestResult) -> list[str]:
+    """A report-only inspection's findings, for the top of its section: empty when it has none."""
+    if not br.findings:
+        return []
+    return ["**Findings:**\n", *(f"- {markdown_line(scrub_secrets(line))}" for line in br.findings), ""]
+
+
+def render_findings_section(result: TestRunResult) -> str:
+    """What each report-only inspection found, at the head of the report and the summary: it has no
+    score to stand for it."""
+    with_findings = [br for br in result.test_results if br.findings]
+    if not with_findings:
+        return ""
+    lines = ["## Findings (report only)", ""]
+    for br in with_findings:
+        lines.append(f"**{br.test_id}** {markdown_line(br.name or br.test_id)}\n")
+        lines.extend(f"- {markdown_line(scrub_secrets(line))}" for line in br.findings)
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def raw_score_cell(br: TestResult) -> str:
+    """A report-only table's score cell: the raw score, or "report only" for a findings-only result."""
+    return "report only" if br.findings_only else f"{br.score:.1%}"
 
 
 def render_attestation_section(result: TestRunResult) -> str:
@@ -1183,6 +1317,10 @@ def render_evidence_appendix(result: TestRunResult) -> str:
             br.status, _STATUS_LABELS[TestStatus.FAIL]
         ).replace("**", "")
         lines.append(f"### {br.test_id} — {br.name} ({status_label})\n")
+        lines.extend(findings_block(br))
+        counts_errors = br.spec is not None and br.spec.count_extraction_errors_as_fail
+        # With probes left ungraded, a coverage audit can't tell a gap in the agent from the cut.
+        cut = any(ev.extraction_error in UNGRADED for ev in br.evidence)
 
         for ev in br.evidence:
             prompt_display = (
@@ -1193,15 +1331,36 @@ def render_evidence_appendix(result: TestRunResult) -> str:
             actual_display = ev.actual_response or ev.actual
             if len(actual_display) > _ACTUAL_DISPLAY_CAP:
                 actual_display = actual_display[:_ACTUAL_DISPLAY_CAP] + "..."
-            ev_status = "PASS" if ev.passed else "FAIL"
+            actual_line = f"`{actual_display}`"
+            # Match the interactive scorecard: an ungraded item or an operator
+            # diagnostic is not a failed answer, whatever its `passed` default.
+            if ev.is_diagnostic:
+                ev_status = "DIAGNOSTIC"
+            elif not counts_toward_score(ev, counts_errors) or (
+                cut and not ev.passed and ev.test_case_id.endswith("-coverage-summary")
+            ):
+                # Items the score leaves out are not agent verdicts; an ungraded one says so. An
+                # ungraded item the score counts as a fail (`count_extraction_errors_as_fail`)
+                # shows as one.
+                if ev.extraction_error is not None:
+                    ev_status = "NOT JUDGED" if br.findings_only else "GRADING UNAVAILABLE"
+                else:
+                    ev_status = "UNSCORED"
+            else:
+                ev_status = "PASS" if ev.passed else "FAIL"
+            if br.findings_only:
+                # A transcript keeps its own lines.
+                actual_line = actual_markdown(actual_display)
+            judges = scrub_secrets(describe_votes(ev.details))
 
             lines.append(
                 f"- **{ev.test_case_id}** [{ev_status}]: "
                 f"{ev.description}\n"
                 f"  - Prompt: `{prompt_display}`\n"
                 f"  - Expected: {ev.expected or ev.expected_behavior}\n"
-                f"  - Actual: `{actual_display}`\n"
+                f"  - Actual: {actual_line}\n"
                 f"  - Evaluation: {ev.evaluation_result}"
+                + (f"\n  - Judges: {judges}" if judges else "")
             )
 
         lines.append("")

@@ -111,13 +111,49 @@ def test_dry_run_estimates_actual_evaluation_panel(tmp_path, monkeypatch, mode, 
     monkeypatch.chdir(tmp_path)
     args = [
         "run", "--provider", "mock", "--fixture", "customer_support",
-        "--test", "B01", "--mode", mode, "--eval-mode", eval_mode,
+        "--test", "B05", "--mode", mode, "--eval-mode", eval_mode,
         "--dry-run", "--no-telemetry",
     ]
     for index in range(panel_size):
         args += ["--judge-provider", "mock" if index % 2 == 0 else "http"]
     result = CliRunner().invoke(ifixai_cli, args)
     assert result.exit_code == 0, result.output
-    assert f"Judge calls per inspection: {panel_size}" in result.output
-    assert f"Estimated judge calls: {10 * panel_size}" in result.output
+    assert f"Judges per grade:      {panel_size}" in result.output
+    # B05 makes 22 judge calls per judge on the default fixture.
+    assert f"Estimated judge calls: {22 * panel_size}" in result.output
     assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("mode", ["standard", "full"])
+def test_dry_run_shows_run_mode(tmp_path, monkeypatch, mode):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(ifixai_cli, [
+        "run", "--provider", "mock", "--fixture", "customer_support",
+        "--test", "B01", "--mode", mode, "--eval-mode", "deterministic",
+        "--dry-run", "--no-telemetry",
+    ])
+    assert result.exit_code == 0, result.output
+    assert f"  Mode:                  {mode}\n" in result.output
+    assert "Profile" not in result.output
+
+
+@pytest.mark.parametrize("profile_args", [
+    ["--profile", "quick"],
+    ["--profile", "full"],
+    ["--profile=quick"],
+    ["--profile"],
+    ["--profile", "--no-promo"],
+])
+def test_removed_profile_flag_points_to_mode(tmp_path, monkeypatch, profile_args):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(ifixai_cli, [
+        "run", "--provider", "mock", "--fixture", "customer_support",
+        "--test", "B01", "--eval-mode", "deterministic", "--no-telemetry",
+        *profile_args,
+    ])
+    assert result.exit_code == 2, result.output
+    assert "Error: --profile was removed. Use --mode standard or --mode full.\n" in result.output
+    assert "Did you mean" not in result.output
+    assert not (tmp_path / "runs").exists()
+    help_text = CliRunner().invoke(ifixai_cli, ["run", "--help"]).output
+    assert "--profile" not in help_text

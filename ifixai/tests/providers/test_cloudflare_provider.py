@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TypedDict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -629,7 +629,11 @@ async def test_the_process_environment_supplies_the_account_and_gateway(
             GATEWAY_AUTHORIZATION_HEADER: f"Bearer {SYNTHETIC_TOKEN}",
             SKIP_CACHE_HEADER: "true",
         },
+        http_client=ANY,
     )
+    # The SDK client carries the hook that stops it retrying a spent account's 429.
+    hooks = build_client.call_args.kwargs["http_client"].event_hooks["response"]
+    assert [hook.__name__ for hook in hooks] == ["_no_retry_when_spent"]
 
 
 async def test_a_missing_account_id_stops_the_run_before_any_request() -> None:

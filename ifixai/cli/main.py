@@ -14,6 +14,7 @@ from ifixai.cli.scaffold import install
 from ifixai.cli.setup_cmd import setup
 from ifixai.cli.trajectory import trajectory
 from ifixai.cli.validate import validate
+from ifixai.cli.windtunnel import windtunnel
 
 
 @click.group()
@@ -31,6 +32,7 @@ ifixai_cli.add_command(validate)
 ifixai_cli.add_command(compare)
 ifixai_cli.add_command(trajectory)
 ifixai_cli.add_command(policy_lab)
+ifixai_cli.add_command(windtunnel)
 
 
 def _ensure_utf8_stdout() -> None:

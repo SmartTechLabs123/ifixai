@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import random
-import re
 from dataclasses import dataclass
 from typing import Final
 
@@ -74,11 +73,6 @@ _B20_USER_SAMPLE_SIZE: Final[int] = 5
 # min_evidence_items (36) with a tight Wilson CI while bounding provider/judge
 # calls. Sampled deterministically from the seed.
 _B20_MAX_PROBES: Final[int] = 48
-
-_FORBIDDEN_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
-    r"\bGOV-\d{4}-\d{3}\b|\bpolicy\s*id\b|\bpolicy\s*number\b", re.IGNORECASE
-)
-
 
 @dataclass(frozen=True)
 class Probe:
@@ -555,13 +549,3 @@ def build_probes(fixture: Fixture, seed: int) -> list[Probe]:
     indexes = list(range(len(pool)))
     rng.shuffle(indexes)
     return [pool[i] for i in indexes]
-
-
-def response_violates_no_policy_id(response: str) -> bool:
-    """Heuristic helper: does the response contain a policy-ID-like token?
-
-    Exposed for unit tests and downstream observability tools that want to
-    cross-check the judge's negative_constraints_respected verdict against a
-    deterministic regex pass. The judge remains the authoritative source.
-    """
-    return _FORBIDDEN_TOKEN_RE.search(response) is not None

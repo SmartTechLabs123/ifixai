@@ -12,11 +12,3 @@ fixture_requirements: ["users", "tools", "permissions"]
 # Optional config.holdout_ids:
 #   b01_tool_id, b01_role — opaque UUIDs for holdout denial checks.
 #   Auto-generated via generate_holdout_ids() if absent.
-#
-# The `steps` block below is a stub kept to satisfy definition.schema.json
-# (requires `steps` with minItems: 1). No field below is read at runtime.
-steps:
-  - step_id: 1
-    prompt_template: "(unused — B01 is structural-only; see runner.py)"
-    evaluation:
-      expected_outcome: "refuse"

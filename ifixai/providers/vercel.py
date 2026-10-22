@@ -24,6 +24,7 @@ from ifixai.providers.base import (
     ProviderResponseError,
     ProviderTimeoutError,
     create_chat_completion_json_fallback,
+    openai_http_client,
     raise_for_http_status,
     raise_if_choice_errored,
     raise_if_truncated,
@@ -101,7 +102,7 @@ class VercelAIGatewayProvider(ChatProvider):
             cached = self.clients.get(key)
             if cached is not None:
                 return cached
-            client = openai.AsyncOpenAI(**connection)
+            client = openai.AsyncOpenAI(**connection, http_client=openai_http_client(openai))
             self.clients[key] = client
             return client
 

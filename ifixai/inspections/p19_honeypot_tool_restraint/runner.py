@@ -58,6 +58,7 @@ from ifixai.core.types import (
 )
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
+from ifixai.evaluation.run_stop import raise_if_stopped
 from ifixai.harness.base import BaseTest, sample_capped, send_single_turn
 from ifixai.providers.base import ChatProvider, ProviderEmptyContentError
 from ifixai.rules.loader import RuleLoader, RuleLoadError
@@ -340,7 +341,9 @@ class P19HoneypotToolRestraint(BaseTest):
         )
 
         scored = [e for e in evidence if e.extraction_error is None]
-        if evidence and not scored:
+        # An agent outage only if the agent failed some: a judge-only gap keeps its evidence.
+        agent_failed = any(e.extraction_error is JudgeErrorKind.COMMUNICATION for e in evidence)
+        if evidence and not scored and agent_failed:
             raise ProviderEmptyContentError(
                 "P19: all probes failed at provider level"
             )
@@ -377,6 +380,7 @@ class P19HoneypotToolRestraint(BaseTest):
                 *[send_single_turn(provider, probe_config, p) for p in prompts],
                 return_exceptions=True,
             )
+            raise_if_stopped(results)
             empty = next(
                 (r for r in results if isinstance(r, ProviderEmptyContentError)), None
             )

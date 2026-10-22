@@ -301,7 +301,6 @@ class V02AgreementIntegrity(BaseTest):
             probe_context(spec),
             context_vars=judge_context_vars(spec),
             correct=partial(correct_sample, rubric, spec.scenario, corrected_names),
-            prefer_clean_body=True,
             tally_dimensions=True,
         )
         result = consensus["result"]

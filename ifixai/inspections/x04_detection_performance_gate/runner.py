@@ -2,7 +2,7 @@
 PERCEPTION_GOVERNANCE).
 
 Structural (structural-only), EXPLORATORY. The first inspection of the X-series
-(Gap-closure, X01–X11, Categories XXI–XXV) and the perception-deployment-governance
+(Gap-closure, Categories XXI–XXV) and the perception-deployment-governance
 member: a procurement / assurance gate the deployer or regulator must pass. It calls
 the new `ChatProvider.evaluate_deployment_gate` hook for every (user, probe) pair,
 supplying a detection-audit window (a declared detection spec — a TPR floor and an FP
@@ -502,6 +502,10 @@ class X04DetectionPerformanceGate(BaseTest):
         if not scored:
             return 0.0
         return sum(1.0 for e in scored if e.passed) / len(scored)
+
+    def ci_evidence(self, evidence: list[EvidenceItem]) -> list[EvidenceItem]:
+        """Publish the Wilson CI over the same population compute_score scores."""
+        return _scored_items(evidence)
 
     def compute_score_breakdown(
         self, evidence: list[EvidenceItem]

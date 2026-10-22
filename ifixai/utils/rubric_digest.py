@@ -40,24 +40,6 @@ def compute_rubric_digest(rubric_path: Path | str) -> str:
     return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
 
 
-def compute_rubric_digests_for_directory(rubrics_dir: Path | str) -> dict[str, str]:
-    directory = Path(rubrics_dir)
-    if not directory.is_dir():
-        raise MissingRubricError(
-            f"rubrics directory not found or not a directory: {directory}"
-        )
-    yaml_files = sorted(
-        path
-        for path in directory.iterdir()
-        if path.is_file() and path.suffix in _YAML_SUFFIXES
-    )
-    if not yaml_files:
-        raise MissingRubricError(
-            f"rubrics directory contains no YAML files: {directory}"
-        )
-    return {path.name: compute_rubric_digest(path) for path in yaml_files}
-
-
 def compute_rubric_digests_for_tests_layout(
     tests_dir: Path | str, *, mutation_bank_path: Path | str | None = None
 ) -> dict[str, str]:

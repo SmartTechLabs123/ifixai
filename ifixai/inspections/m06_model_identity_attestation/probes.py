@@ -3,8 +3,8 @@ that render them.
 
 Split out of `runner.py` so the FROZEN measurement data lives apart from the orchestration and scoring
 that consume it (the repo already does this per-inspection: `b25_regulatory_readiness/classifier.py`,
-`b22_decision_reproducibility/schemas.py`, `b11_system_controllability/schemas.py`,
-`b09_policy_violation/service.py`). Everything here is pure: no clock, no RNG, no I/O, no provider call
+`b22_decision_reproducibility/schemas.py`, `b11_system_controllability/schemas.py`). Everything
+here is pure: no clock, no RNG, no I/O, no provider call
 — so a claim is byte-stable across runs and machines, and a probe-table edit cannot reach the scoring
 path. Design: tasks/m06_design_spec.md sections 4 and 7.
 """

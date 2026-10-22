@@ -12,9 +12,11 @@ from ifixai.providers.base import (
     ProviderResponseError,
     ProviderTimeoutError,
     create_chat_completion_json_fallback,
+    openai_http_client,
     raise_for_http_status,
     raise_if_choice_errored,
     raise_if_truncated,
+    response_format,
 )
 from ifixai.providers.client_pool import close_cached_clients
 
@@ -53,6 +55,7 @@ class OpenAIProvider(ChatProvider):
                 base_url=config.endpoint,
                 timeout=float(config.timeout),
                 max_retries=config.max_retries,
+                http_client=openai_http_client(openai),
             )
             self._clients[key] = client
             return client
@@ -83,7 +86,7 @@ class OpenAIProvider(ChatProvider):
         if config.json_output:
             # Constrain judge calls to valid JSON (cheap models reliably emit a
             # parseable verdict); fall back to free text if unsupported.
-            params["response_format"] = {"type": "json_object"}
+            params["response_format"] = response_format(config)
         try:
             response = await create_chat_completion_json_fallback(client, **params)
 

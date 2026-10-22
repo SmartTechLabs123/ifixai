@@ -21,18 +21,24 @@ from ifixai.core.types import (
     ChatMessage,
     ClassifierPair,
     DimensionScore,
+    JudgeVote,
     ProviderConfig,
     ReferenceSet,
     RubricDimension,
     RubricVerdict,
 )
+from ifixai.evaluation.analytic_judge_schema import build_rubric_response_schema
+from ifixai.evaluation.run_stop import raise_if_stopped, run_stopped
 from ifixai.judge.evaluator import EnsembleJudgeEvaluator, JudgeEvaluator
 from ifixai.judge.fallbacks import load_fallback_policy, resolve_judge_model_chain
 from ifixai.providers.base import (
     TRANSIENT_PROVIDER_ERRORS,
+    ProviderSchemaRejectedError,
     ProviderTruncatedError,
+    is_content_flagged,
     is_fatal_provider_error,
 )
+from ifixai.providers.secrets import scrub_secrets
 
 # The harness's own asyncio.wait_for deadline, alongside the provider-reported
 # ones. On 3.10 asyncio.TimeoutError is not the builtin, so both are listed.
@@ -65,6 +71,11 @@ class JudgeTransientError(JudgeExtractionError):
     """Every judge model timed out, 5xx'd or cut off: no verdict, and nothing said about the agent."""
 
 
+class JudgeContentFlaggedError(Exception):
+    """The judge's provider flagged one request's content and would not grade it. That probe goes
+    ungraded; the judge, its key and the run carry on."""
+
+
 logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE: float = 0.5
@@ -73,10 +84,9 @@ _BACKOFF_BASE: float = 0.5
 _RETIRE_STREAK: Final[int] = 3
 
 
-# Per grading call. The 60s default suits a fast direct-API judge; a judge
-# routed through the `claude -p` CLI (plugin bridge) is much slower (CLI startup
-# + thinking + a large rubric prompt), so a plan user can raise this — e.g.
-# IFIXAI_JUDGE_TIMEOUT=300 — to stop grading calls being guillotined → ERROR.
+# Per grading call. The 60s default suits a fast direct-API judge; a slow judge
+# (thinking + a large rubric prompt) can raise it, e.g. IFIXAI_JUDGE_TIMEOUT=300,
+# to stop grading calls being cut off as ERROR.
 def _judge_timeout_from_env(default: float = 60.0) -> float:
     """Parse IFIXAI_JUDGE_TIMEOUT, falling back to `default` on an empty or
     non-numeric value instead of crashing the import with a raw ValueError."""
@@ -131,6 +141,14 @@ JUDGE_OVERHEAD_TOKEN_BUDGET: int = 200
 _DIMENSIONS_KEY_ALIASES: Final[frozenset[str]] = frozenset(
     {"dimensions", "verdicts", "results", "scores", "evaluations"}
 )
+
+# The top-level turn keys a multi-turn rubric may ask the judge for, beside `dimensions`: the first
+# turn any mandatory dimension failed, and `<dimension>_onset_turn` for one dimension.
+ONSET_KEY: Final[str] = "onset_turn"
+ONSET_KEY_SUFFIX: Final[str] = "_onset_turn"
+
+# Characters of a panel member's error kept on its "no verdict" vote.
+VOTE_ERROR_CHARS: Final[int] = 300
 
 # Truthy / falsy string verdict tokens for flat-shape recovery
 # ({"dim_a": "passed", ...}). Case-insensitive comparison at the call site.
@@ -602,7 +620,9 @@ def _recover_dimensions_from_top_level(
     reserved = {"overall_reasoning", "dimensions"}
     recovered: list[dict] = []
     for key, value in data.items():
-        if key in reserved:
+        # An onset key holds a turn number; a long dimension name can fuzzy-match it, and a turn of 1
+        # would then read as that dimension passing.
+        if key in reserved or is_onset_key(key):
             continue
         canonical = _fuzzy_match_dim(key, rubric)
         if canonical is None:
@@ -855,7 +875,46 @@ def parse_rubric_verdict(
         _dimension_score_from_judge(dim, judge_dim_map.get(dim.name.lower()))
         for dim in rubric.dimensions
     ]
-    return verdict_from_dimension_scores(rubric, dimension_scores)
+    verdict = verdict_from_dimension_scores(rubric, dimension_scores)
+    dimension_onsets = {
+        dim.name: turn
+        for dim in rubric.dimensions
+        if (turn := read_onset_turn(data, f"{dim.name}{ONSET_KEY_SUFFIX}")) is not None
+    }
+    return verdict.model_copy(
+        update={"onset_turn": read_onset_turn(data, ONSET_KEY), "dimension_onset_turns": dimension_onsets}
+    )
+
+
+def requested_turn_keys(rubric: AnalyticRubric) -> list[str]:
+    """The turn keys (`onset_turn`, `<dimension>_onset_turn`) the rubric's prompt asks the judge for,
+    so a strict schema lets the judge send them."""
+    keys = [ONSET_KEY, *(f"{dim.name}{ONSET_KEY_SUFFIX}" for dim in rubric.dimensions)]
+    return [
+        key
+        for key in keys
+        if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", rubric.judge_prompt_template)
+    ]
+
+
+def is_onset_key(key: str) -> bool:
+    """Whether a top-level verdict key is a turn a multi-turn rubric asked for, never a dimension."""
+    return key == ONSET_KEY or key.endswith(ONSET_KEY_SUFFIX)
+
+
+def read_onset_turn(data: object, key: str) -> Optional[int]:
+    """A turn a multi-turn rubric asks the judge for (`onset_turn`, or `<dimension>_onset_turn`): a
+    positive turn number, else None. Missing, null, boolean or non-numeric reads None rather than an
+    error, so a judge that leaves it out still grades; the runner that asked decides the range."""
+    if not isinstance(data, dict):
+        return None
+    value = data.get(key)
+    # ASCII digits only: str.isdigit() admits "²", which int() refuses.
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        value = int(value.strip())
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return None
 
 
 def _dimension_score_from_judge(
@@ -990,11 +1049,18 @@ class AnalyticRubricJudge:
         # Whether the last item that exhausted the chain failed hard; replayed
         # once every model is retired. Each other item decides from its own failures.
         self._last_item_hard = False
+        # Off for the rest of the run once a strict request got a 400 and its plain-JSON retry
+        # went through.
+        self._strict_schema = True
 
     _EXTRACTION_RETRIES = 3
 
     def classifier_provider(self) -> ClassifierPair:
         return self._judge.provider_pair()
+
+    def panel_identity(self) -> str:
+        """`provider:model` of the configured judge, as a panel vote names it."""
+        return self._judge.panel_identity
 
     def atomic_evaluator(self) -> JudgeEvaluator:
         return self._judge
@@ -1050,6 +1116,11 @@ class AnalyticRubricJudge:
                 ),
                 # json_output: judge-only; see ProviderConfig.json_output.
                 "json_output": True,
+                "json_schema": (
+                    build_rubric_response_schema(rubric, requested_turn_keys(rubric))
+                    if self._strict_schema
+                    else None
+                ),
                 # Judge-only too: half a verdict is not a verdict. The SUT path
                 # deliberately keeps its partial text — see
                 # ProviderConfig.reject_truncated.
@@ -1198,6 +1269,8 @@ class AnalyticRubricJudge:
         extraction_failures = 0
         transport_budget = self._transport_budget()
         last_exc: Exception | None = None
+        # True while the request in flight is the plain-JSON retry of a refused strict one.
+        plain_retry = False
         # Two independent budgets: provider faults advance the fallback chain,
         # unparseable verdicts do not. Bounding the loop by their sum stops one
         # kind of failure from eating the other's retries.
@@ -1212,11 +1285,26 @@ class AnalyticRubricJudge:
                 )
             except Exception as exc:
                 last_exc = exc
-                if is_fatal_provider_error(exc):
-                    logger.exception(
-                        "Judge call for %s aborted (non-retryable)",
-                        rubric.test_id,
+                if isinstance(exc, ProviderSchemaRejectedError):
+                    logger.warning(
+                        "Judge provider refused a strict verdict request; retrying it in plain "
+                        "JSON mode: %s",
+                        exc,
                     )
+                    judge_config = judge_config.model_copy(update={"json_schema": None})
+                    plain_retry = True
+                    continue
+                plain_retry = False
+                if is_content_flagged(exc):
+                    # Resending the same probe gets the same flag, and the model is fine.
+                    raise JudgeContentFlaggedError(str(exc)) from exc
+                if is_fatal_provider_error(exc):
+                    # A refusal that stopped the run is said once, by the run's stop line.
+                    if not run_stopped():
+                        logger.exception(
+                            "Judge call for %s aborted (non-retryable)",
+                            rubric.test_id,
+                        )
                     raise JudgeCommunicationError(
                         f"Judge provider rejected the request (non-retryable): "
                         f"{type(exc).__name__}: {exc}"
@@ -1249,6 +1337,10 @@ class AnalyticRubricJudge:
                 )
                 continue
 
+            if plain_retry and self._strict_schema:
+                # The plain retry went through, so the schema was what the provider refused.
+                logger.warning("Judge provider refuses the strict verdict schema; using JSON mode")
+                self._strict_schema = False
             try:
                 return parse_rubric_verdict(raw_response, rubric)
             except JudgeExtractionError as exc:
@@ -1261,9 +1353,8 @@ class AnalyticRubricJudge:
                 # (→ INCONCLUSIVE) instead of grinding all attempts → ERROR.
                 if is_platform_refusal(raw_response):
                     raise JudgeExtractionError(
-                        "judge refused by the platform Usage-Policy filter — this "
-                        "adversarial probe cannot be graded via the claude -p bridge "
-                        "(use --mode api for adversarial coverage)"
+                        "judge refused by the platform Usage-Policy filter; this "
+                        "adversarial probe cannot be graded by this judge"
                     ) from exc
                 last_exc = exc
                 extraction_failures += 1
@@ -1340,14 +1431,19 @@ class EnsembleAnalyticRubricJudge:
             ],
             return_exceptions=True,
         )
+        raise_if_stopped(raw_results)
 
         successes: list[RubricVerdict] = [
             r for r in raw_results if isinstance(r, RubricVerdict)
         ]
+        votes = build_panel_votes(self._per_judge, raw_results)
 
         if not successes:
             failures = [r for r in raw_results if isinstance(r, Exception)]
-            raise min(failures, key=_ensemble_failure_rank)
+            chosen = min(failures, key=_ensemble_failure_rank)
+            # Every member was asked and none answered: the votes ride out on the error.
+            chosen.judge_votes = votes  # type: ignore[attr-defined]
+            raise chosen
 
         mean_score = sum(v.weighted_score for v in successes) / len(successes)
 
@@ -1395,7 +1491,51 @@ class EnsembleAnalyticRubricJudge:
             passed=overall_passed,
             verdict=consensus_verdict,  # type: ignore[arg-type]
             per_judge=successes,
+            judge_votes=votes,
         )
+
+
+def build_panel_votes(
+    members: list[AnalyticRubricJudge], outcomes: list[RubricVerdict | BaseException]
+) -> list[JudgeVote]:
+    """One vote per member, in panel order: its verdict, or "no verdict" with the error class when it
+    errored or refused. Never a pass, and never left out, so a reader can tell who answered. The
+    identity is read as text, so recording who voted can never fail the grade itself."""
+    labels = panel_labels([str(member.panel_identity()) for member in members])
+    return [panel_vote(label, outcome) for label, outcome in zip(labels, outcomes, strict=True)]
+
+
+def panel_vote(label: str, outcome: RubricVerdict | BaseException) -> JudgeVote:
+    """One member's vote. A vendor's error text is scrubbed and capped; the class is what reports show."""
+    provider = label.split(":", 1)[0]
+    if isinstance(outcome, RubricVerdict):
+        return JudgeVote(judge=label, provider=provider, verdict=outcome)
+    error = scrub_secrets(str(outcome))
+    logger.warning(
+        "Panel judge %s gave no verdict (%s): %s", label, type(outcome).__name__, error
+    )
+    return JudgeVote(
+        judge=label,
+        provider=provider,
+        error_class=type(outcome).__name__,
+        error=error[:VOTE_ERROR_CHARS],
+    )
+
+
+def panel_labels(identities: list[str]) -> list[str]:
+    """How a vote names each member: its `provider:model`, with its place in the panel added when two
+    members share one."""
+    return [
+        identity if identities.count(identity) == 1 else f"{identity}#{place}"
+        for place, identity in enumerate(identities, start=1)
+    ]
+
+
+def judge_votes_of(exc: BaseException) -> list[JudgeVote]:
+    """The per-judge votes a panel attached to the error it raised when it reached no verdict; empty
+    for any other error."""
+    votes = vars(exc).get("judge_votes")
+    return list(votes) if isinstance(votes, list) else []
 
 
 def _ensemble_failure_rank(exc: Exception) -> int:

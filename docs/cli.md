@@ -7,14 +7,23 @@ Every `ifixai` command and `ifixai run` flag. Guided first run: [get-started.md]
 ```bash
 ifixai init                  # check env for provider keys, suggest a first run
 ifixai run                   # run the default 10 inspections (Standard or Full mode)
-ifixai run --full-run        # run all 60 inspections
+ifixai run --full-run        # run all 61 inspections
 ifixai run --fixture FILE    # custom fixture (YAML or JSON)
-ifixai list tests            # all 60 inspections (32 core + 28 extended)
+ifixai list tests            # all 61 inspections (32 core + 29 extended)
 ifixai list fixtures         # registered named fixtures
 ifixai validate [FILE]       # per-test layout, or a fixture against schema.json
 ifixai compare A B           # diff two scorecard reports
+ifixai windtunnel controls   # which fixtures the reference provider satisfies
+ifixai windtunnel sweep      # measure which inspections catch each seeded defect
+ifixai windtunnel sweep --output base.json      # seal the measurement
+ifixai windtunnel sweep --baseline base.json    # exit 1 if a detection was lost
 ifixai run -p openai -k "$OPENAI_API_KEY" -c DECEPTION   # example: one category
 ```
+
+`trajectory`, `policy-lab` and `windtunnel` are offline command groups that need
+no provider key; see [trajectory assurance](trajectory-assurance.md),
+[Business Policy Lab](business-policy-lab.md) and the
+[evaluator wind tunnel](wind-tunnel.md).
 
 ## `ifixai run` flags
 
@@ -38,7 +47,7 @@ ifixai run -p openai -k "$OPENAI_API_KEY" -c DECEPTION   # example: one category
 | `--eval-mode` | auto | `deterministic`, `single`, `full`, or `self`. See [How a run is judged](#how-a-run-is-judged). |
 | `--judge-provider` | none | Judge provider. Repeat >=2 times for a Full-mode ensemble. |
 | `--judge-api-key`, `--judge-model` | none | Key(s) and model(s), paired with `--judge-provider`. |
-| `--judge-budget` | `0` | Max judge LLM calls per run (`0` = unlimited). |
+| `--judge-budget` | `0` | Judge budget per run, in calls to the judge's provider: retries and fallback models count, and in Full mode each judge's call. `0` = a runaway guard of 10x the estimate, at least 2,000. The run may go 25% over the budget; when it needs a call past that ceiling it stops, keeps what finished and lists the rest as not run (budget). `--dry-run` and the run header show both numbers. See [When a run stops early](#when-a-run-stops-early). |
 
 ### Fixture and governance
 
@@ -46,7 +55,7 @@ ifixai run -p openai -k "$OPENAI_API_KEY" -c DECEPTION   # example: one category
 |---|---|---|
 | `--fixture`, `-f` | auto | Fixture name or YAML/JSON path. |
 | `--governance` | none | `GovernanceFixture` YAML path; structural inspections score against your declared policies. See [fixture_authoring.md](fixture_authoring.md). |
-| `--mode` | `standard` | `standard` or `full` (hand-built fixture + >=2 distinct judge providers). Deprecated alias `--profile` (`quick` → `standard`). |
+| `--mode` | `standard` | `standard` or `full` (hand-built fixture + >=2 distinct judge providers). |
 
 ### Suite subset
 
@@ -54,8 +63,8 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 
 | Flag | Does |
 |---|---|
-| `--full-run` | Every inspection (all 60) instead of the default 10. Cannot be combined with the flags below. Overrides a `suite:` saved in `ifixai.yaml`. Unrelated to `--mode full`. |
-| `--suite` | A named suite: `smoke` (3), `strategic` (8), `essential` (10, the default), `core` (32), `extended` (28), `all` (60), or a theme (`security`, `reliability`, `compliance`, `frontier`). `ifixai list suites` shows them. |
+| `--full-run` | Every inspection (all 61) instead of the default 10. Cannot be combined with the flags below. Overrides a `suite:` saved in `ifixai.yaml`. Unrelated to `--mode full`. |
+| `--suite` | A named suite: `smoke` (3), `strategic` (8), `essential` (10, the default), `core` (32), `extended` (29), `all` (61), or a theme (`security`, `reliability`, `compliance`, `frontier`). `ifixai list suites` shows them. |
 | `--strategic` | Top 8 strategic tests only. |
 | `--test`, `-b` | Test(s) by ID, repeatable: `-b B01 -b B08`. |
 | `--category`, `-c` | Category name(s), case-insensitive, repeatable; beats `--strategic`. Names: `FABRICATION`, `MANIPULATION`, `DECEPTION`, `UNPREDICTABILITY`, `OPACITY`, `SABOTAGE`, `SUBVERSION`, `CONCEALMENT`, `SANDBAGGING`, `INSUBORDINATION`, `USURPATION`, `SYSTEMIC_RISK`, `MISCALIBRATION`, `STAKEHOLDER_CONFLICT`, `PERCEPTION_GOVERNANCE`, `OVERSIGHT_ATROPHY`, `PERSISTENCE`, `IDENTITY_ATTESTATION`, `INFLUENCE`, `BALANCE_INTEGRITY`, `FRANKNESS_CORRECTNESS_LINK`, `GRADER_VALIDITY`, `BENCHMARK_CONTAMINATION`, `TRAINING_DISPOSITION_PROVENANCE`, `VULNERABLE_USER_CARE`. |
@@ -67,7 +76,7 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 | `--output`, `-o` | `./ifixai-results/` | Report directory. |
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--name`, `--version` | provider name, `1.0` | System name and version label in reports. |
-| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). A run flagged RUN INVALID exits `2` whatever its score. A scoped (`-b`) or strategic run that leaves out B01, B08 or P01 has no overall score: it exits `0` if every selected scored inspection passed, `2` if any failed, errored or was inconclusive, and `--min-score` doesn't apply. Any other run with no overall score exits `2`. A partial run exits `1`. |
+| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). A run flagged RUN INVALID exits `2` whatever its score. A scoped (`-b`) or strategic run that leaves out B01, B08 or P01 has no overall score: it exits `0` if every selected scored inspection passed, `2` if any failed, errored or was inconclusive, and `--min-score` doesn't apply. Any other run with no overall score exits `2`. A partial (stopped) run exits `1`, or `2` when a mandatory minimum that finished failed. |
 | `--quiet`, `-q` | off | Suppress banner and summary; stdout still carries scores. |
 
 ### Execution and reliability
@@ -123,7 +132,7 @@ With no `--judge-*` flags, iFixAi picks a judge from a different provider whose 
 
 ### Standard vs Full
 
-Mode changes how a run is judged, not which inspections run: the same selection either way (10 by default, all 60 with `--full-run`). Standard: auto fixture (the bundled default is a **seeded-defect demo** — expect B01 and P01 to FAIL by design on a default run, and more on a `--full-run`; see [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md)), one auto-paired judge. Full (`--mode full`): requires `--fixture` (the default fixture is refused) and >=2 judge providers; majority vote, tie-break `fail > partial > pass`.
+Mode changes how a run is judged, not which inspections run: the same selection either way (10 by default, all 61 with `--full-run`). Standard: auto fixture (the bundled default is a **seeded-defect demo** — expect B01 and P01 to FAIL by design on a default run, and more on a `--full-run`; see [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md)), one auto-paired judge. Full (`--mode full`): requires `--fixture` (the default fixture is refused) and >=2 judge providers; majority vote, tie-break `fail > partial > pass`.
 
 ```bash
 # Standard: export a second provider key and the judge auto-pairs.
@@ -138,6 +147,16 @@ ifixai run --mode full \
 ```
 
 Judge design rationale: [methodology.md](methodology.md#cross-provider-judge-default).
+
+### When a run stops early
+
+Three things stop a run before it finishes, and none reads as the agent failing:
+
+- **The judge's key or credit runs out.** The judge's provider refuses the call: a rejected key (401 or 403), no credit (402), a spent key or workspace budget (OpenRouter's 403 "budget limit exceeded"), or a spent quota (a 429 that says so). Every later call would be refused too, so the run stops at once: the refused call is not retried, and no more judge calls or probes to the agent go out. A plain 429 rate limit is still retried, and a 403 that flags a probe's content (a moderated judge model) leaves that one probe ungraded while the run goes on.
+- **The judge never gives a verdict.** Before its first verdict, a judge model the provider doesn't know (a 404, or OpenRouter's 400 "is not a valid model ID") stops the run at once, and five rejected calls in a row stop it too.
+- **The run spends its judge budget.** It may go 25% over `--judge-budget` (or the default cap), counted in calls to the judge's provider, each retry included. Once those calls are made, the next call to the judge or the next message to the agent stops the run the same way. Any message to the agent counts as a probe the judge will grade, from any inspection, even one that has not asked the judge anything yet, so no probe goes out that could not be graded. Only what no judge reads still goes out until the run stops: calls to the agent's own hooks, and B26's burst of rate-limit probes. A judge call already out when the run stops was inside the ceiling, so it is left to answer, but not retried.
+
+You get one line saying what happened and how to fix it: top up the judge's account or swap in another key with `--judge-api-key`, pick another `--judge-model`, or raise `--judge-budget`, then run again with `--resume <run id>` and the same flags. Inspections that finished keep their results. The rest are listed as not run, in the terminal and in the reports. A mandatory minimum (B01, B08, P01) that never ran reads NOT CHECKED, never a fail. A stopped run never passes as a whole. Its verdict reads INCONCLUSIVE (the run stopped early), the same in the terminal's `Passed` line, the scorecard and the reports, unless a mandatory minimum that finished failed, which no later inspection can undo: then it reads FAIL (the run stopped early). An inspection that errored turns INCONCLUSIVE into ERROR, never a FAIL into ERROR; it is still listed with the errors. Reports are still written. The run exits `2` when its verdict is FAIL, `1` otherwise.
 
 ### Judge fallback models
 
