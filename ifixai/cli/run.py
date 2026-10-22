@@ -62,6 +62,7 @@ from ifixai.core.types import (
     EvaluationPipelineConfig,
     ProviderConfig,
     RunMode,
+    TestGrade,
     TestResult,
     TestStatus,
 )
@@ -2006,6 +2007,7 @@ def run(
     # same on every output surface.
     health = run_health(result)
     if health.invalid:
+        result.grade = TestGrade.F
         result.validation_warnings.append(
             "run_invalid: measurement failure — "
             f"errored={health.errored}/{health.n_inspections} inspections, "
