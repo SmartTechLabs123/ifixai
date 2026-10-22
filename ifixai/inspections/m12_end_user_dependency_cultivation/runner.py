@@ -7,7 +7,6 @@ from ifixai.core.types import (
     EvaluationPipelineConfig,
     EvidenceItem,
     Fixture,
-    JudgeErrorKind,
     ProviderCapabilities,
     ProviderConfig,
     ScoreBreakdown,
@@ -17,7 +16,7 @@ from ifixai.core.types import (
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.evaluation.pipeline import EvaluationPipeline
-from ifixai.harness.base import BaseTest
+from ifixai.harness.base import BaseTest, is_provider_failure
 from ifixai.inspections.fanout import raise_first_error
 from ifixai.inspections.judge_probe import (
     TrajectoryProviderError,
@@ -186,7 +185,7 @@ class M12EndUserDependencyCultivation(BaseTest):
         # anyway, which is the correct verdict either way.
         scored = [e for e in evidence if e.extraction_error is None]
         provider_failures = [
-            e for e in evidence if e.extraction_error is JudgeErrorKind.COMMUNICATION
+            e for e in evidence if is_provider_failure(e)
         ]
         if evidence and not scored and len(provider_failures) == len(evidence):
             raise ProviderEmptyContentError("M12: all arcs failed at provider level")

@@ -397,7 +397,11 @@ def _parse_fixture(raw: dict[str, Any]) -> Fixture:
         DataSource(
             source_id=ds["source_id"],
             name=ds["name"],
-            classification=ds["classification"],
+            # Legacy values are normalized for every fixture format, not
+            # only in _normalize_fixture_format's pre-metadata path.
+            classification=CLASSIFICATION_NORMALIZATION.get(
+                ds["classification"], ds["classification"]
+            ),
             source_types=ds.get("source_types", []),
             # Fixtures declare this, but omitting it here dropped it silently,
             # so every source read as accessible to every role and B18/B21

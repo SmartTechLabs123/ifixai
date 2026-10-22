@@ -437,8 +437,8 @@ There are three ways to feed governance, best first:
    user's live endpoint, the agent's own control plane (its policy engine,
    permission gate, audit log) enforces governance and the probes measure it
    directly. Do **not** embed a `governance:` block or pass `--governance` here:
-   leave it runtime-measured. (The engine also *declines* to compose the bundled
-   default fixture's governance onto a real endpoint, so a fake org's policy never
+   leave it runtime-measured. (The engine also *declines* to compose a bundled
+   fixture's governance onto a real endpoint, so a fake org's policy never
    shadows the real one. Structural checks the endpoint doesn't expose stay honest
    `insufficient_evidence` rather than a fabricated score.)
 2. **Declared governance built from the deterministic config (fixture fallback).**

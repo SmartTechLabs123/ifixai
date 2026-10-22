@@ -3,12 +3,16 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
+import stat
 import warnings
-from datetime import datetime
+from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -203,7 +207,9 @@ def build_manifest(
         "mode": mode.value,
         "model_under_test": model_under_test.model_dump(),
         "judge_models": [j.model_dump() for j in judge_models],
-        "judge_temperature": judge_temperature,
+        # Match RunManifest's float coercion before hashing, so integer inputs
+        # keep the same identity after validation and JSON round-tripping.
+        "judge_temperature": float(judge_temperature),
         "judge_identity": judge_identity.model_dump() if judge_identity else None,
         "normalizer_version": normalizer_version,
         "test_versions": test_versions,
@@ -222,9 +228,9 @@ def build_manifest(
         "b14_seed_pinned": b14_seed_pinned,
         "b28_seed_pinned": b28_seed_pinned,
         "b30_seed_pinned": b30_seed_pinned,
-        "sut_temperature": sut_temperature,
+        "sut_temperature": float(sut_temperature),
         "sut_seed": sut_seed,
-        "effective_sut_temperature": effective_sut_temperature,
+        "effective_sut_temperature": float(effective_sut_temperature),
         "effective_sut_seed": effective_sut_seed,
         "seed_supported_by_provider": seed_supported_by_provider,
         "holdout_seed": holdout_seed,
@@ -237,7 +243,7 @@ def build_manifest(
     run_id = compute_run_id(payload)
     return RunManifest(
         run_id=run_id,
-        timestamp=timestamp or datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        timestamp=timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         schema_version=CURRENT_MANIFEST_SCHEMA_VERSION,
         run_nonce=effective_run_nonce,
         sut_context_digest=sut_context_digest,
@@ -281,8 +287,10 @@ def verify_run_id(manifest: RunManifest) -> bool:
     exclude: set[str] = set(_RUN_ID_EXCLUDE_FIELDS)
     if manifest.schema_version < 4:
         exclude.add("sut_context_digest")
-    if manifest.schema_version < 3:
+    if manifest.schema_version < 2:
         exclude.update(_LEGACY_V1_EXTRA_EXCLUDE)
+    elif manifest.schema_version < 3:
+        exclude.update({"b29_seed", "b32_seed", "b29_seed_pinned", "b32_seed_pinned"})
     payload = manifest.model_dump(mode="json", exclude=exclude)
     expected = compute_run_id(payload)
     return manifest.run_id == expected
@@ -311,11 +319,24 @@ def load_manifest(path: Path) -> RunManifest:
 
 
 def write_manifest(manifest: RunManifest, base_dir: Path) -> Path:
+    """Replace atomically so an interrupted resume keeps its original identity."""
     run_dir = base_dir / manifest.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     out_path = run_dir / "manifest.json"
-    out_path.write_text(
-        json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True),
-        encoding="utf-8",
+    content = json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True)
+    mode = stat.S_IMODE(out_path.stat().st_mode) if out_path.exists() else None
+    temporary = run_dir / f".ifixai-manifest-{uuid4().hex}.tmp"
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o666 if mode is None else 0o600,
     )
+    os.close(descriptor)
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        if mode is not None:
+            temporary.chmod(mode)
+        os.replace(temporary, out_path)
+    finally:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
     return out_path

@@ -15,6 +15,7 @@ from functools import lru_cache
 import click
 
 from ifixai.cli._branding import supports_color
+from ifixai.reporting.scorecard import absent_score_reason, compute_insights
 
 _ACCENT = "rgb(232,99,42)"
 _DIM = "grey62"
@@ -258,8 +259,6 @@ def render_scorecard(result) -> bool:
     from rich.table import Table
     from rich.text import Text
 
-    from ifixai.reporting.scorecard import compute_insights
-
     ins = compute_insights(result)
     c = console()
 
@@ -270,7 +269,8 @@ def render_scorecard(result) -> bool:
     if overall is None:
         result_body = Text(justify="center")
         result_body.append("n/a\n\n", style="bold yellow")
-        result_body.append("Insufficient evidence across all inspections.", style=_DIM)
+        reason = absent_score_reason(result)
+        result_body.append(reason[:1].upper() + reason[1:], style=_DIM)
         if self_judged:
             result_body.append(
                 "\n\n⚠  Self-judged: this run graded its own output (biased, not citable).",
@@ -528,6 +528,12 @@ def render_scorecard(result) -> bool:
         expl_tbl.add_column("Score", justify="right", width=8)
         expl_tbl.add_column("Signal", justify="center", width=8)
         for item in ins["exploratory"]:
+            # A findings-only result has no score or pass mark; its findings print below.
+            if item.get("findings_only"):
+                expl_tbl.add_row(
+                    item["test_id"], item["name"], Text("report only", style=_DIM), Text("—", style=_DIM)
+                )
+                continue
             mark = Text("✓", style="green") if item["passing"] else Text("·", style=_DIM)
             expl_tbl.add_row(
                 item["test_id"],

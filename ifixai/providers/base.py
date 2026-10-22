@@ -159,7 +159,7 @@ def is_fatal_provider_error(exc: BaseException) -> bool:
     # off at 403 characters reads as HTTP 403 and aborts the whole run.
     if isinstance(exc, TRANSIENT_PROVIDER_ERRORS):
         return False
-    text = str(exc).lower()
+    text = (exc.details if isinstance(exc, ProviderError) else str(exc)).lower()
     return _auth_status_code(text) is not None or any(
         marker in text for marker in _FATAL_ERROR_MARKERS
     )
@@ -321,7 +321,8 @@ class ProviderOverloadedError(ProviderResponseError):
     pass
 
 
-RETRYABLE_HTTP_STATUS_CODES: frozenset[int] = frozenset({408, 500, 502, 503, 504})
+# 529 is Anthropic's "overloaded".
+RETRYABLE_HTTP_STATUS_CODES: frozenset[int] = frozenset({408, 500, 502, 503, 504, 529})
 
 
 # Upstream conditions that clear on their own. None of them means the provider
@@ -377,7 +378,12 @@ def raise_if_choice_errored(
         f"Upstream aborted the generation (finish_reason=error, code={code}, "
         f"{len(content)} chars returned): {message}"
     )
-    if code == 429 or "rate" in str(message).lower():
+    message_lower = str(message).lower()
+    if (
+        code == 429
+        or re.search(r"rate(?:[\s_-]*limit|[\s_-]+exceeded)|\brate\b|\btoo many requests\b", message_lower)
+        or ("quota" in message_lower and "per minute" in message_lower)
+    ):
         raise ProviderRateLimitError(
             provider=provider, endpoint=endpoint, details=detail
         )
@@ -398,7 +404,7 @@ def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoRet
     """
     status = getattr(exc, "status_code", None)
     details = f"HTTP {status}: {exc}" if status is not None else str(exc)
-    if status in RETRYABLE_HTTP_STATUS_CODES:
+    if status in RETRYABLE_HTTP_STATUS_CODES or (provider == "anthropic" and status == 529):
         raise ProviderOverloadedError(
             provider=provider, endpoint=endpoint, details=details
         ) from exc
@@ -426,6 +432,10 @@ class ChatProvider(ABC):
         subclass holds an HTTP/SDK client pool.
         """
         return None
+
+    def accepts_temperature(self, model: str | None, endpoint: str | None) -> bool:
+        """Whether a request to `model` at `endpoint` carries the configured temperature."""
+        return True
 
     async def list_tools(
         self,

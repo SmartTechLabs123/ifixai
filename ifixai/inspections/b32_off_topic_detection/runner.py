@@ -70,6 +70,7 @@ _DIM_WEIGHTS: dict[str, float] = {
 # Domains treated as "no restriction" — B32 is not meaningful for these.
 _GENERIC_DOMAINS = {
     "",
+    "generic",
     "general",
     "general purpose",
     "general-purpose",

@@ -7,14 +7,23 @@ Every `ifixai` command and `ifixai run` flag. Guided first run: [get-started.md]
 ```bash
 ifixai init                  # check env for provider keys, suggest a first run
 ifixai run                   # run the default 10 inspections (Standard or Full mode)
-ifixai run --full-run        # run all 60 inspections
+ifixai run --full-run        # run all 61 inspections
 ifixai run --fixture FILE    # custom fixture (YAML or JSON)
-ifixai list tests            # all 60 inspections (32 core + 28 extended)
+ifixai list tests            # all 61 inspections (32 core + 29 extended)
 ifixai list fixtures         # registered named fixtures
 ifixai validate [FILE]       # per-test layout, or a fixture against schema.json
 ifixai compare A B           # diff two scorecard reports
+ifixai windtunnel controls   # which fixtures the reference provider satisfies
+ifixai windtunnel sweep      # measure which inspections catch each seeded defect
+ifixai windtunnel sweep --output base.json      # seal the measurement
+ifixai windtunnel sweep --baseline base.json    # exit 1 if a detection was lost
 ifixai run -p openai -k "$OPENAI_API_KEY" -c DECEPTION   # example: one category
 ```
+
+`trajectory`, `policy-lab` and `windtunnel` are offline command groups that need
+no provider key; see [trajectory assurance](trajectory-assurance.md),
+[Business Policy Lab](business-policy-lab.md) and the
+[evaluator wind tunnel](wind-tunnel.md).
 
 ## `ifixai run` flags
 
@@ -54,8 +63,8 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 
 | Flag | Does |
 |---|---|
-| `--full-run` | Every inspection (all 60) instead of the default 10. Cannot be combined with the flags below. Overrides a `suite:` saved in `ifixai.yaml`. Unrelated to `--mode full`. |
-| `--suite` | A named suite: `smoke` (3), `strategic` (8), `essential` (10, the default), `core` (32), `extended` (28), `all` (60), or a theme (`security`, `reliability`, `compliance`, `frontier`). `ifixai list suites` shows them. |
+| `--full-run` | Every inspection (all 61) instead of the default 10. Cannot be combined with the flags below. Overrides a `suite:` saved in `ifixai.yaml`. Unrelated to `--mode full`. |
+| `--suite` | A named suite: `smoke` (3), `strategic` (8), `essential` (10, the default), `core` (32), `extended` (29), `all` (61), or a theme (`security`, `reliability`, `compliance`, `frontier`). `ifixai list suites` shows them. |
 | `--strategic` | Top 8 strategic tests only. |
 | `--test`, `-b` | Test(s) by ID, repeatable: `-b B01 -b B08`. |
 | `--category`, `-c` | Category name(s), case-insensitive, repeatable; beats `--strategic`. Names: `FABRICATION`, `MANIPULATION`, `DECEPTION`, `UNPREDICTABILITY`, `OPACITY`, `SABOTAGE`, `SUBVERSION`, `CONCEALMENT`, `SANDBAGGING`, `INSUBORDINATION`, `USURPATION`, `SYSTEMIC_RISK`, `MISCALIBRATION`, `STAKEHOLDER_CONFLICT`, `PERCEPTION_GOVERNANCE`, `OVERSIGHT_ATROPHY`, `PERSISTENCE`, `IDENTITY_ATTESTATION`, `INFLUENCE`, `BALANCE_INTEGRITY`, `FRANKNESS_CORRECTNESS_LINK`, `GRADER_VALIDITY`, `BENCHMARK_CONTAMINATION`, `TRAINING_DISPOSITION_PROVENANCE`, `VULNERABLE_USER_CARE`. |
@@ -67,7 +76,7 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 | `--output`, `-o` | `./ifixai-results/` | Report directory. |
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--name`, `--version` | provider name, `1.0` | System name and version label in reports. |
-| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). |
+| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). A run flagged RUN INVALID exits `2` whatever its score. A scoped (`-b`) or strategic run that leaves out B01, B08 or P01 has no overall score: it exits `0` if every selected scored inspection passed, `2` if any failed, errored or was inconclusive, and `--min-score` doesn't apply. Any other run with no overall score exits `2`. A partial run exits `1`. |
 | `--quiet`, `-q` | off | Suppress banner and summary; stdout still carries scores. |
 
 ### Execution and reliability
@@ -123,7 +132,7 @@ With no `--judge-*` flags, iFixAi picks a judge from a different provider whose 
 
 ### Standard vs Full
 
-Mode changes how a run is judged, not which inspections run: the same selection either way (10 by default, all 60 with `--full-run`). Standard: auto fixture (the bundled default is a **seeded-defect demo** — expect B01 and P01 to FAIL by design on a default run, and more on a `--full-run`; see [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md)), one auto-paired judge. Full (`--mode full`): requires `--fixture` (the default fixture is refused) and >=2 judge providers; majority vote, tie-break `fail > partial > pass`.
+Mode changes how a run is judged, not which inspections run: the same selection either way (10 by default, all 61 with `--full-run`). Standard: auto fixture (the bundled default is a **seeded-defect demo** — expect B01 and P01 to FAIL by design on a default run, and more on a `--full-run`; see [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md)), one auto-paired judge. Full (`--mode full`): requires `--fixture` (the default fixture is refused) and >=2 judge providers; majority vote, tie-break `fail > partial > pass`.
 
 ```bash
 # Standard: export a second provider key and the judge auto-pairs.
@@ -163,6 +172,7 @@ The SUT's own `--model` is dropped from the chain: a fallback must never turn a 
 Cost and time controls, so a dead judge cannot drain a key or stall a run:
 
 - Judge calls ask OpenRouter for **no reasoning tokens**. A hybrid-reasoning model asked for a verdict otherwise thinks out loud until the token ceiling cuts it off — billed in full, worthless as a verdict.
-- A **truncated** (cut-off) reply is never re-sent to the same model. That probe moves to the next model in the chain, or goes unscored if there is none, and the next probe uses the model again. Three cut-offs in a row from one model, with no verdict between, retire it.
-- A model that fails is **retired for the rest of the run**. The chain is not re-walked from the dead primary on every grade. Once all models are retired, remaining probes drop for free with no further calls.
+- A **truncated** (cut-off) reply is never re-sent to the same model. That probe moves to the next model in the chain, or goes unscored if there is none, and the next probe uses the model again.
+- Known reasoning judges (o1/o3/o4, gpt-5\*, \*-r1\*, deepseek-reasoner, \*thinking\*, gemini-2.5-pro, gemini-3\*, qwq, grok-\*-mini, gpt-oss\*) get 4096 more tokens on every call, room to think before the verdict.
+- A model that fails **3 items in a row** is **retired for the rest of the run**; a verdict resets the count. The chain is not re-walked from the dead primary on every grade. Once all models are retired, remaining probes drop for free with no further calls.
 - The scorecard reports `substitute judge graded this run:` and `judge calls that failed and were retried:` whenever either happened, so a grade always names its origin.

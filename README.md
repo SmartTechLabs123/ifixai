@@ -41,6 +41,7 @@
   <a href="#three-ways-to-run">Three ways to run</a> •
   <a href="#test-your-own-agent">Test your agent</a> •
   <a href="#what-you-get-back">Scoring</a> •
+  <a href="docs/trajectory-assurance.md">Audit recorded actions</a> •
   <a href="docs/">Docs</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
@@ -61,7 +62,7 @@
 
 The existing Eval, Red-teaming, and Observability Tools are evaluating the agent mainly based on tech capability (token efficiency, latency, prompt injections). They cannot answer the most crucial question.
 
-Is the agent doing the job it is supposed to do based on the business KPIs and Organizational Structure? iFixAi gives you this answer in less than 120 seconds by striking the right balance between AI-Red Teaming and Operational Assurance. 
+Is the agent doing the job it is supposed to do based on the business KPIs and Organizational Structure? iFixAi gives you this answer in less than 120 seconds by striking the right balance between AI-Red Teaming and Operational Assurance.
 
 Adversarial depth. Assurance discipline. All-in-one auditing process.
 
@@ -78,10 +79,12 @@ All three run the same diagnostic underneath. The difference is how you configur
 | **What you test** | any provider, or your agent's real endpoint | same | same |
 | **Who grades it** | self, one independent vendor, or a multi-judge ensemble | same | same |
 | **Output** | JSON + Markdown reports + rich terminal scorecard | same | interactive results artifact (+ JSON source of truth; static-report fallback) |
-| **Suite** | pick with arrow keys in the wizard | 10 inspections by default; `--full-run` for all 60, or `--suite smoke\|strategic\|essential\|core\|extended\|all` | the agent picks `--mode`/`--suite`, same engine as the CLI |
+| **Suite** | pick with arrow keys in the wizard | 10 inspections by default; `--full-run` for all 61, or `--suite smoke\|strategic\|essential\|core\|extended\|all` | the agent picks `--mode`/`--suite`, same engine as the CLI |
 | **Works in** | any terminal | any terminal / CI | Claude Code, Cursor, Codex, VS Code, Windsurf, Cline, Continue, Gemini, Zed |
 
 ## Quick start
+
+**Explore business-policy compositions:** [Policy Lab](docs/business-policy-lab.md) finds shortest harmful sequences of permitted actions and checks permission repairs against legitimate completion goals. Includes an offline refund-store example and explicit local-callable replay.
 
 Now try it yourself. Pick a path from the table above; full walkthrough: **[docs/get-started.md](docs/get-started.md)**.
 
@@ -225,7 +228,7 @@ the calls, so expect roughly a sixth of the cost and time.
 
 `ifixai run` runs **10 inspections** unless you ask for more. They are the `essential` suite: six
 high-impact checks plus four medium-impact ones, picked so a first run is quick and still ends in
-a grade. Add **`--full-run`** to run all 60.
+a grade. Add **`--full-run`** to run all 61.
 
 | Impact | ID | Checks that your agent… |
 |---|---|---|
@@ -250,10 +253,10 @@ a grade. Add **`--full-run`** to run all 60.
 
 ```bash
 ifixai run --provider openai                 # the default: 10 inspections
-ifixai run --provider openai --full-run      # all 60: slower, costs more
+ifixai run --provider openai --full-run      # all 61: slower, costs more
 ```
 
-`--full-run` is the old default behaviour, unchanged. It cannot be combined with `--suite`,
+`--full-run` cannot be combined with `--suite`,
 `--test`, `--category`, or `--strategic`, and it has nothing to do with `--mode full`, which sets
 how a run is judged. A `suite:` saved in `ifixai.yaml` replaces the default; `--full-run` on the
 command line overrides that. `ifixai setup` preselects the same 10-inspection suite. `--resume`
@@ -269,10 +272,17 @@ To pick a different set, name a suite:
 | `strategic` | 8 | quick read on the riskiest spots |
 | `essential` | 10 | a fast first grade (**the default**) |
 | `core` | 32 | the graded five-pillar scorecard |
-| `extended` | 28 | frontier risk signal, scored outside the grade |
-| `all` | 60 | everything; the same inspections as `--full-run` |
+| `extended` | 29 | frontier risk signal, scored outside the grade |
+| `all` | 61 | everything; the same inspections as `--full-run` |
 
 Four themes (`security`, `reliability`, `compliance`, `frontier`) also work as `--suite` values; run `ifixai list suites` to browse them all.
+
+Resume an interrupted run with `--resume <run_id>` and the same run options and
+`--reliability-out` directory. Analytic inspection seeds are derived from the
+base seed stored in its manifest, so resumed probes use the original corpus
+assignments. Older manifests without that base seed resume using the original random-seed
+behavior for incomplete inspections; completed checkpoint results keep their own
+seeds. Legacy unfinished probe contexts cannot be reconstructed.
 
 ```bash
 ifixai run --provider http --endpoint <agent-url> --grounding sut  # your real deployed agent (recommended)
@@ -323,7 +333,7 @@ connection defaults.
 
 ## What you get back
 
-A letter grade with the breakdown behind it. iFixAi groups the 60 inspections into **25 categories**, five core pillars plus twenty premium. The five core pillars:
+A letter grade with the breakdown behind it. iFixAi groups the 61 inspections into **25 categories**, five core pillars plus twenty premium. The five core pillars:
 
 | Core pillar | What it detects |
 |---|---|
@@ -341,7 +351,7 @@ sandbagging, insubordination, usurpation, systemic risk, miscalibration, stakeho
 conflict, perception governance, oversight atrophy, persistence, identity attestation,
 influence, balance integrity, frankness-correctness link, grader validity, benchmark
 contamination, training disposition provenance, vulnerable user care. This
-repo ships **28 inspections from them as a free preview of iFixAi's premium suite**, at least
+repo ships **29 inspections from them as a free preview of iFixAi's premium suite**, at least
 one per category. **None of
 them feed the grade**: they are scored and reported on their own, so grades stay comparable
 even between agents that expose different capabilities. The one exception is P01: as a
@@ -351,18 +361,14 @@ raise it.
 **"Premium" is a capability tier, not a paywall.** Everything in this repo, core and premium, is
 free and open (Apache 2.0).
 
-**What does a good result look like?** The scorecards in **[case_studies/](case_studies/)** grade
-fixtures reconstructed from public accounts of two real incidents (the unproven Chaac Pizza
-Northeast complaint against Pizza Hut, and press reporting on the June 2026 Instagram takeovers).
-They are not tests of either company's production system. The reconstructions land at F; a
-well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
+**What does a good result look like?** The four scorecards are fixture reconstructions based on public accounts, not tests of any named organisation's production system. Their reported results differ: [Dragontail dispatch](case_studies/pizza-hut-dragontail/SCORECARD.md) is 54.3% (F, selected subset); [Instagram account support](case_studies/meta-instagram-support/SCORECARD.md) is 22.2% (F, a subset floor rather than a full-suite grade); [OpenAI/Hugging Face containment](case_studies/openai-huggingface-containment/SCORECARD.md) is 65.5% (D); and [AISI cyber-range](case_studies/aisi-cyber-range-containment/SCORECARD.md) is 84.2% (B). The Dragontail case is based on allegations that remain unproven and contested. A well-governed agent scores materially higher (see [Test your own agent](#test-your-own-agent)).
 
 Full math and weights: **[docs/scoring.md](docs/scoring.md)**. The full `B01`–`B32` → pillar
 mapping and every premium category: **[docs/inspections.md](docs/inspections.md#categories)**.
 
 ## iFixAi Pro
 
-Everything in this repo is our open-source engine. It stays free, with 60 inspections you can run
+Everything in this repo is our open-source engine. It stays free, with 61 inspections you can run
 on your own infrastructure using your own model keys.
 
 [iFixAi Pro](https://www.ifixai.ai/?utm_source=github&utm_medium=readme&utm_content=pro-section#pricing) is our independent auditing service for AI agents, with up to 400

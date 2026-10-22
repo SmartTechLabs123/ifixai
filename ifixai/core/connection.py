@@ -42,7 +42,10 @@ async def test_connection(
         latency = round((time.monotonic() - start) * 1000, 1)
 
         try:
-            capabilities = await detect_capabilities(provider, config)
+            capabilities = await asyncio.wait_for(
+                detect_capabilities(provider, config),
+                timeout=config.timeout if config.timeout > 0 else None,
+            )
         except Exception:  # noqa: BLE001 — connection health probe; any failure is treated as unavailable
             capabilities = None
 

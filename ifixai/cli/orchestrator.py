@@ -7,11 +7,17 @@ from pathlib import Path
 
 import click
 
-from ifixai.api import run_inspections, run_selected, run_strategic
+from ifixai.api import (
+    FROM_FIXTURE,
+    FixtureGovernance,
+    run_inspections,
+    run_selected,
+    run_strategic,
+)
 from ifixai.cli.schemas import EvalModeResolution
 from ifixai.core.concurrency import ConcurrencyGovernor
 from ifixai.core.fixture_loader import load_fixture
-from ifixai.core.runner import build_partial_result
+from ifixai.core.runner import build_partial_result, effective_sut_temperature
 from ifixai.core.types import (
     EvaluationPipelineConfig,
     InspectionCategory,
@@ -23,9 +29,11 @@ from ifixai.evaluation.checkpoint import save_checkpoint
 from ifixai.evaluation.errors import JudgeUnavailableError
 from ifixai.harness.registry import ALL_SPECS, SPEC_BY_ID
 from ifixai.judge.config import JudgeConfig, JudgeProviderSpec
+from ifixai.providers.governance_fixture import GovernanceFixture
 from ifixai.providers.resolver import (
     _PROVIDER_CREDENTIAL_ENV_VARS,
     detect_available_credentials,
+    resolve_provider,
     select_cross_provider_judge,
 )
 from ifixai.scoring.category_weights import STRATEGIC_TEST_IDS
@@ -398,7 +406,7 @@ class BenchmarkProgressDisplay:
                         status = f"{_RED}FAIL{_RESET}"
                     lines.append(
                         f"  {icon} {_BOLD}{test_id}{_RESET} {name} "
-                        f"... {status} ({result.score:.0%})"
+                        f"... {status} ({score_label(result)})"
                     )
                 else:
                     spinner = "·" if final else frame
@@ -469,8 +477,28 @@ def _progress_callback_plain(
     )
     click.echo(
         f"  [{index}/{total}] {bid} {bench_result.name} ... "
-        f"{status_label} ({bench_result.score:.0%})"
+        f"{status_label} ({score_label(bench_result)})"
     )
+
+
+def score_label(result: TestResult) -> str:
+    """The bracketed figure after a status: the score, or "report only" for an inspection whose
+    result is its findings and which never shows a percentage."""
+    return "report only" if result.findings_only else f"{result.score:.0%}"
+
+
+def print_report_only_overviews(result: TestRunResult) -> None:
+    """Each report-only inspection's compact read, after the scorecard. It has no score to stand for
+    it, so what it ran, its rates and its red lines are printed instead; replies are quoted only in
+    the report files."""
+    with_overview = [br for br in result.test_results if br.overview]
+    for br in with_overview:
+        click.echo()
+        click.echo(click.style(f"{br.test_id} {br.name or br.test_id} (report only)", bold=True))
+        for line in br.overview:
+            click.echo(f"  {line}")
+    if with_overview:
+        click.echo()
 
 
 def _build_display_tests(
@@ -516,6 +544,7 @@ async def execute_tests(
     checkpoint_dir: Path | None = None,
     checkpoint_run_id: str | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) -> TestRunResult | None:
 
     try:
@@ -592,7 +621,9 @@ async def execute_tests(
                 fixture_name=loaded_fixture.metadata.name,
                 provider_name=provider,
                 run_mode=partial_mode,
-                sut_temperature=sut_temperature,
+                sut_temperature=effective_sut_temperature(
+                    resolve_provider(provider), sut_temperature, model, endpoint
+                ),
                 sut_seed=sut_seed,
             )
         except Exception:
@@ -632,6 +663,7 @@ async def execute_tests(
                 auth_method=auth_method,
                 extra_headers=extra_headers,
                 cached_results=cached_results,
+                governance=governance,
             )
             selected_result.self_judged = self_judged
             return selected_result
@@ -658,6 +690,7 @@ async def execute_tests(
                 auth_method=auth_method,
                 extra_headers=extra_headers,
                 cached_results=cached_results,
+                governance=governance,
             )
             strategic_result.self_judged = self_judged
             return strategic_result
@@ -683,6 +716,7 @@ async def execute_tests(
             auth_method=auth_method,
             extra_headers=extra_headers,
             cached_results=cached_results,
+            governance=governance,
         )
 
     except JudgeUnavailableError as exc:

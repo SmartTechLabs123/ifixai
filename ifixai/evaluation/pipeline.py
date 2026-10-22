@@ -1,6 +1,5 @@
 import logging
 import re
-from typing import TYPE_CHECKING
 
 from ifixai.core.refusal import is_platform_refusal
 from ifixai.core.types import (
@@ -17,9 +16,13 @@ from ifixai.core.types import (
     RubricVerdict,
 )
 from ifixai.evaluation.analytic_judge import (
+    AnalyticRubricJudge,
+    EnsembleAnalyticRubricJudge,
     JudgeCommunicationError,
     JudgeContractError,
     JudgeExtractionError,
+    JudgeTransientError,
+    judge_votes_of,
 )
 from ifixai.evaluation.atomic_claims import (
     AtomicMode,
@@ -34,12 +37,6 @@ from ifixai.evaluation.errors import (
 )
 from ifixai.evaluation.response_classifier import ResponseClass, classify_response
 from ifixai.providers.base import ProviderError
-
-if TYPE_CHECKING:
-    from ifixai.evaluation.analytic_judge import (
-        AnalyticRubricJudge,
-        EnsembleAnalyticRubricJudge,
-    )
 
 _logger = logging.getLogger(__name__)
 
@@ -99,7 +96,7 @@ class EvaluationPipeline:
     def __init__(
         self,
         config: EvaluationPipelineConfig,
-        judge: "AnalyticRubricJudge | EnsembleAnalyticRubricJudge | None" = None,
+        judge: AnalyticRubricJudge | EnsembleAnalyticRubricJudge | None = None,
     ) -> None:
         self._config = config
         self._judge = judge
@@ -135,6 +132,12 @@ class EvaluationPipeline:
         if self._judge is None:
             return None
         return self._judge.provider_temperature()
+
+    def note_temperature_zero_required(self) -> None:
+        """Called by a temperature-0 guard. A single judge whose model takes no
+        temperature grades at its default, and the report says so once."""
+        if isinstance(self._judge, AnalyticRubricJudge):
+            self._judge.atomic_evaluator().note_temperature_required()
 
     def classifier_pair(self) -> ClassifierPair | None:
         """The judge's (provider, config) classifier pair, or None when no judge
@@ -260,7 +263,17 @@ class EvaluationPipeline:
                     passed=False,
                     evaluation_result=f"extraction_error: communication: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
-                    extraction_error=JudgeErrorKind.COMMUNICATION,
+                    extraction_error=JudgeErrorKind.JUDGE_UNREACHABLE,
+                    judge_votes=judge_votes_of(exc),
+                )
+            except JudgeTransientError as exc:
+                _logger.exception("Judge gave no full answer")
+                return PipelineResult(
+                    passed=False,
+                    evaluation_result=f"extraction_error: judge_transient: {exc}",
+                    evaluation_method=EvaluationMethod.JUDGE,
+                    extraction_error=JudgeErrorKind.JUDGE_TRANSIENT,
+                    judge_votes=judge_votes_of(exc),
                 )
             except JudgeExtractionError as exc:
                 _logger.exception("Judge extraction error")
@@ -269,6 +282,7 @@ class EvaluationPipeline:
                     evaluation_result=f"extraction_error: extraction: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.EXTRACTION,
+                    judge_votes=judge_votes_of(exc),
                 )
             except JudgeContractError as exc:
                 _logger.exception("Judge contract error")
@@ -277,6 +291,7 @@ class EvaluationPipeline:
                     evaluation_result=f"extraction_error: contract: {exc}",
                     evaluation_method=EvaluationMethod.JUDGE,
                     extraction_error=JudgeErrorKind.CONTRACT,
+                    judge_votes=judge_votes_of(exc),
                 )
 
         # Unreachable: the misconfig guard at the top of evaluate() raises

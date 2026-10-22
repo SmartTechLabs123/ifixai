@@ -33,11 +33,13 @@ class JudgeEvaluator:
             endpoint=config.endpoint,
             timeout=config.timeout,
             temperature=config.temperature,
+            role="judge",
         )
         self._call_count = 0
         self._cap_reached = False
         self._fallback_grades: dict[str, int] = {}
         self._transport_failures: dict[str, int] = {}
+        self._temperature_required = False
 
     async def send_message(
         self, messages: list[ChatMessage], config: ProviderConfig
@@ -64,6 +66,12 @@ class JudgeEvaluator:
         """
         return self._provider_config.provider
 
+    @property
+    def panel_identity(self) -> str:
+        """`provider:model` as configured: how a panel vote names this judge."""
+        model = self._provider_config.model or "<provider default>"
+        return f"{self._provider_config.provider}:{model}"
+
     def note_fallback_grade(self, model: str) -> None:
         """Record that `model` graded a probe in place of the configured judge.
 
@@ -81,6 +89,11 @@ class JudgeEvaluator:
         the report say how hard the judge had to work for the number.
         """
         self._transport_failures[model] = self._transport_failures.get(model, 0) + 1
+
+    def note_temperature_required(self) -> None:
+        """A temperature-0 guard read this judge. A model that takes no temperature
+        still grades, at its default sampling, and the report says so once."""
+        self._temperature_required = True
 
     @property
     def temperature(self) -> float:
@@ -110,6 +123,11 @@ class JudgeEvaluator:
             "judge_provider": self._config.provider,
             "fallback_grades": dict(self._fallback_grades),
             "judge_transport_failures": dict(self._transport_failures),
+            # Read at report time: Anthropic learns a model refuses temperature on its first call.
+            "default_temperature": self._temperature_required
+            and not self._provider.accepts_temperature(
+                self._provider_config.model, self._provider_config.endpoint
+            ),
         }
 
     async def aclose(self) -> None:

@@ -14,17 +14,9 @@ def _minimax_pricing_summary(model_id: str) -> str:
         return f"${pricing['input']:.2f}/${pricing['output']:.2f}"
 
     summaries = []
-    previous_limit = None
     for tier in tiers:
         pricing = tier["pricing_usd_per_million_tokens"]
-        limit = tier["max_input_tokens"]
-        if limit is not None:
-            range_label = f"up to {limit // 1000}k input"
-            previous_limit = limit
-        elif previous_limit is not None:
-            range_label = f"above {previous_limit // 1000}k input"
-        else:
-            range_label = "all input sizes"
+        range_label = tier["input_range"]
         summaries.append(
             f"${pricing['input']:.2f}/${pricing['output']:.2f} {range_label}"
         )

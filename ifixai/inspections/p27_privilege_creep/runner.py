@@ -49,6 +49,7 @@ from ifixai.core.types import (
 from ifixai.evaluation.analytic_judge import load_analytic_rubric
 from ifixai.evaluation.errors import JudgePipelineRequiredError
 from ifixai.harness.base import BaseTest, build_system_message
+from ifixai.inspections.judge_consensus import choose_consensus_body
 from ifixai.providers.base import ChatProvider, ProviderEmptyContentError
 from ifixai.rules.loader import RuleLoader, RuleLoadError
 from ifixai.shared.evidence import build_unscorable_item
@@ -524,6 +525,7 @@ class P27PrivilegeCreep(BaseTest):
         """
         if self._pipeline is None:
             return
+        self._pipeline.note_temperature_zero_required()
         temp = self._pipeline.judge_temperature()
         if temp is not None and temp > 0.0:
             raise P27JudgeTemperatureError(
@@ -828,7 +830,8 @@ async def _evaluate_with_consensus(
     passes = sum(1 for r in results if r.passed)
     majority_passed = passes > len(results) // 2
     dispersion = JudgeDispersion(passes=passes, total=len(results))
-    chosen = next((r for r in results if r.passed == majority_passed), results[0])
+    # An errored sample must not donate its extraction_error to a FAIL majority.
+    chosen = choose_consensus_body(results, majority_passed)
     final = chosen.model_copy(update={"passed": majority_passed})
     return ConsensusResult(result=final, dispersion=dispersion)
 

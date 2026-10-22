@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import functools
 import json
 import logging
 import math
@@ -9,7 +10,7 @@ import secrets
 import weakref
 from enum import Enum
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final, Literal, Optional
 
 import yaml
 from json_repair import repair_json
@@ -20,6 +21,7 @@ from ifixai.core.types import (
     ChatMessage,
     ClassifierPair,
     DimensionScore,
+    JudgeVote,
     ProviderConfig,
     ReferenceSet,
     RubricDimension,
@@ -32,6 +34,7 @@ from ifixai.providers.base import (
     ProviderTruncatedError,
     is_fatal_provider_error,
 )
+from ifixai.providers.secrets import scrub_secrets
 
 # The harness's own asyncio.wait_for deadline, alongside the provider-reported
 # ones. On 3.10 asyncio.TimeoutError is not the builtin, so both are listed.
@@ -60,12 +63,16 @@ class JudgeContractError(ValueError):
     pass
 
 
+class JudgeTransientError(JudgeExtractionError):
+    """Every judge model timed out, 5xx'd or cut off: no verdict, and nothing said about the agent."""
+
+
 logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE: float = 0.5
 
-# Cut-offs in a row (no verdict between) before a judge model is retired.
-_CUTOFF_RETIRE_STREAK: Final[int] = 3
+# Failures in a row (no verdict between) before a judge model is retired.
+_RETIRE_STREAK: Final[int] = 3
 
 
 # Per grading call. The 60s default suits a fast direct-API judge; a judge
@@ -95,6 +102,28 @@ _JUDGE_TIMEOUT: float = _judge_timeout_from_env()
 
 JUDGE_MAX_TOKENS_FLOOR: int = 512
 JUDGE_MAX_TOKENS_CEILING: int = 2048
+# Room for a reasoning judge to think before the verdict, on every call. Other
+# judges keep the rubric budget: some are capped at 4096 tokens.
+JUDGE_REASONING_HEADROOM_TOKENS: int = 4096
+# Model ids that think before answering: o1/o3/o4, gpt-5*, *-r1*, deepseek-reasoner,
+# *thinking*, gemini-2.5-pro, gemini-3*, qwq, grok-*-mini, gpt-oss*. Matched on the
+# id after any "vendor/" prefix.
+_REASONING_JUDGE_MODELS = re.compile(
+    r"^(?:o[134](?:-|$)|gpt-5|deepseek-reasoner|grok-.*-mini|gpt-oss)"
+    r"|-r1|thinking|gemini-2\.5-pro|gemini-3|qwq",
+    re.IGNORECASE,
+)
+
+
+@functools.cache
+def reasoning_headroom(model: str | None) -> int:
+    """Extra tokens `model` gets on every judge call; 0 unless it is a known reasoning judge.
+    Cached: the chain repeats a handful of ids on every grade."""
+    if model and _REASONING_JUDGE_MODELS.search(model.rsplit("/", 1)[-1]):
+        return JUDGE_REASONING_HEADROOM_TOKENS
+    return 0
+
+
 JUDGE_PER_DIM_TOKEN_BUDGET: int = 60
 JUDGE_OVERHEAD_TOKEN_BUDGET: int = 200
 
@@ -104,6 +133,14 @@ JUDGE_OVERHEAD_TOKEN_BUDGET: int = 200
 _DIMENSIONS_KEY_ALIASES: Final[frozenset[str]] = frozenset(
     {"dimensions", "verdicts", "results", "scores", "evaluations"}
 )
+
+# The top-level turn keys a multi-turn rubric may ask the judge for, beside `dimensions`: the first
+# turn any mandatory dimension failed, and `<dimension>_onset_turn` for one dimension.
+ONSET_KEY: Final[str] = "onset_turn"
+ONSET_KEY_SUFFIX: Final[str] = "_onset_turn"
+
+# Characters of a panel member's error kept on its "no verdict" vote.
+VOTE_ERROR_CHARS: Final[int] = 300
 
 # Truthy / falsy string verdict tokens for flat-shape recovery
 # ({"dim_a": "passed", ...}). Case-insensitive comparison at the call site.
@@ -447,10 +484,14 @@ def build_judge_prompt(
     return "\n".join(lines)
 
 
+# Any text up to the next field, never into the next dimension's "name": a bare
+# .*? ran past a quoted "false" and took the next dimension's verdict.
+_WITHIN_DIM = r'(?:(?!"name"\s*:).)*?'
 _DIM_REGEX = re.compile(
     r'"name"\s*:\s*"(?P<name>[^"]+)"'
-    r'.*?"passed"\s*:\s*(?P<passed>true|false)'
-    r'(?:.*?"reasoning"\s*:\s*"(?P<reasoning>[^"]*)")?',
+    + _WITHIN_DIM
+    + r'"passed"\s*:\s*(?:"(?P<quoted>[^"]*)"|(?P<bare>[\w.+-]+))'
+    + r'(?:' + _WITHIN_DIM + r'"reasoning"\s*:\s*"(?P<reasoning>[^"]*)")?',
     re.DOTALL,
 )
 
@@ -470,7 +511,18 @@ def _regex_fallback(text: str, rubric: AnalyticRubric) -> dict:
         key = canonical.lower()
         if key in conflicts:
             continue
-        is_passed = m.group("passed") == "true"
+        # Read like a parsed JSON value: a quoted word stays a string.
+        raw: object = m.group("quoted")
+        if raw is None:
+            try:
+                raw = json.loads(m.group("bare"))
+            except json.JSONDecodeError:
+                raw = m.group("bare")
+        flag = read_verdict_flag(raw)
+        if flag == "unreadable":
+            logger.debug("Regex fallback: no readable verdict for %r", name)
+            continue
+        is_passed = flag == "pass"
         if key in seen:
             if seen[key] != is_passed:
                 conflicts.add(key)
@@ -509,22 +561,6 @@ def _normalize_dim_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", cleaned.lower())
 
 
-def _parse_dimension_passed(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in _VERDICT_TRUE_TOKENS:
-            return True
-        if token in _VERDICT_FALSE_TOKENS:
-            return False
-    raise JudgeContractError(
-        f"Judge dimension 'passed' must be a boolean, integer 0/1, or a recognized verdict token; got {value!r}"
-    )
-
-
 def _fuzzy_match_dim(name: str, rubric: AnalyticRubric) -> Optional[str]:
     """Return the canonical rubric dim name for a (possibly typo'd) judge name.
 
@@ -541,6 +577,28 @@ def _fuzzy_match_dim(name: str, rubric: AnalyticRubric) -> Optional[str]:
     return candidates[matches[0]] if matches else None
 
 
+VerdictFlag = Literal["pass", "fail", "unreadable"]
+
+
+def read_verdict_flag(value: object) -> VerdictFlag:
+    """A dimension's `passed`, read by what it says: `bool("false")` is True.
+
+    A JSON boolean, 0/1, or a known verdict word (any case). Anything else (absent,
+    null, another number, an unknown word) is unreadable: the dimension is missing.
+    """
+    if isinstance(value, bool):
+        return "pass" if value else "fail"
+    if isinstance(value, int) and value in (0, 1):
+        return "pass" if value == 1 else "fail"
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _VERDICT_TRUE_TOKENS:
+            return "pass"
+        if token in _VERDICT_FALSE_TOKENS:
+            return "fail"
+    return "unreadable"
+
+
 def _recover_dimensions_from_top_level(
     data: dict, rubric: AnalyticRubric
 ) -> Optional[list[dict]]:
@@ -554,23 +612,23 @@ def _recover_dimensions_from_top_level(
     reserved = {"overall_reasoning", "dimensions"}
     recovered: list[dict] = []
     for key, value in data.items():
-        if key in reserved:
+        # An onset key holds a turn number; a long dimension name can fuzzy-match it, and a turn of 1
+        # would then read as that dimension passing.
+        if key in reserved or is_onset_key(key):
             continue
         canonical = _fuzzy_match_dim(key, rubric)
         if canonical is None:
             continue
-        if isinstance(value, bool):
-            recovered.append({"name": canonical, "passed": value, "reasoning": ""})
-        elif isinstance(value, dict):
-            recovered.append(
-                {
-                    "name": canonical,
-                    "passed": _parse_dimension_passed(value.get("passed", False)),
-                    "reasoning": str(value.get("reasoning", "")),
-                }
-            )
-        elif isinstance(value, (str, int)):
-            recovered.append({"name": canonical, "passed": _parse_dimension_passed(value), "reasoning": ""})
+        entry = value if isinstance(value, dict) else {"passed": value}
+        # Kept even when unreadable: build_judge_dim_map drops it as a missing
+        # dimension, so every envelope retries the same way.
+        recovered.append(
+            {
+                "name": canonical,
+                "passed": entry.get("passed"),
+                "reasoning": str(entry.get("reasoning", "")),
+            }
+        )
     return recovered or None
 
 
@@ -687,13 +745,18 @@ def build_judge_dim_map(
                 "Judge returned unknown dimension %r — discarding", entry["name"]
             )
             continue
+        flag = read_verdict_flag(entry.get("passed"))
+        if flag == "unreadable":
+            logger.warning(
+                "Judge returned dimension %r with no readable verdict (%r); discarding",
+                entry["name"],
+                entry.get("passed"),
+            )
+            continue
         key = canonical.lower()
         if key in conflicts:
             continue
-        normalized_entry = {
-            **entry, "name": canonical,
-            "passed": _parse_dimension_passed(entry.get("passed", False)),
-        }
+        normalized_entry = {**entry, "name": canonical, "passed": flag == "pass"}
         if key in first_occurrence:
             existing = first_occurrence[key]["passed"]
             incoming = normalized_entry["passed"]
@@ -804,7 +867,35 @@ def parse_rubric_verdict(
         _dimension_score_from_judge(dim, judge_dim_map.get(dim.name.lower()))
         for dim in rubric.dimensions
     ]
-    return verdict_from_dimension_scores(rubric, dimension_scores)
+    verdict = verdict_from_dimension_scores(rubric, dimension_scores)
+    dimension_onsets = {
+        dim.name: turn
+        for dim in rubric.dimensions
+        if (turn := read_onset_turn(data, f"{dim.name}{ONSET_KEY_SUFFIX}")) is not None
+    }
+    return verdict.model_copy(
+        update={"onset_turn": read_onset_turn(data, ONSET_KEY), "dimension_onset_turns": dimension_onsets}
+    )
+
+
+def is_onset_key(key: str) -> bool:
+    """Whether a top-level verdict key is a turn a multi-turn rubric asked for, never a dimension."""
+    return key == ONSET_KEY or key.endswith(ONSET_KEY_SUFFIX)
+
+
+def read_onset_turn(data: object, key: str) -> Optional[int]:
+    """A turn a multi-turn rubric asks the judge for (`onset_turn`, or `<dimension>_onset_turn`): a
+    positive turn number, else None. Missing, null, boolean or non-numeric reads None rather than an
+    error, so a judge that leaves it out still grades; the runner that asked decides the range."""
+    if not isinstance(data, dict):
+        return None
+    value = data.get(key)
+    # ASCII digits only: str.isdigit() admits "²", which int() refuses.
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        value = int(value.strip())
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return None
 
 
 def _dimension_score_from_judge(
@@ -819,7 +910,7 @@ def _dimension_score_from_judge(
     if match is not None:
         return DimensionScore(
             dimension_name=dim.name,
-            passed=_parse_dimension_passed(match.get("passed", False)),
+            passed=match["passed"],
             reasoning=str(match.get("reasoning", "")),
             confidence=0.9,
             is_mandatory=dim.mandatory,
@@ -906,8 +997,7 @@ class JudgeTransportExhaustedError(Exception):
     model). If every candidate fails *hard*, the judge is misconfigured rather
     than merely unlucky, and the run still fails fast.
 
-    ``cutoff`` marks a cut-off reply: it is about one prompt, not a dead model,
-    so the model is only retired after ``_CUTOFF_RETIRE_STREAK`` in a row.
+    ``cutoff`` marks a cut-off reply, so the log can say so.
     """
 
     def __init__(self, detail: str, recoverable: bool, cutoff: bool = False) -> None:
@@ -917,8 +1007,12 @@ class JudgeTransportExhaustedError(Exception):
 
 
 class AnalyticRubricJudge:
-
-    def __init__(self, judge: JudgeEvaluator, sut_model: str | None = None) -> None:
+    def __init__(
+        self,
+        judge: JudgeEvaluator,
+        sut_model: str | None = None,
+        sut_provider: str | None = None,
+    ) -> None:
         self._judge = judge
         policy = load_fallback_policy()
         self._fallback_chain = policy.chain_for(judge.provider_name)
@@ -927,16 +1021,24 @@ class AnalyticRubricJudge:
             judge._provider_config.model,
             policy=policy,
             excluded_model=sut_model,
+            excluded_provider=sut_provider,
         )
         self._retired_models: set[str | None] = set()
-        self._cutoff_streaks: dict[str | None, int] = {}
+        # Model -> its failures in a row; a verdict resets it.
+        self._failure_streaks: dict[str | None, int] = {}
         self._last_exhausted: JudgeTransportExhaustedError | None = None
-        self._any_hard_failure = False
+        # Whether the last item that exhausted the chain failed hard; replayed
+        # once every model is retired. Each other item decides from its own failures.
+        self._last_item_hard = False
 
     _EXTRACTION_RETRIES = 3
 
     def classifier_provider(self) -> ClassifierPair:
         return self._judge.provider_pair()
+
+    def panel_identity(self) -> str:
+        """`provider:model` of the configured judge, as a panel vote names it."""
+        return self._judge.panel_identity
 
     def atomic_evaluator(self) -> JudgeEvaluator:
         return self._judge
@@ -1021,26 +1123,29 @@ class AnalyticRubricJudge:
                 rubric,
                 len(self._model_chain),
                 self._last_exhausted,
-                self._any_hard_failure,
+                self._last_item_hard,
             ) from self._last_exhausted
 
+        item_hard = False
         for candidate in live:
+            config = judge_config.model_copy(update={
+                "model": candidate,
+                "max_tokens": judge_config.max_tokens + reasoning_headroom(candidate),
+            })
             try:
-                verdict = await self._grade_with_model(
-                    messages,
-                    judge_config.model_copy(update={"model": candidate}),
-                    rubric,
-                )
+                verdict = await self._grade_with_model(messages, config, rubric)
             except JudgeTransportExhaustedError as exc:
+                item_hard = item_hard or not exc.recoverable
                 self._retire_model(candidate, rubric.test_id, exc)
                 continue
-            self._cutoff_streaks.pop(candidate, None)
+            self._failure_streaks.pop(candidate, None)
             if candidate != self._model_chain[0]:
                 self._judge.note_fallback_grade(candidate or "<provider default>")
             return verdict
 
+        self._last_item_hard = item_hard
         raise self._chain_exhausted_error(
-            rubric, len(live), self._last_exhausted, self._any_hard_failure
+            rubric, len(live), self._last_exhausted, item_hard
         ) from self._last_exhausted
 
     def _retire_model(
@@ -1049,46 +1154,36 @@ class AnalyticRubricJudge:
         test_id: str,
         exc: JudgeTransportExhaustedError,
     ) -> None:
-        """Take `candidate` out of the chain for the rest of the run.
-
-        A cut-off only retires it once ``_CUTOFF_RETIRE_STREAK`` land in a row,
-        so one long prompt can't kill a working judge and a broken one stops billing.
+        """Take `candidate` out of the chain for the rest of the run once
+        ``_RETIRE_STREAK`` failures land in a row (a verdict resets it), so one bad
+        reply can't kill a working judge and a broken one stops billing.
         """
         self._last_exhausted = exc
-        self._any_hard_failure = self._any_hard_failure or not exc.recoverable
         name = candidate or "<provider default>"
-        if exc.cutoff:
-            streak = self._cutoff_streaks.get(candidate, 0) + 1
-            self._cutoff_streaks[candidate] = streak
-            if streak < _CUTOFF_RETIRE_STREAK:
-                logger.warning(
-                    "Judge model %s cut off its reply on %s (%d/%d in a row), "
-                    "skipping it for this probe: %s",
-                    name,
-                    test_id,
-                    streak,
-                    _CUTOFF_RETIRE_STREAK,
-                    exc.__cause__,
-                )
-                return
-        if candidate in self._retired_models:
-            return
-        self._retired_models.add(candidate)
-        if exc.cutoff:
+        streak = self._failure_streaks.get(candidate, 0) + 1
+        self._failure_streaks[candidate] = streak
+        if streak < _RETIRE_STREAK:
             logger.warning(
-                "Retiring judge model %s for this run after %d cut-offs in a row "
-                "(last on %s): %s",
+                "Judge model %s %s on %s (%d/%d in a row), "
+                "skipping it for this probe: %s",
                 name,
-                _CUTOFF_RETIRE_STREAK,
+                "cut off its reply" if exc.cutoff else "failed",
                 test_id,
+                streak,
+                _RETIRE_STREAK,
                 exc.__cause__,
             )
             return
+        if candidate in self._retired_models:
+            return
+        self._retired_models.add(candidate)
         logger.warning(
-            "Retiring judge model %s for this run after it failed on %s — %s",
-            candidate or "<provider default>",
+            "Retiring judge model %s for this run after %d failures in a row "
+            "(last on %s): %s",
+            name,
+            streak,
             test_id,
-            exc,
+            exc.__cause__,
         )
 
     def _chain_exhausted_error(
@@ -1100,9 +1195,10 @@ class AnalyticRubricJudge:
     ) -> Exception:
         """Pick the failure kind once every candidate model has been tried.
 
-        Purely-transient exhaustion (5xx, timeouts, dropped connections) drops
-        the single probe as unscorable and lets the run continue — an upstream
-        blip must not discard the inspections already paid for. A hard failure
+        Purely-transient exhaustion (5xx, timeouts, dropped connections, cut-offs)
+        drops the single probe as unscorable, out of every score, and lets the run
+        continue: an upstream blip must not discard the inspections already paid
+        for, nor count as the agent failing. A hard failure
         on every candidate (rejected requests, unknown models) means the judge
         is misconfigured, which fail-fast still stops.
         """
@@ -1113,7 +1209,7 @@ class AnalyticRubricJudge:
         )
         if any_hard_failure:
             return JudgeCommunicationError(detail)
-        return JudgeExtractionError(detail)
+        return JudgeTransientError(detail)
 
     def _transport_budget(self) -> int:
         """Provider-fault attempts allowed on one model before the chain advances.
@@ -1178,7 +1274,7 @@ class AnalyticRubricJudge:
                 # generation. Verbose models were seen billing whole dollars per
                 # inspection this way, so a cutoff spends the model's budget in
                 # one go and the chain moves on for this probe. Only
-                # _CUTOFF_RETIRE_STREAK cut-offs in a row retire the model.
+                # _RETIRE_STREAK failures in a row retire the model.
                 cutoff = isinstance(exc, ProviderTruncatedError)
                 if transport_failures >= transport_budget or cutoff:
                     raise JudgeTransportExhaustedError(
@@ -1244,11 +1340,15 @@ class EnsembleAnalyticRubricJudge:
     """Runs all ensemble judges in parallel and aggregates via mean score."""
 
     def __init__(
-        self, ensemble: EnsembleJudgeEvaluator, sut_model: str | None = None
+        self,
+        ensemble: EnsembleJudgeEvaluator,
+        sut_model: str | None = None,
+        sut_provider: str | None = None,
     ) -> None:
         self._ensemble = ensemble
         self._per_judge: list[AnalyticRubricJudge] = [
-            AnalyticRubricJudge(e, sut_model=sut_model) for e in ensemble.evaluators
+            AnalyticRubricJudge(e, sut_model=sut_model, sut_provider=sut_provider)
+            for e in ensemble.evaluators
         ]
 
     @property
@@ -1288,10 +1388,14 @@ class EnsembleAnalyticRubricJudge:
         successes: list[RubricVerdict] = [
             r for r in raw_results if isinstance(r, RubricVerdict)
         ]
+        votes = build_panel_votes(self._per_judge, raw_results)
 
         if not successes:
-            first_exc = next(r for r in raw_results if isinstance(r, Exception))
-            raise first_exc  # type: ignore[misc]
+            failures = [r for r in raw_results if isinstance(r, Exception)]
+            chosen = min(failures, key=_ensemble_failure_rank)
+            # Every member was asked and none answered: the votes ride out on the error.
+            chosen.judge_votes = votes  # type: ignore[attr-defined]
+            raise chosen
 
         mean_score = sum(v.weighted_score for v in successes) / len(successes)
 
@@ -1339,4 +1443,56 @@ class EnsembleAnalyticRubricJudge:
             passed=overall_passed,
             verdict=consensus_verdict,  # type: ignore[arg-type]
             per_judge=successes,
+            judge_votes=votes,
         )
+
+
+def build_panel_votes(
+    members: list[AnalyticRubricJudge], outcomes: list[RubricVerdict | BaseException]
+) -> list[JudgeVote]:
+    """One vote per member, in panel order: its verdict, or "no verdict" with the error class when it
+    errored or refused. Never a pass, and never left out, so a reader can tell who answered. The
+    identity is read as text, so recording who voted can never fail the grade itself."""
+    labels = panel_labels([str(member.panel_identity()) for member in members])
+    return [panel_vote(label, outcome) for label, outcome in zip(labels, outcomes, strict=True)]
+
+
+def panel_vote(label: str, outcome: RubricVerdict | BaseException) -> JudgeVote:
+    """One member's vote. A vendor's error text is scrubbed and capped; the class is what reports show."""
+    provider = label.split(":", 1)[0]
+    if isinstance(outcome, RubricVerdict):
+        return JudgeVote(judge=label, provider=provider, verdict=outcome)
+    error = scrub_secrets(str(outcome))
+    logger.warning(
+        "Panel judge %s gave no verdict (%s): %s", label, type(outcome).__name__, error
+    )
+    return JudgeVote(
+        judge=label,
+        provider=provider,
+        error_class=type(outcome).__name__,
+        error=error[:VOTE_ERROR_CHARS],
+    )
+
+
+def panel_labels(identities: list[str]) -> list[str]:
+    """How a vote names each member: its `provider:model`, with its place in the panel added when two
+    members share one."""
+    return [
+        identity if identities.count(identity) == 1 else f"{identity}#{place}"
+        for place, identity in enumerate(identities, start=1)
+    ]
+
+
+def judge_votes_of(exc: BaseException) -> list[JudgeVote]:
+    """The per-judge votes a panel attached to the error it raised when it reached no verdict; empty
+    for any other error."""
+    votes = vars(exc).get("judge_votes")
+    return list(votes) if isinstance(votes, list) else []
+
+
+def _ensemble_failure_rank(exc: Exception) -> int:
+    """Every judge failed: the outcome must not depend on judge order. A rejected
+    judge wins, then an unusable verdict, then a judge that only timed out."""
+    if isinstance(exc, JudgeCommunicationError):
+        return 0
+    return 2 if isinstance(exc, JudgeTransientError) else 1

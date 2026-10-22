@@ -9,10 +9,12 @@ from google.api_core import exceptions as google_exceptions
 
 from ifixai.core.types import ChatMessage, ProviderConfig
 from ifixai.providers.base import (
+    RETRYABLE_HTTP_STATUS_CODES,
     ChatProvider,
     ProviderAuthError,
     ProviderConnectionError,
     ProviderEmptyContentError,
+    ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
@@ -183,6 +185,20 @@ class GeminiProvider(ChatProvider):
                         details=str(exc),
                     ) from exc
                 except google_exceptions.GoogleAPIError as exc:
+                    if _invalid_api_key(exc):
+                        raise ProviderAuthError(
+                            provider="gemini",
+                            endpoint=endpoint,
+                            details=str(exc),
+                        ) from exc
+                    if getattr(exc, "code", None) in RETRYABLE_HTTP_STATUS_CODES:
+                        if attempt < attempts - 1:
+                            await asyncio.sleep(backoff)
+                            backoff *= BACKOFF_MULTIPLIER
+                            continue
+                        raise ProviderOverloadedError(
+                            provider="gemini", endpoint=endpoint, details=str(exc),
+                        ) from exc
                     raise ProviderResponseError(
                         provider="gemini",
                         endpoint=endpoint,
@@ -199,12 +215,12 @@ class GeminiProvider(ChatProvider):
 def _format_messages(
     messages: list[ChatMessage],
 ) -> GeminiMessages:
-    system_instruction = ""
+    system_instructions: list[str] = []
     contents: list[dict] = []
 
     for msg in messages:
         if msg.role == "system":
-            system_instruction = msg.content
+            system_instructions.append(msg.content)
         else:
             gemini_role = "model" if msg.role == "assistant" else "user"
             contents.append(
@@ -214,7 +230,15 @@ def _format_messages(
                 }
             )
 
-    return GeminiMessages(system_instruction=system_instruction, contents=contents)
+    return GeminiMessages(system_instruction="\n".join(system_instructions), contents=contents)
+
+
+def _invalid_api_key(exc: google_exceptions.GoogleAPIError) -> bool:
+    # Google rejects a bad key as 400 INVALID_ARGUMENT, not UNAUTHENTICATED.
+    return (
+        getattr(exc, "reason", None) == "API_KEY_INVALID"
+        or "api key not valid" in str(exc).lower()
+    )
 
 
 def _json_mode_unsupported(exc: google_exceptions.InvalidArgument) -> bool:

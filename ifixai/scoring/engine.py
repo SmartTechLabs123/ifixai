@@ -160,7 +160,9 @@ def compute_overall_score(
     if total_weight == 0.0:
         return None
 
-    return weighted_sum / total_weight
+    # Decimal weights make an exact boundary land a hair below it
+    # (0.8999999999999999), which would cost a grade or the pass verdict.
+    return round(weighted_sum / total_weight, 9)
 
 
 def compute_strategic_score(
