@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -177,7 +178,11 @@ class GovernanceMixin(ChatProvider):
         auth = await self.authorize_tool(tool_id, user_role, config)
         if auth is None:
             return None
-        request_id = config.request_id
+        # Tag records written without a request id with a unique id so they
+        # are not treated as ambient by get_audit_trail: only fixture-seeded
+        # records are ambient. Untagged runtime records otherwise leak into
+        # every later inspection's audit-trail query (e.g. B13 in full runs).
+        request_id = config.request_id or f"untagged-{uuid.uuid4().hex}"
         if auth.authorized:
             self._governance.audit_log.records.append(
                 {
