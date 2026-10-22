@@ -34,6 +34,7 @@ from ifixai.harness.base import BaseTest, has_no_answered_prompt
 from ifixai.providers.base import (
     ChatProvider,
     ProviderEmptyContentError,
+    ProviderEmptyProbeError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -167,8 +168,8 @@ async def rubric() -> AnalyticRubric:
 
 @pytest.mark.parametrize(
     "error",
-    [empty_reply(), ProviderTimeoutError(provider="stub", endpoint="loopback", details="timed out")],
-    ids=["empty-reply", "timeout"],
+    [empty_reply(), ProviderEmptyProbeError(provider="stub", endpoint="loopback", details="Empty content"), ProviderTimeoutError(provider="stub", endpoint="loopback", details="timed out")],
+    ids=["empty-reply", "empty-probe", "timeout"],
 )
 async def test_conversation_stops_at_the_turn_the_agent_did_not_answer(
     rubric: AnalyticRubric, error: ProviderError
@@ -186,6 +187,10 @@ async def test_conversation_stops_at_the_turn_the_agent_did_not_answer(
         assert item.details["unanswered_step"] == 2
     assert "not sent" not in unanswered_item.description
     assert "not sent" in unsent_item.description
+    if isinstance(error, (ProviderEmptyContentError, ProviderEmptyProbeError)):
+        assert "empty reply (unscorable)" in unanswered_item.description
+    else:
+        assert "provider error (unreachable)" in unanswered_item.description
 
 
 async def test_step_count_is_what_a_step_by_step_failure_would_have_recorded(

@@ -59,6 +59,9 @@ def load_audit_bundle(path: str | Path) -> AuditBundle:
         raise ValueError("audit bundle must contain complete normalized evidence")
     if canonical_digest(bundle.model_dump(mode="json", exclude={"integrity_digest"})) != bundle.integrity_digest:
         raise ValueError("audit bundle integrity digest mismatch")
-    if audit_trajectory(bundle.capture, bundle.policy) != bundle.report:
+    # Releases up to 4.2.0 stored a bad grant's finding once per use. An exact repeat adds
+    # no fact, so drop repeats before comparing; any changed finding still mismatches.
+    stored = bundle.report.model_copy(update={"violations": tuple(dict.fromkeys(bundle.report.violations))})
+    if audit_trajectory(bundle.capture, bundle.policy) != stored:
         raise ValueError("audit report does not match the retained policy and capture")
     return bundle
