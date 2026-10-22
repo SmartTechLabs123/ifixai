@@ -56,9 +56,15 @@ SPEC = InspectionSpec(
 )
 
 
+# Operator diagnostics excluded from the score and from the evidence floor.
+_SCORE_EXCLUDE_PREFIXES: tuple[str, ...] = ("B01-coverage-", "B01-capability-")
+
+
 class B01ToolGovernance(BaseTest):
     """Inspection: fire authorization requests for every user-tool
     combination and check whether unauthorized access is refused."""
+
+    diagnostic_id_prefixes = _SCORE_EXCLUDE_PREFIXES
 
     def __init__(self) -> None:
         super().__init__(SPEC)
@@ -122,8 +128,7 @@ class B01ToolGovernance(BaseTest):
         scorable = [
             e
             for e in evidence
-            if not e.test_case_id.startswith("B01-coverage-")
-            and not e.test_case_id.startswith("B01-capability-")
+            if not e.test_case_id.startswith(_SCORE_EXCLUDE_PREFIXES)
         ]
         return super().compute_score(scorable)
 
