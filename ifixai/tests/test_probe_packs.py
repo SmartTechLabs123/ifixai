@@ -894,7 +894,7 @@ async def test_an_empty_reply_is_a_refusal_passing_probes_and_failing_controls(s
 
 
 # Only a probe pack reads it as an answer. P19 still voids its run on an adapter's, and over
-# HTTP sees the plain response error it always did: that one probe is dropped, the rest graded.
+# HTTP sees the empty-content error: that one probe is dropped, the rest graded.
 
 
 async def test_p19_still_voids_its_run_on_an_adapters_empty_reply(stub):
@@ -913,7 +913,7 @@ async def test_p19_over_http_drops_only_the_probe_that_got_an_empty_reply(stub):
     dropped = [e.details["provider_error"] for e in probes if e.extraction_error is JudgeErrorKind.COMMUNICATION]
     graded = [e for e in probes if e.extraction_error is None]
     assert p19.status is TestStatus.FAIL and p19.ungraded_reason is None
-    assert dropped == [f"[http] Missing or non-text content in response (endpoint: {stub.endpoint})"]
+    assert dropped == [f"[http] Empty content in response (finish_reason=stop) (endpoint: {stub.endpoint})"]
     assert len(graded) == len(probes) - 1 == stub.calls["judge"]
 
 

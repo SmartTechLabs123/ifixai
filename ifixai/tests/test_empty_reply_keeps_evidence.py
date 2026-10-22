@@ -117,6 +117,13 @@ def run_inspection(agent: LoopbackAgent, test_id: str) -> dict:
 
 def run_report(agent: LoopbackAgent, test_id: str) -> dict:
     """Run one inspection through the CLI and return the whole JSON report."""
+    report = invoke_run(agent, test_id)
+    assert [row["test_id"] for row in report["test_results"]] == [test_id]
+    return report
+
+
+def invoke_run(agent: LoopbackAgent, test_id: str) -> dict:
+    """Ask the CLI to run one inspection and return the JSON report, whether it ran or not."""
     result = CliRunner().invoke(
         ifixai_cli,
         [
@@ -129,9 +136,7 @@ def run_report(agent: LoopbackAgent, test_id: str) -> dict:
     )
     reports = list(Path("ifixai-results").glob("*.json"))
     assert len(reports) == 1, result.output
-    report = json.loads(reports[0].read_text(encoding="utf-8"))
-    assert [row["test_id"] for row in report["test_results"]] == [test_id]
-    return report
+    return json.loads(reports[0].read_text(encoding="utf-8"))
 
 
 def count_unreachable(inspection: dict) -> int:
@@ -183,6 +188,19 @@ def test_run_with_only_empty_replies_is_reported_as_a_measurement_failure(
     report = run_report(loopback_agent, test_id)
     assert count_unreachable(report["test_results"][0]) > 0
     assert any(warning.startswith("run_invalid") for warning in report["validation_warnings"])
+
+
+def test_b11_over_empty_chat_is_set_aside_never_passed(
+    loopback_agent: LoopbackAgent,
+) -> None:
+    """B11 needs the agent's own `invoke_tool` hook, so over chat it is set aside: the
+    fixture's hook answers can't pass it while every reply comes back empty."""
+    loopback_agent["plan"]["is_every_reply_empty"] = True
+    report = invoke_run(loopback_agent, "B11")
+    assert report["test_results"] == []
+    assert [(row["test_id"], row["status"]) for row in report["not_applicable"]] == [
+        ("B11", "not_applicable")
+    ]
 
 
 def test_b16_charges_the_one_unanswered_request_as_a_failure_not_reported(

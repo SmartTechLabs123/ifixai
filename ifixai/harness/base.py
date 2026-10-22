@@ -4,7 +4,8 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Optional, TypedDict, TypeVar
+from dataclasses import dataclass
+from typing import Any, TypedDict, TypeVar, cast
 
 from ifixai.core.types import (
     AnalyticRubric,
@@ -36,6 +37,7 @@ from ifixai.evaluation.pipeline import (
 from ifixai.providers.base import (
     ChatProvider,
     ProviderEmptyContentError,
+    ProviderEmptyProbeError,
     ProviderError,
     ProviderRateLimitError,
 )
@@ -96,6 +98,46 @@ def is_provider_failure(item: EvidenceItem) -> bool:
     """A call the agent's provider never answered. A judge that failed is the judge's gap, which
     the run reports as judge unavailable, never as the agent's outage."""
     return item.extraction_error is JudgeErrorKind.COMMUNICATION
+
+
+@dataclass(repr=False)
+class _InspectionResponses:
+    """Observe only this invocation's SUT calls, including custom runner paths."""
+
+    provider: ChatProvider
+    attempts: int = 0
+    empty: int = 0
+    first_empty: ProviderEmptyContentError | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        # Preserve every capability method and provider flag. Judge transports
+        # belong to the pipeline and never pass through this SUT wrapper.
+        if name == "provider":
+            # Only reached before `provider` is set (a copy being rebuilt): forwarding would recurse.
+            raise AttributeError(name)
+        return getattr(self.provider, name)
+
+    @property  # type: ignore[misc]
+    def __class__(self) -> type:
+        # `isinstance` reads `__class__`, so a runner's type check (B03 asks over chat only
+        # for a `GovernanceMixin`) sees the provider, not this wrapper.
+        return type(self.provider)
+
+    async def send_message(
+        self, messages: list[ChatMessage], config: ProviderConfig,
+    ) -> str:
+        self.attempts += 1
+        try:
+            return await self.provider.send_message(messages, config)
+        except ProviderEmptyContentError as exc:
+            self.empty += 1
+            if self.first_empty is None:
+                self.first_empty = exc
+            # Keep a catchable empty-probe type for bounded retries without
+            # triggering a runner's whole-inspection empty-content boundary.
+            raise ProviderEmptyProbeError(
+                provider=exc.provider, endpoint=exc.endpoint, details=exc.details,
+            ) from exc
 
 
 def build_system_message(
@@ -213,7 +255,7 @@ class BaseTest(ABC):
 
     def compute_score_breakdown(
         self, evidence: list[EvidenceItem]
-    ) -> Optional[ScoreBreakdown]:
+    ) -> ScoreBreakdown | None:
         return None
 
     def compute_findings(self, evidence: list[EvidenceItem]) -> list[str]:
@@ -245,7 +287,7 @@ class BaseTest(ABC):
         """The items a score counts (see `counts_toward_score`)."""
         return scored_evidence(evidence, self.spec.count_extraction_errors_as_fail)
 
-    def get_variant_seed(self) -> Optional[int]:
+    def get_variant_seed(self) -> int | None:
         return None
 
     def get_variant_seed_pinned(self) -> bool:
@@ -267,6 +309,8 @@ class BaseTest(ABC):
         self.short_reason = None
         start = time.monotonic()
         inspection = CURRENT_INSPECTION.set(self.spec.test_id)
+        responses = _InspectionResponses(provider)
+        evidence: list[EvidenceItem] = []
         answers = FixtureAnswers()
         # The mock's built-in governance answers as the agent; a run re-points it at the
         # fixture's `governance:` only when the fixture has one.
@@ -274,8 +318,14 @@ class BaseTest(ABC):
         scope = FIXTURE_ANSWERS.set(None if own else answers)
         try:
             evidence = self._flag_declared_diagnostics(
-                await self.run(provider, config, fixture)
+                await self.run(cast(ChatProvider, responses), config, fixture)
             )
+            if (
+                responses.attempts > 0
+                and responses.empty == responses.attempts
+                and responses.first_empty is not None
+            ):
+                raise responses.first_empty  # noqa: TRY301 — existing execute guard maps an all-empty inspection
             # Conservative on purpose: one hook the fixture answered makes every hook item
             # (one no chat message produced) a note, an adapter's own answers included.
             notes = [as_note(e, declared=True) for e in evidence if answers.seen and not e.prompt_sent]
@@ -352,6 +402,11 @@ class BaseTest(ABC):
                 ungraded_reason=ungraded,
             )
         except ProviderEmptyContentError as exc:
+            empty_error = (
+                responses.first_empty
+                if responses.empty == responses.attempts and responses.first_empty is not None
+                else exc
+            )
             # Empty SUT response is unscorable, not misconfigured. The run
             # completed; the model produced no scoreable output. Map to
             # INCONCLUSIVE so it routes through the existing inconclusive
@@ -368,11 +423,13 @@ class BaseTest(ABC):
                 passed=False,
                 passing=False,
                 status=TestStatus.INCONCLUSIVE,
-                evidence=[],
+                # Empty replies are ordinary unscorable measurements. Retain
+                # their communication-failure flags for the run-health gate.
+                evidence=evidence,
                 duration_seconds=duration,
                 duration_ms=duration * 1000,
-                error=str(exc),
-                error_message=str(exc),
+                error=str(empty_error),
+                error_message=str(empty_error),
                 insufficient_evidence=True,
             )
         except Exception as exc:  # noqa: BLE001 — top-level inspection guard: any failure becomes a failed TestResult, never aborts the run
@@ -680,7 +737,7 @@ def build_unanswered_step_items(
     error = turn["error"]
     failure = (
         "empty reply (unscorable)"
-        if isinstance(error, ProviderEmptyContentError)
+        if isinstance(error, (ProviderEmptyContentError, ProviderEmptyProbeError))
         else "provider error (unreachable)"
     )
     items: list[EvidenceItem] = []

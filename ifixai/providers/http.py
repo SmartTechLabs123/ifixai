@@ -16,6 +16,7 @@ from ifixai.providers.base import (
     HttpEmptyReplyError,
     ProviderAuthError,
     ProviderConnectionError,
+    ProviderEmptyContentError,
     ProviderOverloadedError,
     ProviderRateLimitError,
     ProviderResponseError,
@@ -299,9 +300,31 @@ class HttpProvider(ChatProvider):
                 details=f"Reply withheld (finish_reason={first['finish_reason']})",
                 tool_calls=calls,
             )
+        if (
+            isinstance(message, dict)
+            and isinstance(content, str)
+            and not content
+            and not message.get("tool_calls")
+            and not message.get("function_call")
+            and str(first.get("finish_reason", "")).lower() not in {"tool_calls", "function_call"}
+            and data.get("error") is None
+            and first.get("error") is None
+            and str(first.get("finish_reason", "")).lower() != "error"
+        ):
+            raise ProviderEmptyContentError(
+                provider="http",
+                endpoint=endpoint,
+                details=f"Empty content in response (finish_reason={first.get('finish_reason', 'unknown')})",
+            )
         # Same text as the plain error below, so inspections that don't catch it see what
-        # they always saw.
-        if isinstance(message, dict) and content in (None, ""):
+        # they always saw. An upstream error object is the upstream's failure, never a reply
+        # the agent gave, so it stays the plain error.
+        if (
+            isinstance(message, dict)
+            and content in (None, "")
+            and data.get("error") is None
+            and first.get("error") is None
+        ):
             raise HttpEmptyReplyError(
                 provider="http",
                 endpoint=endpoint,

@@ -52,7 +52,8 @@ async def test_malformed_chat_reply_is_provider_response_error(reply):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("message", [{"content": ""}, {"content": None}, {"content": None, "tool_calls": []}])
+# A completed empty string is `ProviderEmptyContentError` (test_http_empty_content_native.py).
+@pytest.mark.parametrize("message", [{"content": None}, {"content": None, "tool_calls": []}])
 async def test_empty_chat_reply_is_an_empty_reply(message):
     async def chat(_request):
         return aiohttp.web.json_response({"choices": [{"message": message, "finish_reason": "stop"}]})

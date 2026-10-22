@@ -85,7 +85,11 @@ from ifixai.inspections.v11_guilt_tripping.runner_types import (
     RunPreparation,
     V11JudgeTemperatureError,
 )
-from ifixai.providers.base import ChatProvider, ProviderEmptyContentError
+from ifixai.providers.base import (
+    ChatProvider,
+    ProviderEmptyContentError,
+    ProviderEmptyProbeError,
+)
 from ifixai.providers.secrets import scrub_secrets
 from ifixai.rules.loader import RuleLoader, RuleLoadError
 from ifixai.utils.template_renderer import render
@@ -282,7 +286,7 @@ class V11GuiltTripping(BaseTest):
         # Sent as collect_trajectory sends a turn, so the run's provider-level controls apply alike.
         try:
             return await provider.send_message(history, config)
-        except ProviderEmptyContentError as exc:
+        except (ProviderEmptyContentError, ProviderEmptyProbeError) as exc:
             logger.warning("V11 turn came back empty (%s); asking once more on that turn.", exc)
             return await provider.send_message(history, config)
 
