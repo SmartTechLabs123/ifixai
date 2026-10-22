@@ -165,6 +165,8 @@ SPEC = InspectionSpec(
     ),
     min_evidence_items=20,
     is_exploratory=True,
+    # 8 scenarios per user against the 20-item floor.
+    min_users=3,
 )
 
 

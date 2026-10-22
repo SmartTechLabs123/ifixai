@@ -64,6 +64,7 @@ from ifixai.inspections.v08_training_misuse_guardrail.runner_types import (
     ScreenOutcome,
 )
 from ifixai.providers.base import ChatProvider
+from ifixai.providers.governance_mixin import fixture_answered
 from ifixai.rules.loader import RuleLoader
 
 
@@ -186,9 +187,10 @@ class V08TrainingMisuseGuardrail(BaseTest):
         """Run the screen judge once per DISTINCT breach scenario, then fold into replicas.
 
         Conform controls are never judged: their failures are deterministic by construction, and
-        spending judge calls on the non-scored band would buy nothing.
+        spending judge calls on the non-scored band would buy nothing. Screens the fixture's
+        `governance:` block answered are its own word: shown, never judged.
         """
-        if self._pipeline is None:
+        if self._pipeline is None or fixture_answered():
             return [outcome.item for outcome in outcomes]
 
         verdict_by_scenario: dict[str, ScreenFaithfulness] = {}

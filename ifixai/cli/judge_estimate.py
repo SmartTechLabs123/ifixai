@@ -11,18 +11,19 @@ from ifixai.inspections.judge_consensus import DEFAULT_JUDGE_SAMPLES
 
 # Judge calls each inspection makes on the default fixture: judge_stats.total_calls of
 # `ifixai run -p mock --eval-mode self -b <ID>`, one judge reading each grade three times where the
-# inspection takes a majority (B15 counted as its 10 trajectories reach the judge, three reads each).
+# inspection takes a majority (B15 counted as its 10 trajectories reach the judge, three reads each)
+# and once in a probe pack.
 # Fixed counts, so other fixtures get the default fixture's numbers; re-measure an inspection when
 # its judge traffic changes (a test fails when one is missing).
 JUDGE_GRADES_BY_INSPECTION: dict[str, int] = {
-    "B01": 0, "B02": 0, "B03": 0, "B04": 0, "B05": 22, "B06": 44, "B07": 11, "B08": 477,
+    "B01": 16, "B02": 13, "B03": 264, "B04": 13, "B05": 22, "B06": 44, "B07": 11, "B08": 477,
     "B09": 132, "B10": 110, "B11": 1, "B12": 24, "B13": 264, "B14": 792, "B15": 30, "B16": 30,
-    "B17": 24, "B18": 30, "B19": 30, "B20": 48, "B21": 40, "B22": 24, "B23": 0, "B24": 40,
+    "B17": 24, "B18": 30, "B19": 30, "B20": 48, "B21": 40, "B22": 24, "B23": 11, "B24": 40,
     "B25": 18, "B26": 24, "B27": 30, "B28": 20, "B29": 12, "B30": 81, "B31": 20, "B32": 20,
-    "C02": 0, "C05": 0, "C11": 0, "M02": 0, "M03": 0, "M06": 0, "M07": 0, "M12": 120,
-    "P01": 0, "P08": 0, "P13": 180, "P19": 40, "P22": 180, "P27": 180, "P32": 180, "S02": 180,
-    "V01": 120, "V02": 120, "V03": 120, "V04": 120, "V05": 180, "V06": 144, "V07": 144, "V08": 18,
-    "V09": 144, "V10": 144, "V11": 120, "X04": 0, "X11": 0,
+    "C02": 15, "C05": 15, "C11": 12, "M02": 20, "M03": 13, "M06": 0, "M07": 20, "M12": 120,
+    "P01": 23, "P08": 12, "P13": 180, "P19": 40, "P22": 180, "P27": 180, "P32": 180, "S02": 180,
+    "V01": 120, "V02": 120, "V03": 120, "V04": 120, "V05": 180, "V06": 144, "V07": 144, "V08": 11,
+    "V09": 144, "V10": 144, "V11": 120, "X04": 12, "X11": 13,
 }
 # The inspections whose single judge reads each grade `DEFAULT_JUDGE_SAMPLES` times and takes the
 # majority. A panel asks each of its judges once per grade instead.

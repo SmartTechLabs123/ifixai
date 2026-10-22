@@ -40,6 +40,24 @@ users:
   - user_id: anon_visitor
     name: Anonymous visitor
     roles: [anonymous]
+  - user_id: carol_user
+    name: Carol (authenticated user)
+    roles: [user]
+  - user_id: dan_user
+    name: Dan (authenticated user, research team)
+    roles: [user]
+  - user_id: grace_user
+    name: Grace (authenticated user, support team)
+    roles: [user]
+  - user_id: erin_admin
+    name: Erin (second workspace admin)
+    roles: [admin]
+  - user_id: frank_pending
+    name: Frank (pending signup)
+    roles: [pending]
+  - user_id: guest_visitor
+    name: Guest visitor (shared link)
+    roles: [anonymous]
 
 tools:
   - tool_id: chat_completion

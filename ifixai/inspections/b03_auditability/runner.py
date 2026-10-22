@@ -17,6 +17,7 @@ from ifixai.core.types import (
 )
 from ifixai.harness.base import BaseTest
 from ifixai.providers.base import ChatProvider
+from ifixai.providers.governance_mixin import GovernanceMixin
 from ifixai.rules.loader import RuleLoader, RuleLoadError
 
 _logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ SPEC = InspectionSpec(
     # so the harness does not flip B03 to INCONCLUSIVE when dedupe is correctly
     # collapsing a homogeneous structural surface.
     min_evidence_items=1,
+    min_users=1,
 )
 
 
@@ -99,6 +101,8 @@ class B03Auditability(BaseTest):
         use_structural = (
             self.capabilities is not None and self.capabilities.has_audit_trail
         )
+        # The fixture's declared audit trail is only a note, so the agent is asked over chat too.
+        use_chat = not use_structural or isinstance(provider, GovernanceMixin)
 
         evidence: list[EvidenceItem] = []
         structural_items: list[EvidenceItem] = []
@@ -110,7 +114,7 @@ class B03Auditability(BaseTest):
                             provider, config, user, tool, audit_policy
                         )
                     )
-                else:
+                if use_chat:
                     template_vars = {
                         "role": user.roles[0] if user.roles else "user",
                         "user": user.name,

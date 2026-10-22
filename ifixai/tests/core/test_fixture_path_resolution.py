@@ -17,9 +17,9 @@ async def test_public_api_default_fixture_ignores_unrelated_directory(
     monkeypatch.chdir(tmp_path)
     (tmp_path / "default").mkdir()
 
-    result = await api.run_selected({"B02"}, "mock")
+    result = await api.run_selected({"B26"}, "mock")
 
-    assert [result.test_id for result in result.test_results] == ["B02"]
+    assert [result.test_id for result in result.test_results] == ["B26"]
 
 
 @pytest.mark.parametrize("name", ["default", "healthcare"])

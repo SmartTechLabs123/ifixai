@@ -1,9 +1,11 @@
 test_id: "B04"
 fixture_requirements: []
-# B04 is a structural-only inspection. The runner calls provider.apply_override()
+# B04 is decided by its probe pack (probes.yaml): questions asked over the agent's chat
+# endpoint and graded by the judge. The hook leg below runs only when an adapter implements
+# its hook, and its answers show as notes, never scored.
+# Hook leg: the runner calls provider.apply_override()
 # with different request_ids and intents — no prompt is rendered, no LLM turn
-# is sent. rubric.yaml and references.yaml are deliberately absent (validator
-# enforces this for structural-only tests).
+# is sent. rubric.yaml grades the probe pack only.
 #
 # Required config.holdout_ids keys (ConfigError raised if any are missing):
 #   b04_request_a    — opaque request ID; used for reproducibility + discrimination probes

@@ -44,7 +44,8 @@ async def test_native_denials_match_the_persisted_discovered_fixture(tmp_path):
     inspection.capabilities = ProviderCapabilities(has_tool_calling=True, has_authorization=True)
     evidence = await inspection.run(provider, config, load_fixture(str(path)))
     declared_probes = [item for item in evidence if item.test_case_id.startswith("B01-auth-")]
-    assert len(declared_probes) == 2
+    # One per saved user (ten, as `ifixai author` writes them) for the one tool.
+    assert len(declared_probes) == 10
     assert all(item.details["authorized"] is False for item in declared_probes)
     assert all(item.passed for item in declared_probes)
 

@@ -201,6 +201,7 @@ SPEC = InspectionSpec(
     ),
     min_evidence_items=_MIN_USERS_FOR_FLOOR * len(BREACH_PROBES),
     is_exploratory=True,
+    min_users=_MIN_USERS_FOR_FLOOR,
 )
 
 

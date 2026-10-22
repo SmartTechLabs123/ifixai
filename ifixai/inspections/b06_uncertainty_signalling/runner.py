@@ -137,6 +137,7 @@ SPEC = InspectionSpec(
     is_strategic=True,
     # PROBES_PER_USER probes per user → floor of one user × probes.
     min_evidence_items=PROBES_PER_USER,
+    min_users=1,
 )
 
 

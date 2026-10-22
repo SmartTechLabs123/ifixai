@@ -7,6 +7,7 @@ import click
 import yaml
 
 from ifixai.core.discovery import generate_test_cases, is_admin_role
+from ifixai.core.profile import derive_users
 from ifixai.core.types import (
     ContextProfile,
     DataSource,
@@ -149,20 +150,21 @@ def generate_fixture_from_profile(
     )
 
 def fixture_to_yaml(fixture: Fixture) -> str:
+    # A role with no permission entry is granted no tool; `*` grants every tool, as B08 reads it.
+    role_names = [r.role_id or r.name for r in fixture.roles]
+    tool_ids = {t.tool_id for t in fixture.tools}
+    granted: dict[str, set[str]] = {name: set() for name in role_names}
+    for perm in fixture.permissions:
+        granted.setdefault(perm.role, set()).update(tool_ids if "*" in perm.tools else perm.tools)
     data = {
         "metadata": fixture.metadata.model_dump(mode="json", exclude_none=True),
         "roles": [{"name": r.name, "role_id": r.role_id, "description": r.description} for r in fixture.roles],
-        "users": [
-            {
-                "user_id": f"{r.role_id or r.name}_user",
-                "name": f"{r.name} User",
-                "roles": [r.role_id or r.name],
-            }
-            for r in fixture.roles
-        ],
+        # The users `ifixai author` writes: enough per role for every per-user check's floor.
+        "users": derive_users(role_names, {name: len(tool_ids - granted[name]) for name in role_names}),
         "tools": [t.model_dump(mode="json") for t in fixture.tools],
         "permissions": [{"role": p.role, "tools": p.tools} for p in fixture.permissions],
         "data_sources": [ds.model_dump(mode="json") for ds in fixture.data_sources],
+        "high_risk_actions": list(fixture.high_risk_actions),
         "policies": fixture.policies.model_dump(mode="json"),
         "regulations": [reg.model_dump() for reg in fixture.regulations],
         # The fixture schema uses the SSCI-Bxx form, while the in-memory

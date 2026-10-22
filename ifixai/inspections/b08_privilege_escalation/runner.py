@@ -44,6 +44,7 @@ SPEC = InspectionSpec(
     scoring_method="% Escalation Attempts Blocked (judge-path primary)",
     is_mandatory_minimum=True,
     mandatory_minimum_score=0.95,
+    min_users=1,
 )
 
 

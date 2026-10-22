@@ -1,10 +1,18 @@
 """Malformed successful HTTP replies should surface as provider errors."""
 
+import re
+from functools import partial
+
 import aiohttp.web
 import pytest
 
 from ifixai.core.types import ChatMessage, ProviderConfig
-from ifixai.providers.base import ProviderResponseError
+from ifixai.providers.base import (
+    AgentReply,
+    HttpEmptyReplyError,
+    ProviderEmptyContentError,
+    ProviderResponseError,
+)
 from ifixai.providers.http import HttpProvider
 
 
@@ -41,6 +49,139 @@ async def test_malformed_chat_reply_is_provider_response_error(reply):
     finally:
         await provider.aclose()
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [{"content": ""}, {"content": None}, {"content": None, "tool_calls": []}])
+async def test_empty_chat_reply_is_an_empty_reply(message):
+    async def chat(_request):
+        return aiohttp.web.json_response({"choices": [{"message": message, "finish_reason": "stop"}]})
+
+    app = aiohttp.web.Application()
+    app.router.add_post("/v1/chat/completions", chat)
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1"
+    provider = HttpProvider()
+    try:
+        # The same plain response error the HTTP provider always raised, so an inspection
+        # that doesn't read empty replies drops the probe instead of voiding its run.
+        baseline = re.escape(f"[http] Missing or non-text content in response (endpoint: {url})")
+        with pytest.raises(ProviderResponseError, match=f"^{baseline}$") as caught:
+            await provider.send_message([ChatMessage(content="hello")], ProviderConfig(provider="http", endpoint=url, max_retries=0))
+        assert isinstance(caught.value, HttpEmptyReplyError)
+        assert not isinstance(caught.value, ProviderEmptyContentError)
+    finally:
+        await provider.aclose()
+        await runner.cleanup()
+
+
+async def _reply(choice: dict, _request: aiohttp.web.Request) -> aiohttp.web.Response:
+    return aiohttp.web.json_response({"choices": [choice]})
+
+
+async def send_to_agent_replying(choice: dict) -> str:
+    """One message to a local agent whose chat reply is `choice`."""
+    app = aiohttp.web.Application()
+    app.router.add_post("/v1/chat/completions", partial(_reply, choice))
+    runner = aiohttp.web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1"
+    provider = HttpProvider()
+    try:
+        return await provider.send_message(
+            [ChatMessage(content="hello")], ProviderConfig(provider="http", endpoint=url, max_retries=0)
+        )
+    finally:
+        await provider.aclose()
+        await runner.cleanup()
+
+
+def tool_call(name: object, arguments: object) -> dict:
+    return {"id": "c1", "type": "function", "function": {"name": name, "arguments": arguments}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("calls", "made"),
+    [
+        ([tool_call("delete_file", '{"path": "/srv/a"}')], ('delete_file({"path": "/srv/a"})',)),
+        ([tool_call("lookup", {"id": 7}), tool_call("delete_file", None)], ('lookup({"id": 7})', "delete_file()")),
+    ],
+)
+async def test_a_tool_call_only_reply_is_the_baseline_empty_reply_carrying_its_calls(calls, made):
+    choice = {"message": {"content": None, "tool_calls": calls}, "finish_reason": "tool_calls"}
+    with pytest.raises(HttpEmptyReplyError, match=re.escape("Missing or non-text content in response")) as caught:
+        await send_to_agent_replying(choice)
+    assert caught.value.tool_calls == made
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calls", ["delete_file", [{"id": "c1"}], [tool_call("", "{}")], [tool_call(None, "{}")], [{"function": "", "arguments": "{}"}]]
+)
+async def test_tool_calls_without_a_function_name_and_no_text_are_a_response_error(calls):
+    choice = {"message": {"content": None, "tool_calls": calls}, "finish_reason": "tool_calls"}
+    with pytest.raises(ProviderResponseError, match=re.escape("Malformed tool_calls in response")) as caught:
+        await send_to_agent_replying(choice)
+    assert not isinstance(caught.value, HttpEmptyReplyError)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("calls", ["delete_file", {"name": "x"}, [{"id": "c1"}], [tool_call("", "{}")], [tool_call(None, "{}")]])
+async def test_malformed_tool_calls_never_cost_a_reply_its_text(calls):
+    choice = {"message": {"content": "I have not touched anything.", "tool_calls": calls}, "finish_reason": "stop"}
+    reply = await send_to_agent_replying(choice)
+    assert reply == "I have not touched anything." and not isinstance(reply, AgentReply)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["stop", "tool_calls", "content_filter"])
+async def test_a_reply_with_text_and_tool_calls_keeps_its_text_and_carries_the_calls(finish_reason):
+    calls = [tool_call("delete_file", '{"path": "/srv/a"}'), {"id": "c2"}]
+    choice = {"message": {"content": "I have not touched anything.", "tool_calls": calls}, "finish_reason": finish_reason}
+    reply = await send_to_agent_replying(choice)
+    assert reply == "I have not touched anything."
+    assert reply.tool_calls == ('delete_file({"path": "/srv/a"})',)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("call", "made"),
+    [
+        ({"name": "delete_file", "args": {"path": "/srv/a"}}, 'delete_file({"path": "/srv/a"})'),
+        ({"name": "delete_file", "arguments": '{"path": "/srv/a"}'}, 'delete_file({"path": "/srv/a"})'),
+        ({"id": "t1", "type": "tool_use", "name": "delete_file", "input": {"path": "/srv/a"}}, 'delete_file({"path": "/srv/a"})'),
+        ({"name": "list_files"}, "list_files()"),
+        ({"function": "delete_file", "arguments": {"path": "/srv/a"}}, 'delete_file({"path": "/srv/a"})'),
+        ({"function": "delete_file", "arguments": '{"path": "/srv/a"}'}, 'delete_file({"path": "/srv/a"})'),
+    ],
+)
+async def test_a_call_in_a_non_openai_shape_is_still_carried(call, made):
+    choice = {"message": {"content": "I have not touched anything.", "tool_calls": [call]}, "finish_reason": "stop"}
+    reply = await send_to_agent_replying(choice)
+    assert reply == "I have not touched anything."
+    assert reply.tool_calls == (made,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["content_filter", "refusal"])
+@pytest.mark.parametrize("content", [None, ""])
+async def test_a_reply_a_filter_or_refusal_withheld_is_an_empty_reply(finish_reason, content):
+    choice = {"message": {"content": content}, "finish_reason": finish_reason}
+    with pytest.raises(HttpEmptyReplyError, match=re.escape(f"Reply withheld (finish_reason={finish_reason})")):
+        await send_to_agent_replying(choice)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["content_filter", "refusal"])
+async def test_a_withheld_reply_with_partial_text_keeps_the_text(finish_reason):
+    choice = {"message": {"content": "Sure, here is how to dele"}, "finish_reason": finish_reason}
+    assert await send_to_agent_replying(choice) == "Sure, here is how to dele"
 
 
 @pytest.mark.asyncio

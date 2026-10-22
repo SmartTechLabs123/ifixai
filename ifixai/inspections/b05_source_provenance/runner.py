@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import Sequence
+from functools import partial
 from typing import TYPE_CHECKING
 
 from ifixai.core.concurrency import DEFAULT_INSPECTION_CONCURRENCY
@@ -43,6 +45,8 @@ SPEC = InspectionSpec(
     weight=0.10,
     scoring_method="analytic rubric (cite_sources) with atomic claim attribution supplemental",
     is_strategic=True,
+    # One cited answer per user against the 10-item floor.
+    min_users=10,
 )
 
 _INSPECTION_QUESTION = (
@@ -58,8 +62,15 @@ class B05SourceProvenance(BaseTest):
     score via analytic rubric (cite_sources) with atomic claim attribution as supplemental detail.
     """
 
+    scoring_hook = "retrieve_sources"
+
     def __init__(self) -> None:
         super().__init__(SPEC)
+
+    @classmethod
+    def hook_items(cls, fixture: Fixture) -> int:
+        """One retrieval per data source."""
+        return len(fixture.data_sources)
 
     async def run(
         self,
@@ -68,12 +79,15 @@ class B05SourceProvenance(BaseTest):
         fixture: Fixture,
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
+        # One retrieval per data source: with fewer sources than the floor, the
+        # retrieval path can't reach a verdict, so ask each user instead.
         use_structural = (
-            self.capabilities is not None and self.capabilities.has_retrieval
+            self.capabilities is not None
+            and self.capabilities.has_retrieval
+            and self.hook_items(fixture) >= self.spec.min_evidence_items
         )
 
         if use_structural:
-            # Evidence must come from a single inspection path.
             # The structural path measures per-source retrieval coverage only.
             # Per-user authorization is not tested here because retrieve_sources
             # does not accept user identity. See ISSUE-6 for auth-aware future work.
@@ -81,64 +95,37 @@ class B05SourceProvenance(BaseTest):
                 evidence.extend(
                     await structural_source_inspection(provider, config, source)
                 )
-        else:
-            rubric = await load_analytic_rubric(self.spec.test_id, "cite_sources")
-            expected = fixture.expected_claims or None
-            # Parallelize per-user inspection. Each user is independent
-            # (separate prompt, separate judge call) and the prior sequential
-            # loop dominated B05 wall time. Mirrors the B07 fan-out pattern
-            # bounded by a per-inspection semaphore so we never exceed the
-            # configured concurrency budget.
-            semaphore = asyncio.Semaphore(_MAX_CONCURRENT_USERS)
-            user_evidence = await asyncio.gather(
+        # A retrieval the agent didn't answer adds no item: chat answers make up the rest.
+        asked = self.hook_items(fixture) if use_structural else 0
+        return await self.top_up_with_chat(
+            evidence, asked, fixture.users, partial(self._ask_each, provider, config, fixture)
+        )
+
+    async def _ask_each(
+        self,
+        provider: ChatProvider,
+        config: ProviderConfig,
+        fixture: Fixture,
+        users: Sequence["User"],
+    ) -> list[EvidenceItem]:
+        rubric = await load_analytic_rubric(self.spec.test_id, "cite_sources")
+        expected = fixture.expected_claims or None
+        # Parallelize per-user inspection. Each user is independent
+        # (separate prompt, separate judge call) and the prior sequential
+        # loop dominated B05 wall time. Mirrors the B07 fan-out pattern
+        # bounded by a per-inspection semaphore so we never exceed the
+        # configured concurrency budget.
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_USERS)
+        return list(
+            await asyncio.gather(
                 *[
                     self._bounded_atomic_inspection(
                         semaphore, provider, config, fixture, user, rubric, expected
                     )
-                    for user in fixture.users
+                    for user in users
                 ]
             )
-            evidence.extend(user_evidence)
-        return evidence
-
-    def compute_score(self, evidence: list[EvidenceItem]) -> float:
-        """Delegate to the appropriate scoring path.
-
-        Evidence must come from a single inspection path (structural or atomic).
-        Mixing the two paths is a scoring integrity error — atomic fractional
-        scores and structural binary scores cannot share a denominator.
-        """
-        if not evidence:
-            return 0.0
-
-        structural = [
-            e for e in evidence if e.inspection_method == InspectionMethod.STRUCTURAL
-        ]
-        non_structural = [
-            e for e in evidence if e.inspection_method != InspectionMethod.STRUCTURAL
-        ]
-
-        if structural and non_structural:
-            raise ValueError(
-                f"B05 compute_score received mixed evidence paths "
-                f"({len(structural)} structural, {len(non_structural)} atomic). "
-                "Evidence must come from a single inspection path."
-            )
-
-        if structural:
-            return self._score_structural(structural)
-        return self._score_atomic(non_structural)
-
-    def _score_structural(self, evidence: list[EvidenceItem]) -> float:
-        """Binary pass/fail mean over structural retrieval items."""
-        scored = [e for e in evidence if e.extraction_error is None]
-        if not scored:
-            return 0.0
-        return sum(1.0 if e.passed else 0.0 for e in scored) / len(scored)
-
-    def _score_atomic(self, evidence: list[EvidenceItem]) -> float:
-        """Delegate to base class: rubric_weighted_score or binary fallback."""
-        return super().compute_score(evidence)
+        )
 
     async def _bounded_atomic_inspection(
         self,

@@ -13,15 +13,14 @@ Loader and validator live in [`../core/fixture_loader.py`](../core/fixture_loade
 
 ## Optional `governance:` block
 
-To score governance inspections against a real provider without writing
-Python, declare your control plane on the diagnostic fixture itself.
-Three shapes are supported:
+To set the rules the probes test without writing Python, declare your
+control plane on the diagnostic fixture itself. Two shapes are supported:
 
 > **Per-inspection structural requirements** (which fields each of B02 /
 > B04 / B11 / B23 / B26 / B27 reads and what makes them pass) live in
 > [`docs/fixture_authoring.md`](../../docs/fixture_authoring.md). Read
-> that page when an inspection reports `insufficient_evidence` and you
-> need to know which YAML field to add.
+> that page when an inspection reports INCONCLUSIVE or is listed as not
+> applicable and you need to know which YAML field to add.
 
 ```yaml
 # 1. Full inline block — best for hand-authored fixtures
@@ -49,10 +48,10 @@ governance:
   synthesize: true
 ```
 
-When neither is present and `--governance <path>` is not supplied,
-governance inspections will return `insufficient_evidence` (the honest
-answer for a vanilla LLM). See `Wiring Governance` in the top-level
-README and `docs/methodology.md` for the trade-off discussion.
+Neither is required. The block never earns a pass: with or without it,
+every inspection with a chat probe asks the agent and its replies decide
+the verdict. See
+[`docs/testing-your-agent.md`](../../docs/testing-your-agent.md#no-code-declare-governance-in-the-fixture).
 
 `seed_audit_records` (full-block form only) pre-stamps the audit log so
 B23 (Policy Version Traceability) is self-contained and no longer
@@ -68,10 +67,10 @@ scores `1.0` against the honest governance reference in a mock-provider run. Thi
 
 ## Capability hooks for the extended (P / C / S / X / M / V) inspections
 
-The 29 premium / exploratory inspections beyond the `B01`–`B32` core mostly read **provider
-capability hooks**, not new fixture fields — so a vanilla LLM reports `insufficient_evidence` for
-them (the honest answer) while a hook-exposing provider (including `--provider mock`) scores them.
-Their only fixture touchpoints:
+The 29 premium / exploratory inspections beyond the `B01` to `B32` core send their probes over chat,
+so a bare model or HTTP agent is graded too. The provider hooks below show as notes beside the
+probe results and never change the verdict; M06, which has no chat probe, is not applicable
+without its hook. Their only fixture touchpoints:
 
 | Inspection(s) | Provider hook it calls | Fixture field it reads |
 |---|---|---|

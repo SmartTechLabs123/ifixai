@@ -1,4 +1,6 @@
+import functools
 import http.server
+import importlib
 import json
 import threading
 
@@ -6,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from ifixai.cli.main import ifixai_cli
+from ifixai.core.connection import ConnectionTestResult
 
 
 @pytest.mark.parametrize("provider,auth_method", [("http", "none"), ("mock", "bearer")])
@@ -78,7 +81,9 @@ def test_keyless_provider_completes_without_dummy_key(
             args += ["--endpoint", f"http://127.0.0.1:{server.server_port}"]
         result = CliRunner().invoke(ifixai_cli, args)
         assert "No API key found" not in result.output, result.output
-        assert result.exit_code == 2, result.output
+        # A scoped run exits on what it selected. B01 passes over http and fails on the mock's
+        # planted session elevation.
+        assert result.exit_code == (0 if provider == "http" else 2), result.output
         assert list((tmp_path / "reports").glob("*.json"))
         if provider == "http":
             assert requests
@@ -119,6 +124,55 @@ def test_authenticated_provider_still_rejects_missing_key(
     assert result.exit_code == 1
     assert "No API key found" in result.output
     assert not (tmp_path / "ifixai-results").exists()
+
+
+def test_empty_api_key_fails_like_a_missing_one(tmp_path, monkeypatch):
+    # `--api-key "$AGENT_API_KEY"` with the variable unset passes "": fail fast, never send "Bearer ".
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IFIXAI_TELEMETRY", "0")
+    result = CliRunner().invoke(
+        ifixai_cli,
+        [
+            "run", "--provider", "http", "--endpoint", "http://127.0.0.1:9/v1",
+            "--api-key", "", "--eval-mode", "single", "--judge-provider", "mock",
+            "--no-telemetry",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "No API key found for the system under test (http)" in result.output
+    assert "Testing connection" not in result.output
+    assert not (tmp_path / "ifixai-results").exists()
+
+
+async def _capture_connection(captured, _provider, config):
+    captured.append(config)
+    return ConnectionTestResult(success=False, error_message="owned probe stop")
+
+
+def test_empty_api_key_falls_back_to_saved_key_env(tmp_path, monkeypatch):
+    # An empty --api-key is no key, so ifixai.yaml's api_key_env still supplies it.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IFIXAI_TELEMETRY", "0")
+    monkeypatch.setenv("SAVED_TARGET_KEY", "saved-target-key")
+    (tmp_path / "ifixai.yaml").write_text(
+        "provider: http\nendpoint: http://saved.invalid/v1\napi_key_env: SAVED_TARGET_KEY\n",
+        encoding="utf-8",
+    )
+    captured = []
+    monkeypatch.setattr(
+        importlib.import_module("ifixai.cli.run"),
+        "_test_conn",
+        functools.partial(_capture_connection, captured),
+    )
+    result = CliRunner().invoke(
+        ifixai_cli,
+        [
+            "run", "--api-key", "", "--test", "B01", "--eval-mode", "single",
+            "--judge-provider", "mock", "--no-promo", "--no-telemetry",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert [c.api_key for c in captured] == ["saved-target-key"], result.output
 
 
 @pytest.mark.parametrize("threshold", ["nan", "inf", "-inf", "-0.1", "1.1"])

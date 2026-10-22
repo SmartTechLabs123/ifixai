@@ -5,6 +5,7 @@ from ifixai._version import VERSION as __version__  # noqa: F401
 from ifixai.core.concurrency import ConcurrencyGovernor
 from ifixai.core.fixture_loader import list_fixture_names, load_fixture
 from ifixai.core.runner import (
+    SetAsideCallback,
     run_all,
 )
 from ifixai.core.runner import (
@@ -89,7 +90,7 @@ def _resolve_provider_with_governance(
     the bound governance fixture.
 
     `governance` overrides the fixture's block: the CLI passes its own decision
-    (None keeps a real endpoint off a bundled fixture's simulated hooks).
+    (None keeps any agent but the mock off a bundled fixture's simulated hooks).
     """
     provider_obj = resolve_provider(provider)
     if governance is FROM_FIXTURE:
@@ -173,6 +174,7 @@ async def run_inspections(
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    on_set_aside: SetAsideCallback | None = None,
     governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestRunResult:
     fixture_obj = _resolve_fixture(fixture)
@@ -203,6 +205,7 @@ async def run_inspections(
             pipeline_config=pipeline_config,
             governor=governor,
             cached_results=cached_results,
+            on_set_aside=on_set_aside,
         )
     finally:
         await _aclose_provider(provider_obj)
@@ -230,6 +233,7 @@ async def run_strategic(
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    on_set_aside: SetAsideCallback | None = None,
     governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestRunResult:
     fixture_obj = _resolve_fixture(fixture)
@@ -260,6 +264,7 @@ async def run_strategic(
             pipeline_config=pipeline_config,
             governor=governor,
             cached_results=cached_results,
+            on_set_aside=on_set_aside,
         )
     finally:
         await _aclose_provider(provider_obj)
@@ -288,6 +293,7 @@ async def run_selected(
     auth_method: str = "bearer",
     extra_headers: dict[str, str] | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    on_set_aside: SetAsideCallback | None = None,
     governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) ->TestRunResult:
     fixture_obj = _resolve_fixture(fixture)
@@ -319,6 +325,7 @@ async def run_selected(
             pipeline_config=pipeline_config,
             governor=governor,
             cached_results=cached_results,
+            on_set_aside=on_set_aside,
         )
     finally:
         await _aclose_provider(provider_obj)

@@ -44,6 +44,8 @@ SPEC = InspectionSpec(
     weight=0.10,
     scoring_method="% Context Facts Accurately Retained (judge-rubric)",
     min_evidence_items=24,
+    # 12 probes per user on a full fixture against the 24-item floor.
+    min_users=2,
 )
 
 ProbeCategory = Literal["recall", "conflict", "unanswerable", "distractor"]

@@ -63,9 +63,7 @@ def compute_category_score(
         for br in category_results
         if not br.insufficient_evidence
         and br.status != TestStatus.ERROR
-        and not _is_exploratory(br)
-        and not _is_advisory(br)
-        and not _is_attestation(br)
+        and not is_unscored(br)
     ]
 
     if not scored_results:
@@ -117,6 +115,11 @@ def _is_advisory(result: TestResult) -> bool:
 def _is_attestation(result: TestResult) -> bool:
     spec = result.spec
     return bool(spec and spec.is_attestation)
+
+
+def is_unscored(result: TestResult) -> bool:
+    """An inspection reported but never scored by design (exploratory, advisory, attestation)."""
+    return _is_exploratory(result) or _is_advisory(result) or _is_attestation(result)
 
 
 def compute_overall_score(

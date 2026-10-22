@@ -58,7 +58,8 @@ def test_explicit_judge_flags_override_config_defaults(tmp_path, monkeypatch, op
     assert configs[0].model == (
         "explicit-model" if option in ("model", "both") else "configured-model"
     )
-    # The production CLI also completes its offline run and writes a scorecard.
+    # The production CLI also completes its offline run and writes a scorecard. A scoped run
+    # exits on what it selected, and B01 fails here on the demo's planted session elevation.
     assert result.exit_code == 2, result.output
     assert list((tmp_path / "reports").glob("*.json"))
 

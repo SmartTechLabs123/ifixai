@@ -11,7 +11,9 @@ from ifixai.core.types import ChatMessage, ProviderConfig, RetrievedSource
 from ifixai.evaluation.run_stop import count_request
 from ifixai.providers.base import (
     RETRYABLE_HTTP_STATUS_CODES,
+    AgentReply,
     ChatProvider,
+    HttpEmptyReplyError,
     ProviderAuthError,
     ProviderConnectionError,
     ProviderOverloadedError,
@@ -26,6 +28,7 @@ from ifixai.providers.secrets import scrub_secrets
 
 DEFAULT_ENDPOINT = os.environ.get("IFIXAI_HTTP_ENDPOINT", "http://localhost:8000/v1")
 EXTRA_HEADERS_ENV_VAR = "IFIXAI_EXTRA_HEADERS"
+REFUSAL_FINISH_REASONS: frozenset[str] = frozenset({"content_filter", "refusal"})
 
 
 def _load_env_extra_headers() -> dict[str, str]:
@@ -58,6 +61,23 @@ def _build_auth_headers(config: ProviderConfig) -> dict[str, str]:
     return headers
 
 
+def _tool_calls(raw: object) -> tuple[str, ...]:
+    """Each tool call in a reply that names its function, as `name(arguments)`. The calls are
+    the agent's own JSON: one that names no function can't be told, so it is left out. OpenAI
+    nests a call under "function"; others put the name itself in "function", or send
+    {"name", "args"|"arguments"|"input"}."""
+    said: list[str] = []
+    for call in raw if isinstance(raw, list) else ():
+        function = call.get("function", call) if isinstance(call, dict) else None
+        if isinstance(function, str):
+            function = {**call, "name": function}
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            arguments = function.get("arguments") or function.get("args") or function.get("input") or ""
+            said.append(f"{name}({arguments if isinstance(arguments, str) else json.dumps(arguments)})")
+    return tuple(said)
+
+
 def _source_item_to_retrieved(item: dict[str, Any]) -> RetrievedSource:
     return RetrievedSource(
         source_id=str(
@@ -86,6 +106,9 @@ def _source_item_to_retrieved(item: dict[str, Any]) -> RetrievedSource:
 
 
 class HttpProvider(ChatProvider):
+    # `/retrieve` is an extra route the agent may not have.
+    optional_hooks = frozenset({"retrieve_sources"})
+
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
@@ -258,6 +281,33 @@ class HttpProvider(ChatProvider):
                     finish_reason,
                     content if isinstance(content, str) else "",
                 )
+        # The calls ride beside the text, never in it: probe packs grade them, and every other
+        # inspection reads the text it always read.
+        raw_calls = message.get("tool_calls") if isinstance(message, dict) else None
+        calls = _tool_calls(raw_calls)
+        if isinstance(content, str) and content:
+            return AgentReply(content, calls) if calls else content
+        if raw_calls and not calls:
+            raise ProviderResponseError(
+                provider="http", endpoint=endpoint, details="Malformed tool_calls in response"
+            )
+        # A content filter or the model's own refusal stopped the reply before any text.
+        if isinstance(first, dict) and first.get("finish_reason") in REFUSAL_FINISH_REASONS and content in (None, ""):
+            raise HttpEmptyReplyError(
+                provider="http",
+                endpoint=endpoint,
+                details=f"Reply withheld (finish_reason={first['finish_reason']})",
+                tool_calls=calls,
+            )
+        # Same text as the plain error below, so inspections that don't catch it see what
+        # they always saw.
+        if isinstance(message, dict) and content in (None, ""):
+            raise HttpEmptyReplyError(
+                provider="http",
+                endpoint=endpoint,
+                details="Missing or non-text content in response",
+                tool_calls=calls,
+            )
         if not isinstance(content, str) or not content:
             raise ProviderResponseError(
                 provider="http",

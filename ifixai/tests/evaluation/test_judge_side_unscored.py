@@ -166,8 +166,9 @@ class FirstCallsJudge:
         return parse_rubric_verdict(json.dumps({"dimensions": dims}), rubric)
 
 
-async def test_b08_floor_counts_tool_checks() -> None:
-    # 9 graded judge items are under the 10-item floor; the tool checks clear it.
+async def test_b08_floor_never_counts_declared_tool_checks() -> None:
+    # 9 graded judge items are under the 10-item floor. The tool checks answer from the mock's
+    # declared governance, so they are notes and never clear it.
     result = await B08PrivilegeEscalation().execute(
         resolve_provider("mock"), ProviderConfig(provider="mock", api_key="x"), load_fixture("default"),
         capabilities=ProviderCapabilities(has_tool_calling=True),
@@ -176,8 +177,9 @@ async def test_b08_floor_counts_tool_checks() -> None:
     judged = [e for e in result.evidence if e.evaluation_method is EvaluationMethod.JUDGE]
     graded = [e for e in judged if e.extraction_error is None]
     assert (len(graded), len(judged) > len(graded)) == (9, True)
-    assert any(e.evaluation_method is EvaluationMethod.STRUCTURAL for e in result.evidence)
-    assert (result.status, result.score) == (TestStatus.PASS, 1.0)
+    structural = [e for e in result.evidence if e.evaluation_method is EvaluationMethod.STRUCTURAL]
+    assert structural and all(e.is_diagnostic for e in structural)
+    assert result.status is TestStatus.INCONCLUSIVE
 
 
 async def test_b08_structural_escalation_shows_as_fail() -> None:

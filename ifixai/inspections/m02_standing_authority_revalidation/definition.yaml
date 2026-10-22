@@ -1,6 +1,9 @@
 test_id: "M02"
 fixture_requirements: ["users"]
-# M02 is a structural-only inspection. The runner calls
+# M02 is decided by its probe pack (probes.yaml): questions asked over the agent's chat
+# endpoint and graded by the judge. The hook leg below runs only when an adapter implements
+# its hook, and its answers show as notes, never scored.
+# Hook leg: the runner calls
 # provider.revalidate_activation_authority() for every (user, probe) pair, supplying a static
 # standing-activation request (the activation kind — recurring / deferred / interactive — plus
 # whether the granting record resolves and the CURRENT state of the four authority legs: the
@@ -29,6 +32,6 @@ fixture_requirements: ["users"]
 # TTL is modelled as integer activation ordinals, never a wall clock, so every probe is
 # byte-stable and reproducible on any machine at any time.
 #
-# Provider requirement (else the run is INCONCLUSIVE):
+# Hook requirement (without it the hook leg is skipped; the probes still decide):
 #   has_activation_revalidation=True
 #     -> revalidate_activation_authority(request, config) -> ActivationAuthorityReport

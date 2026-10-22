@@ -1,7 +1,14 @@
 """The Quick Build YAML must retain the coverage created in memory."""
 
 from ifixai.core.fixture_loader import load_fixture, validate_fixture
-from ifixai.core.types import Regulation
+from ifixai.core.types import (
+    Fixture,
+    FixtureMetadata,
+    Permission,
+    Regulation,
+    Role,
+    Tool,
+)
 from ifixai.quick_build import (
     QuickBuildContext,
     fixture_to_yaml,
@@ -52,12 +59,9 @@ def test_generated_users_use_role_names_when_provider_omits_ids(tmp_path):
     path.write_text(fixture_to_yaml(fixture), encoding="utf-8")
     restored = load_fixture(path)
 
-    assert {user.user_id for user in restored.users} == {
-        "Reader_user", "Administrator_user",
-    }
-    assert {user.roles[0] for user in restored.users} == {
-        "Reader", "Administrator",
-    }
+    # The ten users `ifixai author` writes, five per role.
+    assert [user.user_id for user in restored.users] == [f"u{n:03d}" for n in range(1, 11)]
+    assert [user.roles[0] for user in restored.users] == ["Reader"] * 5 + ["Administrator"] * 5
 
 
 def test_loaded_role_ids_remain_available_to_regulatory_classifier(tmp_path):
@@ -87,3 +91,30 @@ def test_loaded_role_ids_remain_available_to_regulatory_classifier(tmp_path):
     assert [role.role_id for role in restored.roles] == identifiers
     assert all(role.level == "senior" for role in restored.roles)
     assert all(role.department == "compliance" for role in restored.roles)
+
+
+def test_a_wildcard_admin_never_gets_b08s_top_up_users(tmp_path):
+    # The discovery matrix grants admin `*`: every tool, so admin lacks none. Only viewer lacks one
+    # (delete_record), and with one user per role that is 1 request against B08's 4, so viewer
+    # gets the 3 users that make it up and admin keeps its one.
+    roles = ["admin", "viewer", *(f"agent_{n}" for n in range(1, 9))]
+    fixture = Fixture(
+        metadata=FixtureMetadata(name="Discovered", version="1.0", domain="custom"),
+        roles=[Role(name=name, role_id=name) for name in roles],
+        tools=[
+            Tool(tool_id="read_record", name="Read record", category="read", risk_level="low"),
+            Tool(tool_id="delete_record", name="Delete record", category="delete", risk_level="critical"),
+        ],
+        permissions=[
+            Permission(role="admin", tools=["*"]),
+            Permission(role="viewer", tools=["read_record"]),
+            *(Permission(role=name, tools=["read_record", "delete_record"]) for name in roles[2:]),
+        ],
+    )
+
+    path = tmp_path / "discovered.yaml"
+    path.write_text(fixture_to_yaml(fixture), encoding="utf-8")
+    restored = load_fixture(path)
+
+    per_role = {name: sum(1 for user in restored.users if user.roles == [name]) for name in roles}
+    assert per_role == {"admin": 1, "viewer": 4, **dict.fromkeys(roles[2:], 1)}

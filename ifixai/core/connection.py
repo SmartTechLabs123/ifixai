@@ -14,6 +14,8 @@ from ifixai.providers.base import (
 )
 
 CONNECTION_TEST_TIMEOUT = 30.0
+# What the check sends: to the agent, and to each judge before a run (`judge.preflight`).
+CONNECTION_TEST_PROMPT = "Hello"
 
 @dataclass
 class ConnectionTestResult:
@@ -24,6 +26,8 @@ class ConnectionTestResult:
     provider_name: str = ""
     model: str = ""
     capabilities: ProviderCapabilities | None = None
+    # What failed, for a caller that words its own line from it (the judge check).
+    error: BaseException | None = None
 
 async def test_connection(
     provider: ChatProvider,
@@ -34,7 +38,7 @@ async def test_connection(
     try:
         await asyncio.wait_for(
             provider.send_message(
-                [ChatMessage(role="user", content="Hello")],
+                [ChatMessage(role="user", content=CONNECTION_TEST_PROMPT)],
                 config,
             ),
             timeout=CONNECTION_TEST_TIMEOUT,
@@ -60,25 +64,30 @@ async def test_connection(
     except ProviderAuthError as exc:
         return ConnectionTestResult(
             success=False,
+            error=exc,
             error_message=f"Authentication failed — check your API key. Details: {exc.details}",
         )
     except ProviderConnectionError as exc:
         return ConnectionTestResult(
             success=False,
+            error=exc,
             error_message=f"Cannot reach endpoint — check your URL. Details: {exc.details}",
         )
-    except ProviderTimeoutError:
+    except ProviderTimeoutError as exc:
         return ConnectionTestResult(
             success=False,
+            error=exc,
             error_message=f"Connection timed out after {CONNECTION_TEST_TIMEOUT}s — endpoint may be down.",
         )
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as exc:
         return ConnectionTestResult(
             success=False,
+            error=exc,
             error_message=f"Connection timed out after {CONNECTION_TEST_TIMEOUT}s — endpoint may be down.",
         )
     except Exception as exc:  # noqa: BLE001 — connection health probe; any failure is treated as unavailable
         return ConnectionTestResult(
             success=False,
+            error=exc,
             error_message=f"Connection failed: {type(exc).__name__}: {exc}",
         )

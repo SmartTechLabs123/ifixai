@@ -6,12 +6,16 @@ Every `ifixai` command and `ifixai run` flag. Guided first run: [get-started.md]
 
 ```bash
 ifixai init                  # check env for provider keys, suggest a first run
+ifixai setup                 # arrow-key wizard; writes ifixai.yaml (see Reusable config)
 ifixai run                   # run the default 10 inspections (Standard or Full mode)
 ifixai run --full-run        # run all 61 inspections
 ifixai run --fixture FILE    # custom fixture (YAML or JSON)
 ifixai list tests            # all 61 inspections (32 core + 29 extended)
 ifixai list fixtures         # registered named fixtures
-ifixai validate [FILE]       # per-test layout, or a fixture against schema.json
+ifixai author --example      # write the example profile to profile.json to edit
+ifixai author PROFILE -o FILE  # agent profile (JSON) to fixture; `reference` is the example
+ifixai validate [FILE]       # per-test layout, or a fixture: schema plus evidence minimums for what a bare run runs
+ifixai validate FILE -b B18  # a fixture, for what run's -b, -c, --suite, --strategic or --full-run picks
 ifixai compare A B           # diff two scorecard reports
 ifixai windtunnel controls   # which fixtures the reference provider satisfies
 ifixai windtunnel sweep      # measure which inspections catch each seeded defect
@@ -32,7 +36,8 @@ no provider key; see [trajectory assurance](trajectory-assurance.md),
 | Flag | Default | Does |
 |---|---|---|
 | `--provider`, `-p` | none | `mock`, `openai`, `openrouter`, `orcarouter`, `requesty`, `cloudflare`, `vercel`, `anthropic`, `gemini`, `azure`, `bedrock`, `huggingface`, `http`, `langchain`. |
-| `--api-key`, `-k` | none | SUT API key. Always passed explicitly, never read from the environment. |
+| `--api-key`, `-k` | provider's env var | SUT API key. Without it, read from the provider's env var (e.g. `OPENAI_API_KEY`). Required for `http` unless `--auth-method none`. |
+| `--auth-method` | `bearer` | `http` only: `bearer`, `basic`, `api_key`, or `none`. |
 | `--model`, `-m` | provider default | Model identifier override. |
 | `--endpoint`, `-e` | none | Endpoint URL (required for `http` and `azure`; for `cloudflare` it replaces the URL built from `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_GATEWAY_ID`). |
 | `--system-prompt`, `-s` | none | Custom system instructions sent before each inspection. |
@@ -47,14 +52,13 @@ no provider key; see [trajectory assurance](trajectory-assurance.md),
 | `--eval-mode` | auto | `deterministic`, `single`, `full`, or `self`. See [How a run is judged](#how-a-run-is-judged). |
 | `--judge-provider` | none | Judge provider. Repeat >=2 times for a Full-mode ensemble. |
 | `--judge-api-key`, `--judge-model` | none | Key(s) and model(s), paired with `--judge-provider`. |
-| `--judge-budget` | `0` | Judge budget per run, in calls to the judge's provider: retries and fallback models count, and in Full mode each judge's call. `0` = a runaway guard of 10x the estimate, at least 2,000. The run may go 25% over the budget; when it needs a call past that ceiling it stops, keeps what finished and lists the rest as not run (budget). `--dry-run` and the run header show both numbers. See [When a run stops early](#when-a-run-stops-early). |
+| `--judge-budget` | `0` | Judge budget per run, in calls to the judge's provider: retries, fallback models and the judge check before the run count, and in Full mode each judge's call. `0` = a runaway guard of 10x the estimate, at least 2,000. The run may go 25% over the budget; when it needs a call past that ceiling it stops, keeps what finished and lists the rest as not run (budget). `--dry-run` and the run header show both numbers. See [When a run stops early](#when-a-run-stops-early). |
 
 ### Fixture and governance
 
 | Flag | Default | Does |
 |---|---|---|
 | `--fixture`, `-f` | auto | Fixture name or YAML/JSON path. |
-| `--governance` | none | `GovernanceFixture` YAML path; structural inspections score against your declared policies. See [fixture_authoring.md](fixture_authoring.md). |
 | `--mode` | `standard` | `standard` or `full` (hand-built fixture + >=2 distinct judge providers). |
 
 ### Suite subset
@@ -64,10 +68,23 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 | Flag | Does |
 |---|---|
 | `--full-run` | Every inspection (all 61) instead of the default 10. Cannot be combined with the flags below. Overrides a `suite:` saved in `ifixai.yaml`. Unrelated to `--mode full`. |
-| `--suite` | A named suite: `smoke` (3), `strategic` (8), `essential` (10, the default), `core` (32), `extended` (29), `all` (61), or a theme (`security`, `reliability`, `compliance`, `frontier`). `ifixai list suites` shows them. |
+| `--suite` | Named suite (see [Suite options](#suite-options)). |
 | `--strategic` | Top 8 strategic tests only. |
 | `--test`, `-b` | Test(s) by ID, repeatable: `-b B01 -b B08`. |
 | `--category`, `-c` | Category name(s), case-insensitive, repeatable; beats `--strategic`. Names: `FABRICATION`, `MANIPULATION`, `DECEPTION`, `UNPREDICTABILITY`, `OPACITY`, `SABOTAGE`, `SUBVERSION`, `CONCEALMENT`, `SANDBAGGING`, `INSUBORDINATION`, `USURPATION`, `SYSTEMIC_RISK`, `MISCALIBRATION`, `STAKEHOLDER_CONFLICT`, `PERCEPTION_GOVERNANCE`, `OVERSIGHT_ATROPHY`, `PERSISTENCE`, `IDENTITY_ATTESTATION`, `INFLUENCE`, `BALANCE_INTEGRITY`, `FRANKNESS_CORRECTNESS_LINK`, `GRADER_VALIDITY`, `BENCHMARK_CONTAMINATION`, `TRAINING_DISPOSITION_PROVENANCE`, `VULNERABLE_USER_CARE`. |
+
+### Suite options
+
+| Suite | Tests | Use when |
+|---|---|---|
+| `smoke` | 3 | just checking the pipeline works |
+| `strategic` | 8 | quick read on the riskiest spots |
+| `essential` | 10 | the default: the highest-impact checks plus the three mandatory minimums, so it ends in a grade |
+| `core` | 32 | the five pillars only; no letter grade, since the P01 minimum isn't in it |
+| `extended` | 29 | frontier risk signal, scored outside the grade |
+| `all` | 61 | everything, same as `--full-run` |
+
+Four themes (`security`, `reliability`, `compliance`, `frontier`) also work as `--suite` values; run `ifixai list suites` to browse them all.
 
 ### Output and reporting
 
@@ -76,7 +93,7 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 | `--output`, `-o` | `./ifixai-results/` | Report directory. |
 | `--format` | `both` | `json`, `markdown`, or `both`. |
 | `--name`, `--version` | provider name, `1.0` | System name and version label in reports. |
-| `--min-score` | `0.85` | Exit code `2` if overall score is below (CI gate). A run flagged RUN INVALID exits `2` whatever its score. A scoped (`-b`) or strategic run that leaves out B01, B08 or P01 has no overall score: it exits `0` if every selected scored inspection passed, `2` if any failed, errored or was inconclusive, and `--min-score` doesn't apply. Any other run with no overall score exits `2`. A partial (stopped) run exits `1`, or `2` when a mandatory minimum that finished failed. |
+| `--min-score` | `0.85` | CI gate: exit `0` if the overall score is at or above it, `2` if below. A mandatory minimum (B01, B08, P01) that ran and failed exits `2` whatever the score. A partial (stopped) run exits `1`, or `2` when a mandatory minimum that finished failed. A run that finished but is flagged RUN INVALID exits `2` whatever its score. A run that leaves out B01, B08 or P01 (`-b`, `-c`, `--suite`, `--strategic`) has no overall score, so `--min-score` doesn't apply: it exits `0` only if it selected at least one inspection that can gate (report-only ones can't) and all of those passed, and `2` if any failed, errored or was inconclusive. It also exits `2` when a mandatory minimum it selected was set aside unchecked (for example, no judge). Any other run with no overall score exits `2`. The JSON report's `overall.passed` is true exactly when the exit code is `0`, and `overall.min_score` records the pass mark. |
 | `--quiet`, `-q` | off | Suppress banner and summary; stdout still carries scores. |
 
 ### Execution and reliability
@@ -92,6 +109,13 @@ With none of these flags, `ifixai run` runs the 10-inspection `essential` suite:
 | `--run-nonce` | fresh | Replay-protection nonce (16 hex chars), recorded in the manifest. |
 | `IFIXAI_JUDGE_FALLBACKS` (env) | packaged JSON | Path to the judge fallback-model chain. See [Judge fallback models](#judge-fallback-models). |
 | `--holdout-seed`, `--b{12,14,28,29,30,32}-seed` | fresh random | Pin, or set matching `IFIXAI_*_SEED`, to replay a run. See [reproducibility.md](reproducibility.md). |
+
+Resume an interrupted run with `--resume <run_id>` and the same run options and
+`--reliability-out` directory. Analytic inspection seeds are derived from the
+base seed stored in its manifest, so resumed probes use the original corpus
+assignments. Older manifests without that base seed resume using the original random-seed
+behavior for incomplete inspections; completed checkpoint results keep their own
+seeds. Legacy unfinished probe contexts cannot be reconstructed.
 
 ## Pro-version offer
 
@@ -115,7 +139,7 @@ The offer is never shown when stdin or stdout is not a terminal (pipes, scripts,
 
 ## How a run is judged
 
-The SUT (system under test) is the agent being graded via the SUT flags above; its key is never read from the environment. The judge grades the SUT's answers; a citable grade needs a judge from a second, different provider.
+The SUT (system under test) is the agent being graded via the SUT flags above; its key comes from `--api-key` or the provider's env var. The judge grades the SUT's answers; a citable grade needs a judge from a second, different provider.
 
 ### Judge auto-pairing
 
@@ -132,11 +156,11 @@ With no `--judge-*` flags, iFixAi picks a judge from a different provider whose 
 
 ### Standard vs Full
 
-Mode changes how a run is judged, not which inspections run: the same selection either way (10 by default, all 61 with `--full-run`). Standard: auto fixture (the bundled default is a **seeded-defect demo** — expect B01 and P01 to FAIL by design on a default run, and more on a `--full-run`; see [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md)), one auto-paired judge. Full (`--mode full`): requires `--fixture` (the default fixture is refused) and >=2 judge providers; majority vote, tie-break `fail > partial > pass`.
+Mode changes how a run is judged, not which inspections run: the same selection either way (10 by default, all 61 with `--full-run`). Standard: auto fixture (the bundled default is a **seeded-defect demo**: a mock `--full-run` fails 14 inspections by design; see [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md)), one auto-paired judge. Full (`--mode full`): requires `--fixture` (the default fixture is refused) and >=2 judge providers; majority vote, tie-break `fail > partial > pass`.
 
 ```bash
 # Standard: export a second provider key and the judge auto-pairs.
-ifixai run --provider http --endpoint http://localhost:8000/v1 --api-key "$YOUR_TOKEN"
+ifixai run --provider http --endpoint http://localhost:8000/v1 --api-key "$YOUR_TOKEN" --fixture ./my-fixture.yaml
 
 # Full: hand-built fixture, two independent judges.
 ifixai run --mode full \
@@ -146,7 +170,28 @@ ifixai run --mode full \
   --judge-provider openai    --judge-api-key "$OPENAI_API_KEY"
 ```
 
-Judge design rationale: [methodology.md](methodology.md#cross-provider-judge-default).
+Judge design rationale: [methodology.md](methodology.md#cross-provider-judging).
+
+### Recommended judge setups
+
+| Setup | Judge model(s) | Est. cost, full suite* |
+|---|---|---|
+| **Single judge: Sonnet** | `anthropic/claude-sonnet-4.6` | ~$12-18 |
+| **More affordable: two judges** | `google/gemini-2.5-pro` + `openai/gpt-5.4-mini` | ~$10-14 combined |
+
+Both are reliable. **Sonnet** is the simplest, highest-quality single grader. **Gemini 2.5 Pro** and **GPT-5.4-mini** come from two different vendors; as a pair they still cost less than one Sonnet run, and no one model or vendor decides your grade (ties break conservatively, `fail > partial > pass`).
+
+```bash
+# Single judge (Standard mode): Sonnet grades your agent
+--eval-mode single --judge-provider openrouter --judge-model anthropic/claude-sonnet-4.6
+
+# Two affordable judges (Full mode; needs a hand-built --fixture), both on one OpenRouter key
+--mode full --eval-mode full \
+  --judge-provider openrouter --judge-model google/gemini-2.5-pro \
+  --judge-provider openrouter --judge-model openai/gpt-5.4-mini
+```
+
+\* Rough total for one full-suite run at OpenRouter list prices (mid-2026), based on the ~2,000 judge calls a full run makes (the suite generates far more probes than its test count, so the figure is fairly stable across fixtures). The agent under test is billed separately. Full mode needs a hand-built fixture: [fixture_authoring.md](fixture_authoring.md). These are full-suite figures (`--full-run`); the default 10-inspection run makes far fewer calls, and `--dry-run` prints the estimate for yours.
 
 ### When a run stops early
 
@@ -186,3 +231,21 @@ Cost and time controls, so a dead judge cannot drain a key or stall a run:
 - Known reasoning judges (o1/o3/o4, gpt-5\*, \*-r1\*, deepseek-reasoner, \*thinking\*, gemini-2.5-pro, gemini-3\*, qwq, grok-\*-mini, gpt-oss\*) get 4096 more tokens on every call, room to think before the verdict.
 - A model that fails **3 items in a row** is **retired for the rest of the run**; a verdict resets the count. The chain is not re-walked from the dead primary on every grade. Once all models are retired, remaining probes drop for free with no further calls.
 - The scorecard reports `substitute judge graded this run:` and `judge calls that failed and were retried:` whenever either happened, so a grade always names its origin.
+
+## Reusable config
+
+`ifixai setup` writes `ifixai.yaml`; `ifixai run` layers it under any explicit flag (flag > config > env > default). It stores the key's env-var name, never the secret:
+
+```yaml
+provider: openai
+model: gpt-4o
+api_key_env: OPENAI_API_KEY
+suite: all
+judges:
+  - provider: anthropic
+    model: claude-3-5-sonnet-latest
+```
+
+`ifixai setup` also records `fixture`, `mode`, and `eval_mode` (trimmed here for brevity). Keep `ifixai.yaml` out of version control; it is git-ignored by default.
+
+When `--provider` changes the saved provider, its saved model, endpoint, key env-var name, authentication method and extra headers are skipped. Supply any connection overrides for the new provider explicitly. Other run defaults and the saved judge panel still apply. A config without `provider` keeps generic connection defaults.

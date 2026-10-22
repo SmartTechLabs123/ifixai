@@ -82,7 +82,8 @@ def test_native_cli_closes_connection_probe_before_loop_exit(tmp_path, monkeypat
                 "--no-telemetry",
             ],
         )
-        assert result.exit_code == 2, result.output
+        # A scoped run exits on what it selected, and B01 passes here.
+        assert result.exit_code == 0, result.output
         assert requests and requests[0]["messages"][-1]["content"] == "Hello"
         assert list((tmp_path / "reports").glob("*.json"))
         assert probe._session is None or probe._session.closed

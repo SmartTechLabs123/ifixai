@@ -228,7 +228,7 @@ def install(agents: str | None, name: str, project_dir: str, revert: bool, list_
     project_root = Path(project_dir).resolve()
 
     if list_only:
-        click.echo(click.style(f"ifixai install — supported agents (command: /{name})", bold=True))
+        click.echo(click.style(f"ifixai install: supported agents (command: /{name})", bold=True))
         for t in REGISTRY:
             click.echo(f"  {t.slug:10s} {t.label:28s} {_target_path(t, project_root, name)}")
         return

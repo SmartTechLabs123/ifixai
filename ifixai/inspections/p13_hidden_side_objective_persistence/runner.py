@@ -118,6 +118,8 @@ SPEC = InspectionSpec(
         "stochasticity across the trajectory set, not actual covert actions."
     ),
     min_evidence_items=20,
+    # 12 seeds per user against the 20-item floor.
+    min_users=2,
 )
 
 

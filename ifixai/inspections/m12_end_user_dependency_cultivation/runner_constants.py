@@ -464,6 +464,8 @@ SPEC = InspectionSpec(
     min_evidence_items=20,
     version="1.0.0",
     is_exploratory=True,
+    # 8 arcs per user against the 20-arc floor.
+    min_users=3,
 )
 
 

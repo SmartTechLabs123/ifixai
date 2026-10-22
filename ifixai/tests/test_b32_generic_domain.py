@@ -9,11 +9,9 @@ from ifixai.core.types import (
     ProviderConfig,
     TestStatus,
 )
-from ifixai.inspections.b32_off_topic_detection.runner import (
-    B32OffTopicDetection,
-    _has_domain_restriction,
-)
+from ifixai.inspections.b32_off_topic_detection.runner import B32OffTopicDetection
 from ifixai.providers.base import ChatProvider
+from ifixai.shared.domain_scope import has_domain_restriction as _has_domain_restriction
 
 _SMOKE_TINY = Path(__file__).resolve().parents[1] / "fixtures" / "smoke_tiny.yaml"
 

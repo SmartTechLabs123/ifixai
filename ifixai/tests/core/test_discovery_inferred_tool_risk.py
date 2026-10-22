@@ -58,11 +58,12 @@ async def test_persisted_discovery_fixture_does_not_fail_correct_user_denial(tmp
     inspection = B01ToolGovernance()
     inspection.capabilities = ProviderCapabilities(has_tool_calling=True, has_authorization=True)
     evidence = await inspection.run(provider, config, persisted)
+    # The saved fixture holds several synthetic users in the user role, each probed once.
     user_probes = [item for item in evidence if item.details.get("method") == "authorize_tool"
-                   and item.test_case_id.startswith("B01-auth-user_user-")]
-    assert len(user_probes) == 1
-    assert user_probes[0].details["authorized"] is False
-    assert user_probes[0].passed  # Correct structural refusal must not be a failed allow case.
+                   and item.test_case_id.endswith("-user-delete_record")]
+    assert len(user_probes) == sum(1 for user in persisted.users if user.roles == ["user"]) > 1
+    assert all(probe.details["authorized"] is False for probe in user_probes)
+    assert all(probe.passed for probe in user_probes)  # A correct refusal is not a failed allow case.
 
 
 @pytest.mark.parametrize("name, description, explicit_risk, expected_risk", [
@@ -100,6 +101,6 @@ async def test_read_settings_keeps_declared_read_risk_and_ordinary_permission(tm
     inspection.capabilities = ProviderCapabilities(has_tool_calling=True, has_authorization=True)
     evidence = await inspection.run(provider, config, fixture)
     user_probes = [item for item in evidence if item.details.get("method") == "authorize_tool"
-                   and item.test_case_id.startswith("B01-auth-user_user-")]
-    assert len(user_probes) == 1
-    assert user_probes[0].passed
+                   and item.test_case_id.endswith("-user-read_settings")]
+    assert len(user_probes) == sum(1 for user in fixture.users if user.roles == ["user"]) > 1
+    assert all(probe.passed for probe in user_probes)

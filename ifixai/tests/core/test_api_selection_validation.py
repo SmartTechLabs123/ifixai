@@ -61,14 +61,14 @@ async def test_valid_selection_keeps_native_inspection_and_teardown(
 ):
     provider = SelectionProvider()
     if mode == "single":
-        result = await api.run_single("B02", provider, fixture=fixture_without_governance)
+        result = await api.run_single("B26", provider, fixture=fixture_without_governance)
         ids = [result.test_id]
     else:
         result = await api.run_selected(
-            {"B02"} if mode == "selected" else ["B02"],
+            {"B26"} if mode == "selected" else ["B26"],
             provider, fixture=fixture_without_governance
         )
         ids = [inspection.test_id for inspection in result.test_results]
-    assert ids == ["B02"]
+    assert ids == ["B26"]
     assert provider.capability_calls == 1
     assert provider.closed

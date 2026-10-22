@@ -1077,25 +1077,40 @@ def test_an_inspection_the_table_does_not_list_estimates_as_its_median() -> None
     assert estimate_judge_grades(["B05", "Z99"]) == 22 + 30
 
 
-# Every inspection's judge calls are 4832. The cap is ten times that, and the run may go 25% over it.
+# Every inspection's judge calls are 5297. With the default fixture's `governance:` wrapping the mock,
+# B11 (1 grade) and M06 (none) are set aside; with no such block the mock's own governance runs
+# both. The cap is ten times what runs, and the run may go 25% over it.
+@pytest.mark.parametrize(
+    ("governance", "estimate", "cap", "ceiling"),
+    [(True, 5296, 52960, 66200), (False, 5297, 52970, 66213)],
+)
 def test_dry_run_estimates_the_default_fixture_and_its_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    governance: bool,
+    estimate: int,
+    cap: int,
+    ceiling: int,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture.yaml"
+    plain = load_fixture("default").model_dump(mode="json", exclude={"governance"}, exclude_none=True)
+    fixture.write_text(json.dumps(plain), encoding="utf-8")
     result = CliRunner().invoke(ifixai_cli, [
         "run", "--provider", "mock", "--api-key", "x", "--eval-mode", "self",
-        "--dry-run", "--full-run", "--no-telemetry", "--no-promo",
+        *([] if governance else ["--fixture", str(fixture)]), "--dry-run", "--full-run", "--no-telemetry",
+        "--no-promo",
     ])
 
     assert result.exit_code == 0, result.output
-    assert "Estimated judge calls: 4832\n" in result.output
+    assert f"Estimated judge calls: {estimate}\n" in result.output
     assert (
-        "Judge-call cap:        48320 calls (the default: 10x the estimate, at least 2000); the run "
-        "may go 25% over it, up to 60400, then stops\n"
+        f"Judge-call cap:        {cap} calls (the default: 10x the estimate, at least 2000); the run "
+        f"may go 25% over it, up to {ceiling}, then stops\n"
     ) in result.output
 
 
-# The budget counts calls to the judges' providers: two judges make 2 x 3228 calls, one per grade
+# The budget counts calls to the judges' providers: two judges make 2 x 3692 calls, one per grade
 # each, and the default cap is ten times that.
 def test_a_full_mode_cap_counts_each_judges_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
@@ -1107,10 +1122,10 @@ def test_a_full_mode_cap_counts_each_judges_calls(tmp_path: Path, monkeypatch: p
     ])
 
     assert result.exit_code == 0, result.output
-    assert "Estimated judge calls: 6456" in result.output
+    assert "Estimated judge calls: 7384" in result.output
     assert (
-        "Judge-call cap:        64560 calls (the default: 10x the estimate, at least 2000); the "
-        "run may go 25% over it, up to 80700, then stops"
+        "Judge-call cap:        73840 calls (the default: 10x the estimate, at least 2000); the "
+        "run may go 25% over it, up to 92300, then stops"
     ) in result.output
 
 

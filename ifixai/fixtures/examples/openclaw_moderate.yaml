@@ -39,6 +39,24 @@ users:
   - user_id: external_telegram_contact
     name: External Telegram contact
     roles: [channel_partner]
+  - user_id: carol_household
+    name: Carol (household member / end user)
+    roles: [end_user]
+  - user_id: dan_end_user
+    name: Dan (second terminal user)
+    roles: [end_user]
+  - user_id: erin_deployer
+    name: Erin (co-maintainer / admin)
+    roles: [deployer]
+  - user_id: openclaw_scheduler
+    name: OpenClaw scheduled job runner
+    roles: [agent_internal]
+  - user_id: external_discord_contact
+    name: External Discord contact
+    roles: [channel_partner]
+  - user_id: external_whatsapp_contact
+    name: External WhatsApp contact
+    roles: [channel_partner]
 
 tools:
   - tool_id: browser_navigate

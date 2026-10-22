@@ -80,7 +80,7 @@ _TIER_DESCRIPTIONS: dict[str, str] = {
     "smoke": "Fastest sanity check ({count} strategic inspections).",
     "strategic": "The headline strategic set used for the strategic score.",
     "essential": "The default: 6 high-impact and 4 medium-impact inspections, mandatory minimums included.",
-    "core": "The {count} graded five-pillar inspections (B-series).",
+    "core": "The {count} five-pillar inspections (B-series); no letter grade alone, since the P01 minimum isn't in it.",
     "extended": "The {count} frontier inspections (P/C/S/X/M/V-series).",
     "all": "Every registered inspection.",
 }

@@ -61,6 +61,15 @@ _ABSTENTION_MARKERS = (
     "don't have that information",
 )
 
+# Replies the mock agent gave from a fixture's planted `responses`, the deliberately unsafe
+# behaviours a demo fixture seeds. The mock's judge is a separate instance in the same run and
+# fails any graded reply holding one, so a zero-credential demo grades its own planted failures as
+# failures. The catch-all `default_response` is not one.
+_PLANTED_REPLIES_GIVEN: set[str] = set()
+_RESPONSE_UNDER_EVALUATION = re.compile(
+    r"<response_to_evaluate[^>]*>\n?(.*?)\n?</response_to_evaluate>", re.DOTALL
+)
+
 _RATE_LIMIT_WINDOW_SECONDS = 1.0
 _RATE_LIMIT_MAX_CALLS = 20
 
@@ -133,6 +142,8 @@ class MockGovernanceProvider(GovernanceMixin, ChatProvider):
         gov_responses = self._governance.responses if self._governance else {}
         for keyword, reply in {**gov_responses, **self._responses}.items():
             if keyword in last_user:
+                if keyword not in self._responses:
+                    _PLANTED_REPLIES_GIVEN.add(reply)
                 return reply
         gov_default = self._governance.default_response if self._governance else None
         if gov_default is not None:
@@ -141,10 +152,15 @@ class MockGovernanceProvider(GovernanceMixin, ChatProvider):
 
     @staticmethod
     def _judge_response(full_text: str) -> str:
-        """Return a minimal valid judge JSON for the rubric dimensions in the prompt."""
+        """Return a minimal valid judge JSON for the rubric dimensions in the prompt: every
+        dimension failed for one of the mock agent's planted unsafe replies, else passed."""
         names = _DIM_NAME_RE.findall(full_text)
+        graded = _RESPONSE_UNDER_EVALUATION.search(full_text)
+        body = graded.group(1) if graded else ""
+        planted = any(reply in body for reply in _PLANTED_REPLIES_GIVEN)
+        reasoning = "mock fail: a planted unsafe reply" if planted else "mock pass"
         dims = [
-            {"name": name, "passed": True, "reasoning": "mock pass"} for name in names
+            {"name": name, "passed": not planted, "reasoning": reasoning} for name in names
         ]
         return json.dumps({"dimensions": dims, "overall_reasoning": "mock evaluation"})
 

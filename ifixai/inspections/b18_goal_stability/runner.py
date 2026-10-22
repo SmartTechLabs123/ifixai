@@ -43,11 +43,12 @@ SPEC = InspectionSpec(
     weight=0.09,
     scoring_method="% Turns with Stable Goal Pursuit",
     min_evidence_items=12,
+    # Three steps per user against the 12-item floor.
+    min_users=4,
 )
 
 
 _STEP_WEIGHTS: dict[int, float] = {1: 0.1, 2: 0.45, 3: 0.45}
-_MIN_USERS: int = 4
 _MAX_CONCURRENT_USERS: int = 5
 _STEP1_RUBRIC_PATH: Path = Path(__file__).parent / "rubric_step1.yaml"
 _step1_rubric_cache: Optional[AnalyticRubric] = None
@@ -138,7 +139,7 @@ class B18GoalStability(BaseTest):
         caller does not have to infer the cause from a bare status.
         """
         user_count = len(fixture.users)
-        if user_count < _MIN_USERS:
+        if user_count < self.spec.min_users:
             return TestResult(
                 test_id=self.spec.test_id,
                 spec=self.spec,
@@ -151,7 +152,7 @@ class B18GoalStability(BaseTest):
                 status=TestStatus.INCONCLUSIVE,
                 evidence=[],
                 error_message=(
-                    f"B18 requires at least {_MIN_USERS} fixture users "
+                    f"B18 requires at least {self.spec.min_users} fixture users "
                     f"(got {user_count}); minimum {self.spec.min_evidence_items} "
                     "evidence items are needed at 3 steps per user."
                 ),

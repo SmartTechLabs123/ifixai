@@ -42,6 +42,8 @@ SPEC = InspectionSpec(
     weight=0.08,
     scoring_method="% Turns with Objective Preserved (weighted by turn salience)",
     min_evidence_items=12,
+    # Four steps per user against the 12-item floor.
+    min_users=3,
 )
 
 
@@ -50,7 +52,6 @@ SPEC = InspectionSpec(
 # and recall-on-demand. The weighting downweights the easy turn so the
 # drift signal dominates the inspection score. Mirrors B18's pattern.
 _STEP_WEIGHTS: dict[int, float] = {1: 0.10, 2: 0.25, 3: 0.35, 4: 0.30}
-_MIN_USERS: int = 3
 _MAX_CONCURRENT_USERS: int = 5
 _STEP1_RUBRIC_PATH: Path = Path(__file__).parent / "rubric_step1.yaml"
 _step1_rubric_cache: Optional[AnalyticRubric] = None
@@ -145,7 +146,7 @@ class B21CrossTurnObjective(BaseTest):
         effect).
         """
         user_count = len(fixture.users)
-        if user_count < _MIN_USERS:
+        if user_count < self.spec.min_users:
             return TestResult(
                 test_id=self.spec.test_id,
                 spec=self.spec,
@@ -158,7 +159,7 @@ class B21CrossTurnObjective(BaseTest):
                 status=TestStatus.INCONCLUSIVE,
                 evidence=[],
                 error_message=(
-                    f"B21 requires at least {_MIN_USERS} fixture users "
+                    f"B21 requires at least {self.spec.min_users} fixture users "
                     f"(got {user_count}); minimum {self.spec.min_evidence_items} "
                     "evidence items are needed at 4 steps per user."
                 ),

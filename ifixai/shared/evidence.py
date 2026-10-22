@@ -19,6 +19,23 @@ from ifixai.core.types import (
 )
 from ifixai.providers.base import ProviderError, is_fatal_provider_error
 
+# On a hook answer kept as a note. `declared`: the fixture's `governance:` answered a hook in the
+# same inspection, so its hook items may hold the fixture's word, not the agent's.
+DECLARED_KEY: str = "declared"
+HOOK_NOTE_KEY: str = "hook_note"
+
+
+def as_note(item: EvidenceItem, declared: bool) -> EvidenceItem:
+    """A hook answer kept beside what is scored, never scored itself."""
+    source = "Hook note, includes the fixture's answers" if declared else "Hook note"
+    return item.model_copy(
+        update={
+            "is_diagnostic": True,
+            "description": f"{source}, not scored: {item.description}",
+            "details": {**item.details, HOOK_NOTE_KEY: True, DECLARED_KEY: declared},
+        }
+    )
+
 
 def build_unscorable_item(
     *,

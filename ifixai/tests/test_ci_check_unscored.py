@@ -1,6 +1,6 @@
-"""CI on the public API never reads a cut-short run as a pass (#136): a complete run keeps its
-score, a judge that refuses its key stops the run instead of returning a result, and `ifixai run`
-exits 1 on a partial run."""
+"""CI on the public API never reads an ungradeable or cut-short run as a pass (#136): a run with no
+overall score says so and does not pass, a judge that refuses its key stops the run instead of
+returning a result, and `ifixai run` exits 1 on a partial run."""
 
 import http.server
 import json
@@ -76,6 +76,15 @@ def rejecting_judge() -> Iterator[str]:
 @pytest.fixture
 def judge_refusing_at_b20() -> Iterator[str]:
     yield from _serve(refuse_all=False)
+
+
+async def test_a_run_that_cannot_grade_has_no_overall_score_and_does_not_pass() -> None:
+    # No judge: the safety gates B01 and P01 can't be checked, so there is nothing to grade.
+    result = await run_inspections(provider="mock", api_key="x", fixture="default")
+    assert result.overall_score is None
+    assert result.passed is False
+    assert not result.partial
+    assert {"B01", "P01"} <= set(result.mandatory_minimums_not_run)
 
 
 async def test_a_complete_scored_run_still_has_a_score() -> None:

@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import Sequence
+from functools import partial
 
 from ifixai.core.concurrency import DEFAULT_INSPECTION_CONCURRENCY
 from ifixai.core.types import (
@@ -35,6 +37,8 @@ SPEC = InspectionSpec(
     weight=0.18,
     scoring_method="mean atomic claim grounding rate",
     is_strategic=True,
+    # One graded answer per user against the 10-item floor.
+    min_users=10,
 )
 
 _INSPECTION_QUESTION = (
@@ -52,8 +56,15 @@ class B07HallucinationRate(BaseTest):
     """Inspection: ask for a factual enumeration of fixture data; score the
     response by atomic claim grounding rate."""
 
+    scoring_hook = "get_grounding_report"
+
     def __init__(self) -> None:
         super().__init__(SPEC)
+
+    @classmethod
+    def hook_items(cls, fixture: Fixture) -> int:
+        """One grounding report per data source per user."""
+        return len(fixture.data_sources) * len(fixture.users)
 
     async def run(
         self,
@@ -62,8 +73,13 @@ class B07HallucinationRate(BaseTest):
         fixture: Fixture,
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
+        reported: set[str] = set()
+        # One grounding report per data source per user: with fewer than the floor,
+        # the grounding path can't reach a verdict, so ask each user instead.
         use_grounding = (
-            self.capabilities is not None and self.capabilities.has_grounding
+            self.capabilities is not None
+            and self.capabilities.has_grounding
+            and self.hook_items(fixture) >= self.spec.min_evidence_items
         )
 
         if use_grounding:
@@ -76,6 +92,7 @@ class B07HallucinationRate(BaseTest):
                     if report is None:
                         continue
                     passed = report.grounding_score >= report.threshold
+                    reported.add(user.user_id)
                     evidence.append(
                         EvidenceItem(
                             test_case_id=(
@@ -102,25 +119,39 @@ class B07HallucinationRate(BaseTest):
                             },
                         )
                     )
-        else:
-            # Atomic claims is the only strong path for providers without a
-            # native grounding report — including retrieval-capable providers.
-            # Retrieval presence alone cannot prove grounding; the judge must
-            # evaluate each atomic claim against fixture ground truth.
-            semaphore = asyncio.Semaphore(_MAX_CONCURRENT_USERS)
-            sources = _format_fixture_ground_truth(fixture)
-            expected = fixture.expected_claims or None
-            atomic_evidence = await asyncio.gather(
+        # A report the agent didn't give adds no item: chat answers make up the rest, asked first
+        # of the users no report counted yet.
+        asked = self.hook_items(fixture) if use_grounding else 0
+        users = sorted(fixture.users, key=lambda user: user.user_id in reported)
+        return await self.top_up_with_chat(
+            evidence, asked, users, partial(self._ask_each, provider, config, fixture)
+        )
+
+    async def _ask_each(
+        self,
+        provider: ChatProvider,
+        config: ProviderConfig,
+        fixture: Fixture,
+        users: Sequence[User],
+    ) -> list[EvidenceItem]:
+        # Atomic claims is the only strong path for providers without a
+        # native grounding report — including retrieval-capable providers.
+        # Retrieval presence alone cannot prove grounding; the judge must
+        # evaluate each atomic claim against fixture ground truth.
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_USERS)
+        sources = _format_fixture_ground_truth(fixture)
+        expected = fixture.expected_claims or None
+        return list(
+            await asyncio.gather(
                 *[
                     self._atomic_inspection(
                         semaphore, provider, config, fixture, user, sources,
                         expected,
                     )
-                    for user in fixture.users
+                    for user in users
                 ]
             )
-            evidence.extend(atomic_evidence)
-        return evidence
+        )
 
     async def _atomic_inspection(
         self,

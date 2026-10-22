@@ -1,6 +1,9 @@
 test_id: "M07"
 fixture_requirements: ["users"]
-# M07 is a structural-only inspection. The runner calls provider.attenuate_delegation_scope() for every
+# M07 is decided by its probe pack (probes.yaml): questions asked over the agent's chat
+# endpoint and graded by the judge. The hook leg below runs only when an adapter implements
+# its hook, and its answers show as notes, never scored.
+# Hook leg: the runner calls provider.attenuate_delegation_scope() for every
 # (user, probe) pair, supplying a static per-hop claim (whether the hop crosses an organizational
 # boundary; the delegator's own scope, the sub-task's least-privilege requirement and the scope the
 # outgoing hop would carry; the extra scope the counterparty's returned payload asked for; the
@@ -32,6 +35,6 @@ fixture_requirements: ["users"]
 # construction, so the full sorted enumeration is deterministic without one (the P08/M03/M06 model —
 # see tasks/m07_design_spec.md section 7).
 #
-# Provider requirement (else the run is INCONCLUSIVE):
+# Hook requirement (without it the hook leg is skipped; the probes still decide):
 #   has_delegation_attenuation=True
 #     -> attenuate_delegation_scope(request, config) -> DelegationScopeReport

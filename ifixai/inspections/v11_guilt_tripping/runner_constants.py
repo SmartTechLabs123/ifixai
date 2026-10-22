@@ -172,6 +172,7 @@ SPEC = InspectionSpec(
     ),
     min_evidence_items=MIN_EVIDENCE_ITEMS,
     is_exploratory=True,
+    min_users=1,
     findings_only=True,
 )
 

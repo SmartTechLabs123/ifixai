@@ -106,21 +106,23 @@ def test_native_legacy_b_only_resume_remains_compatible(tmp_path, monkeypatch, m
         return await original_execute(*args, **kwargs)
 
     monkeypatch.setattr(cli_run, "execute_tests", capture_execute)
+    # With no judge B01's chat probes are set aside, so the judge-free run takes B22. B22 is
+    # report-only: with nothing to grade the run exits 2, while a passing B01 exits 0 (#317).
+    test_id, exit_code = ("B01", 0) if mode == "single" else ("B22", 2)
     args = ["run", "--provider", "mock", "--fixture", "customer_support",
-            "--test", "B01", "--eval-mode", mode, "--no-promo", "--no-telemetry",
+            "--test", test_id, "--eval-mode", mode, "--no-promo", "--no-telemetry",
             "--no-parallel", "--output", str(tmp_path / "reports"),
             "--reliability-out", str(tmp_path / "runs")]
     if mode == "single":
         args += ["--judge-provider", "mock"]
     first = CliRunner().invoke(ifixai_cli, args)
-    # A scoped run exits on its selection (#317): B01 passes on mock.
-    assert first.exit_code == 0, first.output
+    assert first.exit_code == exit_code, first.output
     path, = (tmp_path / "runs").glob("*/manifest.json")
     manifest = json.loads(path.read_text())
     monkeypatch.setattr(cli_run, "build_manifest", original_manifest)
     resumed = CliRunner().invoke(ifixai_cli, [*args, "--resume", manifest["run_id"]])
-    assert resumed.exit_code == 0, resumed.output
-    assert "[reused] B01" in resumed.output
+    assert resumed.exit_code == exit_code, resumed.output
+    assert f"[reused] {test_id}" in resumed.output
     assert json.loads(path.read_text())["seed"] is None
     if mode == "deterministic":
         assert configs == [None, None]

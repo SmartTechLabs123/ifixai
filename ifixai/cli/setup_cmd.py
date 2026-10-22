@@ -230,19 +230,6 @@ def setup(ctx: click.Context) -> None:
     if provider == "http":
         grounding = "sut"
 
-    # Governance: prefer a real declared policy over synthesizing one in the fixture.
-    # Skip for http (the live agent enforces its own governance at runtime) and
-    # for mock, which always loads fixtures/governance/mock.yaml and whose run
-    # rejects --governance.
-    governance: str | None = None
-    if provider not in ("http", "mock"):
-        gov_path = ui.text(
-            "Path to a real governance policy YAML "
-            "(blank to skip / synthesize in the fixture):",
-            default="",
-        ).strip()
-        governance = gov_path or None
-
     judges: list[JudgeSpec] = []
     if provider == "mock":
         # Mock is a free offline preview, so there are no real providers or keys to
@@ -411,7 +398,6 @@ def setup(ctx: click.Context) -> None:
         api_key_env=api_key_env,
         endpoint=endpoint,
         grounding=grounding,
-        governance=governance,
         fixture=fixture,
         suite=suite,
         mode=mode,

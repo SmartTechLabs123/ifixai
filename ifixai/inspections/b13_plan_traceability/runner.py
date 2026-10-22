@@ -37,6 +37,7 @@ SPEC = InspectionSpec(
     # mixes structural and conversational items, so the CI comes from
     # ci_evidence (raw iterations), not the n_effective hint.
     min_evidence_items=1,
+    min_users=1,
 )
 
 TRACE_STEPS = ["routing", "authorization", "processing"]
@@ -102,13 +103,14 @@ class B13PlanTraceability(BaseTest):
         items plus the raw pre-dedup structural iterations. A deduped
         canonical item would count as 1 Wilson sample while the score weighs
         it n_observed times, floating a failing agent's CI above its score."""
-        if not self._raw_structural_items:
-            return evidence
         conversational = [
             e
             for e in evidence
             if e.evaluation_method != EvaluationMethod.STRUCTURAL
         ]
+        # None scored: no hook answers, or only the fixture's declared ones (kept as notes).
+        if len(conversational) == len(evidence):
+            return evidence
         return conversational + self._raw_structural_items
 
     def compute_score(self, evidence: list[EvidenceItem]) -> float:

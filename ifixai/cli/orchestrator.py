@@ -21,6 +21,7 @@ from ifixai.core.runner import build_partial_result, effective_sut_temperature
 from ifixai.core.types import (
     EvaluationPipelineConfig,
     InspectionCategory,
+    NotApplicable,
     TestResult,
     TestRunResult,
     TestStatus,
@@ -40,6 +41,7 @@ from ifixai.providers.resolver import (
     select_cross_provider_judge,
 )
 from ifixai.scoring.category_weights import STRATEGIC_TEST_IDS
+from ifixai.scoring.engine import is_unscored
 
 _logger = logging.getLogger(__name__)
 
@@ -91,11 +93,27 @@ def _lookup_env_api_key(provider_name: str) -> str | None:
     return None
 
 
+# The mock agent needs no key, so a mock run with no judge to pair gets the fix that works, never
+# a list of provider keys to set.
+MOCK_NEEDS_A_JUDGE = (
+    "Error: the mock run has no judge. Add --eval-mode self for a free run on the stand-in agent "
+    "(it judges itself), or set a judge key such as OPENAI_API_KEY or ANTHROPIC_API_KEY for a "
+    "cross-vendor judge."
+)
+MOCK_SELF_JUDGE_OFFER = (
+    "No judge key found. Run the mock free, with the stand-in agent judging itself (--eval-mode self)?"
+)
+
+
 def _resolve_standard_eval_mode(
     sut_provider: str | None,
     judge_provider: tuple[str, ...],
     sut_api_key: str | None = None,
+    offer_self_judge: bool = False,
 ) -> EvalModeResolution:
+    """The judge a standard run takes from the keys in the environment. A mock run with none to
+    pair is offered self-judging when `offer_self_judge` (the guided setup); self-judging is only
+    ever taken on an explicit yes."""
     if judge_provider:
         return EvalModeResolution(mode="semantic", auto_selected_judge=None)
     sut_name = (sut_provider or "").lower()
@@ -107,6 +125,11 @@ def _resolve_standard_eval_mode(
         chosen = select_cross_provider_judge(sut_name, available)
         if chosen is not None:
             return EvalModeResolution(mode="semantic", auto_selected_judge=chosen)
+    if sut_name == "mock":
+        if offer_self_judge and click.confirm(MOCK_SELF_JUDGE_OFFER, default=None):
+            return EvalModeResolution(mode="self", auto_selected_judge=None)
+        click.echo(click.style(MOCK_NEEDS_A_JUDGE, fg="red"), err=True)
+        sys.exit(2)
     if not available:
         click.echo(
             click.style(
@@ -316,6 +339,18 @@ _BOLD = "\033[1m"
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
+def _terminal_log_handlers(streams: tuple[object, ...]) -> list[logging.StreamHandler]:
+    """Every log handler, on the root logger or a named one, that writes to one of `streams`."""
+    named = list(logging.root.manager.loggerDict.values())
+    loggers = [logging.getLogger(), *(logger for logger in named if isinstance(logger, logging.Logger))]
+    handlers = dict.fromkeys(handler for logger in loggers for handler in logger.handlers)
+    return [
+        handler
+        for handler in handlers
+        if isinstance(handler, logging.StreamHandler) and any(handler.stream is stream for stream in streams)
+    ]
+
+
 class BenchmarkProgressDisplay:
     """Live animated display: pre-prints all benchmarks then updates in-place.
 
@@ -329,8 +364,10 @@ class BenchmarkProgressDisplay:
     flushes the captured buffer below the display so nothing is lost.
     """
 
-    def __init__(self, tests: list[tuple[str, str]]) -> None:
+    def __init__(self, tests: list[tuple[str, str]], set_aside: list[NotApplicable]) -> None:
         self._tests = tests  # [(test_id, name), ...]
+        # Filled by the run when its purpose check sets a listed inspection aside.
+        self._set_aside = set_aside
         self._results: dict[str, TestResult] = {}
         self._frame_idx = 0
         self._lock = threading.Lock()
@@ -340,6 +377,8 @@ class BenchmarkProgressDisplay:
         self._real_stderr = sys.stderr
         self._capture_buffer: io.StringIO | None = None
         self._streams_swapped = False
+        # Log handlers pointed at the buffer, each with the stream to give back in stop().
+        self._log_streams: list[tuple[logging.StreamHandler, object]] = []
 
     def start(self) -> None:
         self._real_stdout = sys.stdout
@@ -356,6 +395,12 @@ class BenchmarkProgressDisplay:
         sys.stdout = self._capture_buffer
         sys.stderr = self._capture_buffer
         self._streams_swapped = True
+        # The CLI's log handler kept the stderr it had at startup, so the swap above misses it:
+        # one warning mid-run left the first rows stranded above the redrawn list.
+        self._log_streams = [
+            (handler, handler.setStream(self._capture_buffer))
+            for handler in _terminal_log_handlers((self._real_stdout, self._real_stderr))
+        ]
 
         self._thread = threading.Thread(target=self._animate, daemon=True)
         self._thread.start()
@@ -374,6 +419,9 @@ class BenchmarkProgressDisplay:
             sys.stdout = self._real_stdout
             sys.stderr = self._real_stderr
             self._streams_swapped = False
+            for handler, stream in self._log_streams:
+                handler.setStream(stream)
+            self._log_streams = []
             captured = self._capture_buffer.getvalue() if self._capture_buffer else ""
             if captured.strip():
                 self._real_stderr.write("\n")
@@ -390,9 +438,19 @@ class BenchmarkProgressDisplay:
         lines: list[str] = []
         with self._lock:
             frame = _SPINNER_FRAMES[self._frame_idx]
+            set_aside = {item.test_id for item in self._set_aside}
             for test_id, name in self._tests:
+                if test_id in set_aside:
+                    lines.append(f"  {_DIM}-{_RESET} {_BOLD}{test_id}{_RESET} {name} ... not applicable")
+                    continue
                 if test_id in self._results:
                     result = self._results[test_id]
+                    if result.status == TestStatus.ERROR:
+                        lines.append(
+                            f"  {_RED}!{_RESET} {_BOLD}{test_id}{_RESET} {name} "
+                            f"... {_RED}ERROR{_RESET} ({_error_note(result)})"
+                        )
+                        continue
                     if result.insufficient_evidence:
                         icon = f"{_YELLOW}⊘{_RESET}"
                         status = f"{_YELLOW}INCONCLUSIVE{_RESET}"
@@ -435,29 +493,48 @@ def _print_category_summary(result: TestRunResult) -> None:
         return
     bar_width = 22
     click.echo()
+    not_scored_ids = {r.test_id for r in result.test_results if is_unscored(r)}
     for cs in result.category_scores:
         color = _CATEGORY_BAR_COLOR.get(cs.category.value, "\033[96m")
         bar = color + ("█" * bar_width) + _RESET
         total_in_suite = len(cs.test_ids)
         failed = cs.test_count - cs.tests_passed
-        inconclusive = total_in_suite - cs.test_count
+        not_scored = sum(1 for test_id in cs.test_ids if test_id in not_scored_ids)
+        inconclusive = total_in_suite - cs.test_count - not_scored
+        gaps = [f"{_YELLOW}⊘ {inconclusive} inconclusive{_RESET}"] if inconclusive > 0 else []
+        if not_scored:
+            gaps.append(f"{_DIM}{not_scored} not scored{_RESET}")
+        gap_str = ", ".join(gaps)
         count_str = f"{cs.test_count}/{total_in_suite}"
         if total_in_suite == 0:
             count_str = "—"
             fail_str = f"{_DIM}not in this suite{_RESET}"
         elif cs.test_count == 0:
-            fail_str = f"{_YELLOW}⊘ {inconclusive} inconclusive{_RESET}"
-        elif failed > 0 and inconclusive > 0:
-            fail_str = f"{_RED}× {failed} failed{_RESET}, {_YELLOW}⊘ {inconclusive} inconclusive{_RESET}"
+            fail_str = gap_str
+        elif failed > 0 and gap_str:
+            fail_str = f"{_RED}× {failed} failed{_RESET}, {gap_str}"
         elif failed > 0:
             fail_str = f"{_RED}× {failed} failed{_RESET}"
-        elif inconclusive > 0:
-            fail_str = f"{_GREEN}✓ {cs.tests_passed} passed{_RESET}, {_YELLOW}⊘ {inconclusive} inconclusive{_RESET}"
+        elif gap_str:
+            fail_str = f"{_GREEN}✓ {cs.tests_passed} passed{_RESET}, {gap_str}"
         else:
             fail_str = f"{_GREEN}✓ all passed{_RESET}"
         name = cs.category.value.ljust(16)
         click.echo(f"  {name} [{bar}]  {count_str:>5}  {fail_str}")
     click.echo()
+
+
+# How much of an ERROR's reason its progress line shows; the error summary prints all of it.
+_ERROR_NOTE_CHARS = 80
+
+
+def _error_note(result: TestResult) -> str:
+    """Why an inspection is ERROR, short enough for its progress line: the error's first line."""
+    detail = (result.error_message or result.error or "").strip()
+    if not detail:
+        return "no detail available"
+    note = detail.splitlines()[0]
+    return note if len(note) <= _ERROR_NOTE_CHARS else f"{note[: _ERROR_NOTE_CHARS - 3]}..."
 
 
 def _inconclusive_note(result: TestResult) -> str:
@@ -475,6 +552,12 @@ def _progress_callback_plain(
     bench_result: TestResult,
 ) -> None:
     """Fallback used when stdout is not a TTY (e.g. piped/redirected)."""
+    if bench_result.status == TestStatus.ERROR:
+        click.echo(
+            f"  [{index}/{total}] {bid} {bench_result.name} ... "
+            f"{click.style('ERROR', fg='red')} ({_error_note(bench_result)})"
+        )
+        return
     if bench_result.insufficient_evidence:
         click.echo(
             f"  [{index}/{total}] {bid} {bench_result.name} ... "
@@ -512,9 +595,20 @@ def print_report_only_overviews(result: TestRunResult) -> None:
         click.echo()
 
 
+def print_not_applicable(items: list[NotApplicable]) -> None:
+    """List what was set aside before the run, one line each with why."""
+    if not items:
+        return
+    click.echo()
+    click.echo(click.style("Not applicable (set aside before the run, never scored):", bold=True))
+    for item in items:
+        click.echo(f"  {item.test_id} {item.name}: {item.reason}")
+
+
 def _build_display_tests(
     strategic: bool,
     test_ids: tuple[str, ...],
+    skip: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     if test_ids:
         display: list[tuple[str, str]] = []
@@ -522,11 +616,12 @@ def _build_display_tests(
             uid = raw_id.upper()
             spec = SPEC_BY_ID.get(uid)
             display.append((uid, spec.name if spec else uid))
-        return display
-    if strategic:
+    elif strategic:
         strategic_set = set(STRATEGIC_TEST_IDS)
-        return [(s.test_id, s.name) for s in ALL_SPECS if s.test_id in strategic_set]
-    return [(s.test_id, s.name) for s in ALL_SPECS]
+        display = [(s.test_id, s.name) for s in ALL_SPECS if s.test_id in strategic_set]
+    else:
+        display = [(s.test_id, s.name) for s in ALL_SPECS]
+    return [(tid, name) for tid, name in display if tid not in skip]
 
 
 async def execute_tests(
@@ -555,6 +650,7 @@ async def execute_tests(
     checkpoint_dir: Path | None = None,
     checkpoint_run_id: str | None = None,
     cached_results: dict[str, TestResult] | None = None,
+    not_applicable_ids: frozenset[str] = frozenset(),
     governance: GovernanceFixture | FixtureGovernance | None = FROM_FIXTURE,
 ) -> TestRunResult | None:
 
@@ -583,9 +679,13 @@ async def execute_tests(
         and _enable_windows_vt_processing()
     )
     display: BenchmarkProgressDisplay | None = None
+    # Everything the run sets aside, its purpose check's included, once it is decided.
+    set_aside: list[NotApplicable] = []
 
     if use_display:
-        display = BenchmarkProgressDisplay(_build_display_tests(strategic, test_ids))
+        display = BenchmarkProgressDisplay(
+            _build_display_tests(strategic, test_ids, not_applicable_ids), set_aside
+        )
         display.start()
         effective_callback = display.update
         for cached_id, cached_result in completed.items():
@@ -618,7 +718,8 @@ async def execute_tests(
         stopped still reports what it never ran."""
         if not completed and not keep_empty:
             return None
-        planned = [tid for tid, _ in _build_display_tests(strategic, test_ids)]
+        skip = not_applicable_ids | {item.test_id for item in set_aside}
+        planned = [tid for tid, _ in _build_display_tests(strategic, test_ids, skip)]
         if test_ids:
             partial_mode = "selected"
         elif strategic:
@@ -639,6 +740,7 @@ async def execute_tests(
                     resolve_provider(provider), sut_temperature, model, endpoint
                 ),
                 sut_seed=sut_seed,
+                not_applicable=set_aside,
                 not_run_reason=not_run_reason,
             )
         except Exception:
@@ -682,6 +784,7 @@ async def execute_tests(
                 auth_method=auth_method,
                 extra_headers=extra_headers,
                 cached_results=cached_results,
+                on_set_aside=set_aside.extend,
                 governance=governance,
             )
             selected_result.self_judged = self_judged
@@ -709,6 +812,7 @@ async def execute_tests(
                 auth_method=auth_method,
                 extra_headers=extra_headers,
                 cached_results=cached_results,
+                on_set_aside=set_aside.extend,
                 governance=governance,
             )
             strategic_result.self_judged = self_judged
@@ -735,6 +839,7 @@ async def execute_tests(
             auth_method=auth_method,
             extra_headers=extra_headers,
             cached_results=cached_results,
+            on_set_aside=set_aside.extend,
             governance=governance,
         )
 

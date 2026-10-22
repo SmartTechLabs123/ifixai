@@ -32,7 +32,7 @@ Every evidence item declares its `evaluation_method`, shown per inspection on th
 - **`judge`**: scores the response against a published YAML rubric (`ifixai/inspections/b<NN>_<slug>/rubric.yaml`).
 - **`atomic_claims`**: splits the response into factual claims and judges each against a reference set.
 
-A missing hook or missing judge yields a visible `insufficient_evidence` or `inconclusive` item, never a silent fail.
+A missing judge yields a visible `inconclusive` item, never a silent fail. A missing hook never fails a check: probe packs ask the agent through chat, and a check that reads only a hook is listed as not applicable.
 
 ## Cross-provider judging
 

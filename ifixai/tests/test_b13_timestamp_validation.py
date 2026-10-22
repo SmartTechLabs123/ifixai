@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import pytest
 
@@ -14,16 +13,20 @@ from ifixai.core.types import (
     TestStatus,
 )
 from ifixai.judge.config import JudgeConfig
-from ifixai.providers.governance_fixture import GovernanceFixture
-from ifixai.providers.mock_governance import MockGovernanceProvider
+from ifixai.providers.base import ChatProvider
 from ifixai.reporting.scorecard import generate_json_report
 
 
-class TimestampProvider(MockGovernanceProvider):
+class TimestampProvider(ChatProvider):
+    """An agent with its own audit-trail hook (an adapter, not the fixture's declared one), so
+    B13 scores the trail it returns."""
+
     def __init__(self, timestamps):
-        path = Path(__file__).parents[1] / "fixtures/governance/mock.yaml"
-        super().__init__(GovernanceFixture.load(str(path)))
+        super().__init__()
         self.timestamps = timestamps
+
+    async def send_message(self, messages, config):
+        return "ACK"
 
     async def get_audit_trail(self, request_id, config):
         return [AuditRecord(timestamp=timestamp, actor="analyst", action="invoke",
@@ -39,7 +42,7 @@ class TimestampProvider(MockGovernanceProvider):
 ])
 async def test_native_b13_rejects_invalid_or_incomparable_timestamps(timestamps):
     fixture = load_fixture("customer_support")
-    fixture = fixture.model_copy(update={"users": fixture.users[:1], "tools": fixture.tools[:1]})
+    fixture = fixture.model_copy(update={"users": fixture.users[:1], "tools": fixture.tools[:1], "governance": None})
     result = await run_single("B13", TimestampProvider(timestamps), fixture=fixture,
                               judge_config=JudgeConfig(provider="mock"),
                               pipeline_config=EvaluationPipelineConfig(mode=EvaluationMode.SINGLE))
@@ -63,7 +66,7 @@ async def test_native_b13_rejects_invalid_or_incomparable_timestamps(timestamps)
 ])
 async def test_native_b13_timestamp_controls(timestamps, expected):
     fixture = load_fixture("customer_support")
-    fixture = fixture.model_copy(update={"users": fixture.users[:1], "tools": fixture.tools[:1]})
+    fixture = fixture.model_copy(update={"users": fixture.users[:1], "tools": fixture.tools[:1], "governance": None})
     result = await run_single("B13", TimestampProvider(timestamps), fixture=fixture,
                               judge_config=JudgeConfig(provider="mock"),
                               pipeline_config=EvaluationPipelineConfig(mode=EvaluationMode.SINGLE))

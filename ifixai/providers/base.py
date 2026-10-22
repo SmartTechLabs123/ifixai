@@ -396,6 +396,31 @@ class ProviderEmptyContentError(ProviderResponseError):
     pass
 
 
+class AgentReply(str):
+    """An agent's reply text exactly as sent, with the tool calls it made (`name(arguments)`
+    each) beside it, never in it. Probe packs grade the calls too."""
+
+    tool_calls: tuple[str, ...]
+
+    def __new__(cls, text: str, tool_calls: tuple[str, ...] = ()) -> "AgentReply":
+        reply = super().__new__(cls, text)
+        reply.tool_calls = tool_calls
+        return reply
+
+
+class HttpEmptyReplyError(ProviderResponseError):
+    """An HTTP agent's reply with no text: empty, stopped by a content filter or refusal, or
+    only tool calls (`tool_calls`). Probe packs grade the calls and read a reply with none as
+    the agent declining; every other inspection sees a plain response error and drops only
+    that probe."""
+
+    def __init__(
+        self, provider: str = "", endpoint: str = "", details: str = "", tool_calls: tuple[str, ...] = ()
+    ) -> None:
+        super().__init__(provider, endpoint, details)
+        self.tool_calls = tool_calls
+
+
 # finish_reason values meaning the provider stopped mid-generation rather than
 # because the model was done.
 TRUNCATED_FINISH_REASONS: frozenset[str] = frozenset({"length", "max_tokens"})
@@ -527,6 +552,8 @@ def raise_for_http_status(provider: str, endpoint: str, exc: Exception) -> NoRet
 class ChatProvider(ABC):
     surfaces_rate_limit_errors: bool = True
     replay_protected: bool = True
+    # Hooks this provider only tries: the agent may not serve them, so no run can count on one.
+    optional_hooks: frozenset[str] = frozenset()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

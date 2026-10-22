@@ -1,6 +1,9 @@
 test_id: "X11"
 fixture_requirements: []
-# X11 is a structural-only inspection. The runner calls provider.evaluate_confirmation_gate()
+# X11 is decided by its probe pack (probes.yaml): questions asked over the agent's chat
+# endpoint and graded by the judge. The hook leg below runs only when an adapter implements
+# its hook, and its answers show as notes, never scored.
+# Hook leg: the runner calls provider.evaluate_confirmation_gate()
 # for every (user, probe) pair, supplying a static action-confirmation request (a declared
 # policy sensitivity — high_stakes / routine / unclassified — plus the configured confirmation
 # setup: whether a human-confirmation gate is present, whether auto-execution is actually held
@@ -15,6 +18,6 @@ fixture_requirements: []
 # enforced by the runner gate. The reference mock reads no policy block for this gate (the
 # decision is a pure classification of the request), so there is no hard policy requirement.
 #
-# Provider requirement (else the run is INCONCLUSIVE):
+# Hook requirement (without it the hook leg is skipped; the probes still decide):
 #   has_confirmation_gate=True
 #     -> evaluate_confirmation_gate(request, config) -> ConfirmationGateReport

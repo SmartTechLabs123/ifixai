@@ -39,6 +39,7 @@ from ifixai.evaluation.errors import (
     JudgePipelineRequiredError,
     judge_fail_fast_enabled,
 )
+from ifixai.evaluation.purpose_check import ask_purpose_covers
 from ifixai.evaluation.response_classifier import ResponseClass, classify_response
 from ifixai.evaluation.run_stop import CURRENT_INSPECTION, RunStop, RunStopped, StopKind
 from ifixai.judge.evaluator import judge_refusal
@@ -77,16 +78,24 @@ JUDGE_BUDGET_REASON = (
     JUDGE_BUDGET + ": the run's judge-call cap ran out, so probes went ungraded. This is a gap "
     "in the run, not a finding about the agent."
 )
-# The progress-line label and the full sentence for each reason the judge left probes ungraded.
+AGENT_UNAVAILABLE = "agent unavailable"
+AGENT_UNAVAILABLE_REASON = (
+    AGENT_UNAVAILABLE + ": the agent didn't answer some of this inspection's messages, so too little "
+    "was graded. This is a gap in the run, not a finding about the agent."
+)
+# The progress-line label for each outage that left probes ungraded, and the full sentence for
+# it (a probe pack words the agent's own, with its counts).
 UNGRADED_LABELS: dict[UngradedReason, str] = {
     UngradedReason.JUDGE_UNAVAILABLE: JUDGE_UNAVAILABLE,
     UngradedReason.JUDGE_UNUSABLE: JUDGE_NO_VERDICT,
     UngradedReason.BUDGET: JUDGE_BUDGET,
+    UngradedReason.AGENT_UNAVAILABLE: AGENT_UNAVAILABLE,
 }
 UNGRADED_MESSAGES: dict[UngradedReason, str] = {
     UngradedReason.JUDGE_UNAVAILABLE: JUDGE_UNAVAILABLE_REASON,
     UngradedReason.JUDGE_UNUSABLE: JUDGE_NO_VERDICT_REASON,
     UngradedReason.BUDGET: JUDGE_BUDGET_REASON,
+    UngradedReason.AGENT_UNAVAILABLE: AGENT_UNAVAILABLE_REASON,
 }
 # Statuses meaning this judge will never answer: a rejected key (401/403) or an unknown model (404).
 _MISCONFIGURED_STATUS: frozenset[int] = frozenset({401, 403, 404})
@@ -205,7 +214,7 @@ class EvaluationPipeline:
         self._config = config
         self._judge = judge
         self._judge_calls_used = 0
-        self._stop = RunStop(config.judge_budget)
+        self._stop = RunStop(config.judge_budget, config.judge_calls_spent)
         self._failure_streaks: Counter[str] = Counter()
         self._judge_down: set[str] = set()
         # Inspections the judge returned at least one verdict for, failed on at least once, or
@@ -558,6 +567,29 @@ class EvaluationPipeline:
             return JudgeErrorKind.UNAVAILABLE
         self._record_judge_answer()
         return verdict
+
+    async def is_purpose_work(self, purpose: str, work: str) -> bool | JudgeErrorKind:
+        """Whether the agent's stated purpose covers `work`, or why the judge gave no answer
+        (see `classify`)."""
+        skipped = self._skip_kind()
+        if skipped is not None:
+            return skipped
+        pair = self._judge.classifier_provider()
+        self._reserve_call()
+        try:
+            answer = await self._judged(
+                ask_purpose_covers(purpose, work, pair["provider"], pair["config"])
+            )
+        except JudgeContractError:
+            # Not a grade gap: the check then runs as the agent's work and its probes are graded.
+            _logger.exception("Purpose check answered off-format")
+            return JudgeErrorKind.CONTRACT
+        except ProviderError as exc:
+            _logger.exception("Purpose check failed (judge infrastructure)")
+            self._record_judge_failure(exc, hard=is_fatal_provider_error(exc))
+            return JudgeErrorKind.UNAVAILABLE
+        self._record_judge_answer()
+        return answer
 
     async def evaluate_atomic(
         self,

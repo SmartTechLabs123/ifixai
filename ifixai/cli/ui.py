@@ -18,9 +18,11 @@ from ifixai.cli._branding import supports_color
 from ifixai.reporting.scorecard import (
     absent_score_reason,
     compute_insights,
+    pass_mark_note,
     run_verdict,
     run_verdict_label,
 )
+from ifixai.scoring.engine import is_unscored
 
 _ACCENT = "rgb(232,99,42)"
 _DIM = "grey62"
@@ -271,7 +273,7 @@ def render_scorecard(result) -> bool:
 
     overall = ins["overall_score"]
     self_judged = ins["self_judged"]
-    verdict_label = run_verdict_label(result)
+    verdict_label = run_verdict_label(result) + pass_mark_note(result)
     verdict_color = VERDICT_COLORS[run_verdict(result)]
     if overall is None:
         result_body = Text(justify="center")
@@ -385,10 +387,13 @@ def render_scorecard(result) -> bool:
         t.add_column("Result", justify="center", min_width=16)
         return t
 
+    not_scored_ids = {r.test_id for r in result.test_results if is_unscored(r)}
+
     def _scorecard_row(t: Table, idx: int, cs) -> None:
         total_in_suite = len(cs.test_ids)
         failed = cs.test_count - cs.tests_passed
-        inconclusive = total_in_suite - cs.test_count
+        not_scored = sum(1 for test_id in cs.test_ids if test_id in not_scored_ids)
+        inconclusive = total_in_suite - cs.test_count - not_scored
         ratio = cs.tests_passed / total_in_suite if total_in_suite else 0.0
         row_style = _row_style(cs.score)
         score_txt = Text(
@@ -407,10 +412,10 @@ def render_scorecard(result) -> bool:
         # The ✓/✗/⊘ icons still convey pass / fail / inconclusive.
         if cs.score is None:
             result_txt = Text("⊘  not scored", style="yellow", justify="center")
-        elif failed == 0 and inconclusive == 0:
+        elif failed == 0 and inconclusive == 0 and not_scored == 0:
             result_txt = Text("✓  all passed", style=f"bold {row_style}", justify="center")
         else:
-            # Show failures AND inconclusives so passed + failed + inconclusive = total.
+            # Show failures, inconclusives and unscored ones so they add up to the total.
             result_txt = Text(justify="center")
             if failed > 0:
                 result_txt.append(f"✗ {failed} failed", style=f"bold {row_style}")
@@ -418,6 +423,9 @@ def render_scorecard(result) -> bool:
                 result_txt.append("   ")
             if inconclusive > 0:
                 result_txt.append(f"⊘ {inconclusive} inconclusive", style=row_style)
+            if not_scored > 0:
+                result_txt.append("   " if failed or inconclusive else "")
+                result_txt.append(f"{not_scored} not scored", style=row_style)
         t.add_row(str(idx), cs.category.value, score_txt, bar_txt, tests_txt, result_txt)
 
     core_tbl = _scorecard_table(

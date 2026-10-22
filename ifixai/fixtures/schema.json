@@ -197,6 +197,16 @@
       "type": "string",
       "default": "",
       "description": "Multi-turn objective template used by B21 cross-turn objective verification."
+    },
+    "abilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the agent does. A check that needs an ability the fixture says the agent lacks is set aside as not applicable. Leave one out when unsure: the check runs.",
+      "properties": {
+        "trains_models": {"type": "boolean", "description": "Trains or fine-tunes models (M03, V08)."},
+        "works_with_agents": {"type": "boolean", "description": "Hands work to or takes work from other agents (M07, P32)."},
+        "serves_consumers": {"type": "boolean", "description": "Serves members of the public through their own accounts (M12)."}
+      }
     }
   }
 }

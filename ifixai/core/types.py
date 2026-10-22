@@ -209,17 +209,19 @@ class JudgeErrorKind(str, Enum):
     # Every judge model timed out, 5xx'd or cut off on this item. Never scored,
     # never the agent's fault: a flaky judge, not a dead one.
     JUDGE_TRANSIENT = "judge_transient"
-    # The judge wasn't asked (it is down for this inspection), or a classify or claim
-    # call to it failed. COMMUNICATION is the agent's.
+    # The judge wasn't asked (it is down for this inspection), or a classify, purpose or
+    # claim call to it failed. COMMUNICATION is the agent's.
     UNAVAILABLE = "judge_unavailable"
 
 
 class UngradedReason(str, Enum):
-    """Why the judge, not the agent, left an inspection's probes ungraded."""
+    """Why an outage, not the agent's behaviour, left an inspection's probes ungraded: the
+    judge's, or the agent never answering."""
 
     JUDGE_UNAVAILABLE = "judge_unavailable"
     JUDGE_UNUSABLE = "judge_unusable"
     BUDGET = "budget"
+    AGENT_UNAVAILABLE = "agent_unavailable"
 
 
 class EvaluationMode(str, Enum):
@@ -1801,6 +1803,9 @@ class InspectionSpec(BaseModel):
     is_mandatory_minimum: bool = False
     mandatory_minimum_score: Optional[float] = None
     min_evidence_items: int = Field(default=10, ge=1)
+    # Fixture users the runner needs for `min_evidence_items` on a fixture that clears every
+    # other minimum; `ifixai validate` asks for them.
+    min_users: int = Field(default=0, ge=0)
     is_exploratory: bool = False
     is_advisory: bool = False
     is_attestation: bool = False
@@ -1882,6 +1887,8 @@ class RubricDimension(BaseModel):
     description: str
     weight: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     mandatory: bool = False
+    # A dimension only a refusal can pass: dropped before a benign control is graded.
+    adversarial_only: bool = False
     examples: list["RubricExample"] = Field(default_factory=list)
 
 
@@ -2014,6 +2021,9 @@ class EvaluationPipelineConfig(BaseModel):
     # stops, and what it never finished is reported as not run. 0 = none, the hard
     # `judge_max_calls` (in grades) alone.
     judge_budget: int = 0
+    # Judge calls the run made before its first inspection (one per judge, the judge check); they
+    # count against `judge_budget`.
+    judge_calls_spent: int = 0
     ci_confidence_level: float = 0.95
     b12_seed: int = Field(default_factory=_random_seed)
     b14_seed: int = Field(default_factory=_random_seed)
@@ -2224,8 +2234,8 @@ class TestResult(BaseModel):
 
 
 def ungraded_reason_of(result: TestResult) -> UngradedReason | None:
-    """Why the judge left `result` short of evidence, or None when it isn't short or the judge
-    didn't."""
+    """Why an outage (the judge's or the agent's) left `result` short of evidence, or None when
+    it isn't short or nothing went down."""
     return result.ungraded_reason if result.insufficient_evidence else None
 
 
@@ -2252,6 +2262,22 @@ class CategoryScore(BaseModel):
     test_count: int = 0
     tests_passed: int = 0
     test_ids: list[str] = Field(default_factory=list)
+
+
+class NotApplicable(BaseModel):
+    """An inspection set aside before the run, and why, in the words the report shows.
+
+    `kind` says whose limit it is: "agent" when the fixture says the agent can't do the thing
+    (nothing to check, so a mandatory gate decides on the rest), "run" when this run can't
+    check it (no judge, the purpose check, the connection), which withholds the grade."""
+
+    model_config = {"frozen": True}
+
+    test_id: str
+    name: str
+    reason: str
+    kind: Literal["agent", "run"] = "run"
+    status: Literal["not_applicable"] = "not_applicable"
 
 
 class TestRunResult(BaseModel):
@@ -2282,6 +2308,9 @@ class TestRunResult(BaseModel):
     score_capped: bool = False
 
     passed: bool = False
+    # The overall score the run's verdict, and so the CLI's exit code, needs to pass: the CLI's
+    # --min-score. None is `PASS_THRESHOLD`.
+    min_score: Optional[float] = None
 
     gaps: list[GovernanceGap] = Field(default_factory=list)
     run_mode: str = "full"
@@ -2304,6 +2333,8 @@ class TestRunResult(BaseModel):
     not_run_test_ids: list[str] = Field(default_factory=list)
     # Why `not_run_test_ids` never finished, for their label: "budget", "aborted", ...
     not_run_reason: str = "aborted"
+    # Set aside before the run, each with why; never scored.
+    not_applicable: list["NotApplicable"] = Field(default_factory=list)
     # Set when --resume merged checkpointed results from an earlier session,
     # so every report surface can disclose the mixed provenance.
     resumed_run_id: Optional[str] = None
@@ -2459,6 +2490,16 @@ class ExpectedClaim(BaseModel):
         return self
 
 
+class Abilities(BaseModel):
+    """What the agent does, as the fixture says. Unset is unknown, and the checks run."""
+
+    model_config = {"frozen": True}
+
+    trains_models: Optional[bool] = None
+    works_with_agents: Optional[bool] = None
+    serves_consumers: Optional[bool] = None
+
+
 class Fixture(BaseModel):
 
     metadata: FixtureMetadata
@@ -2477,6 +2518,7 @@ class Fixture(BaseModel):
     sensitive_data_classes: list[str] = Field(default_factory=list)
     system_purpose: str = ""
     primary_objective_template: str = ""
+    abilities: Abilities = Field(default_factory=Abilities)
 
     # Optional inline governance bundle. When supplied via a top-level
     # `governance:` block on the diagnostic YAML, the loader hydrates this

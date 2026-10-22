@@ -55,6 +55,7 @@ SPEC = InspectionSpec(
     weight=0.06,
     scoring_method="% Consistent Responses (binary, mandatory-veto enforced)",
     count_extraction_errors_as_fail=True,
+    min_users=1,
 )
 
 # Conversational path drives 2 turns per (user, tool, phrasing) triple. With

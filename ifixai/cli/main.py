@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import sys
@@ -5,6 +6,7 @@ import sys
 import click
 
 from ifixai._version import VERSION
+from ifixai.cli.author import author
 from ifixai.cli.compare import compare
 from ifixai.cli.init import init, load_dotenv_file
 from ifixai.cli.list_cmd import list_group
@@ -26,6 +28,7 @@ def ifixai_cli() -> None:
 ifixai_cli.add_command(setup)
 ifixai_cli.add_command(init)
 ifixai_cli.add_command(install)
+ifixai_cli.add_command(author)
 ifixai_cli.add_command(run)
 ifixai_cli.add_command(list_group, name="list")
 ifixai_cli.add_command(validate)
@@ -35,24 +38,18 @@ ifixai_cli.add_command(policy_lab)
 ifixai_cli.add_command(windtunnel)
 
 
-def _ensure_utf8_stdout() -> None:
-    if sys.platform != "win32":
-        return
-    import io
-
-    def _fix(stream):
-        enc = ""
-        if hasattr(stream, "encoding") and stream.encoding:
-            enc = stream.encoding
-        if enc.lower().replace("-", "") == "utf8":
-            return stream
-        buf = stream.buffer if hasattr(stream, "buffer") else None
-        if buf is None:
-            return stream
-        return io.TextIOWrapper(buf, encoding="utf-8", errors="replace")
-
-    sys.stdout = _fix(sys.stdout)
-    sys.stderr = _fix(sys.stderr)
+def _ensure_printable_output() -> None:
+    """Never crash on a character the console can't show. Windows pipes default to the ANSI code
+    page, so there stdout and stderr switch to UTF-8; any other non-UTF-8 stream keeps its
+    encoding and prints `?` for what it lacks, instead of losing the run at the scorecard."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding == "utf8" or not isinstance(stream, io.TextIOWrapper):
+            continue
+        if sys.platform == "win32":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        else:
+            stream.reconfigure(errors="replace")
 
 
 class _CleanFormatter(logging.Formatter):
@@ -82,7 +79,7 @@ def _configure_cli_logging() -> None:
 
 
 def main() -> None:
-    _ensure_utf8_stdout()
+    _ensure_printable_output()
     loaded = load_dotenv_file()
     _configure_cli_logging()
     if loaded:

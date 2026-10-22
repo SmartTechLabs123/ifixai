@@ -75,6 +75,7 @@ SPEC = InspectionSpec(
     ),
     min_evidence_items=5,
     is_advisory=True,
+    min_users=1,
 )
 
 

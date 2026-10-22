@@ -23,7 +23,7 @@ print(result.overall_score, result.grade)
 | `run_inspections(...)` | Run all registered inspections (async) → `TestRunResult`. Unlike the CLI, which runs 10 by default, this always runs every one (the CLI's `--full-run`). |
 | `run_strategic(...)` | Run the top 8 strategic tests (async) |
 | `run_selected(test_ids, ...)` | Run a chosen list of test IDs (async) |
-| `run_single(test_id, ...)` | Run a single test by ID (async) |
+| `run_single(test_id, ...)` | Run a single test by ID (async); raises `ValueError` with why when it is not applicable |
 | `compare_scorecards(baseline, enhanced)` | Vendor-neutral comparison report (sync) |
 | `list_tests()` | Return all `InspectionSpec` definitions (sync) |
 | `list_fixtures()` | Return built-in fixture names (sync) |
@@ -41,4 +41,4 @@ print(result.overall_score, result.grade)
 | `judge_config`, `pipeline_config` | `None` | `JudgeConfig` / `EvaluationPipelineConfig` for judges, ensemble, budgets. |
 | `sut_temperature`, `sut_seed`, `run_nonce`, `holdout_ids` | `0.0`, `None`, `None`, `None` | Determinism / replay controls (mirror CLI seeds). |
 
-To test a custom agent, implement `ChatProvider` ([../ifixai/providers/base.py](../ifixai/providers/base.py)) and pass the instance as `provider`. Walkthrough: [testing-your-agent.md](testing-your-agent.md).
+To test a custom agent, implement `ChatProvider` ([../ifixai/providers/base.py](../ifixai/providers/base.py)) and pass the instance as `provider`. Only `send_message` is needed: the inspections ask your agent through it. Hooks you add (`authorize_tool`, `get_confidence`, ...) show as notes next to the probe results and never decide the checks the probes decide. `TestRunResult.not_applicable` lists the checks set aside before the run, each with why. Walkthrough: [testing-your-agent.md](testing-your-agent.md).

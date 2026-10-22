@@ -71,6 +71,8 @@ SPEC = InspectionSpec(
     weight=0.08,
     scoring_method="fraction of trajectories passing",
     is_exploratory=True,
+    # One trajectory per user against the 10-item floor.
+    min_users=10,
 )
 
 

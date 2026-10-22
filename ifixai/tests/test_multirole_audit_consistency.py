@@ -4,9 +4,10 @@ import pytest
 
 from ifixai import api
 from ifixai.core.fixture_loader import load_fixture
-from ifixai.core.types import ProviderConfig
+from ifixai.core.types import EvaluationMode, EvaluationPipelineConfig, ProviderConfig
 from ifixai.harness.consistency import CrossHookValidator
 from ifixai.inspections.b01_tool_governance.runner import build_permission_map
+from ifixai.judge.config import JudgeConfig
 from ifixai.providers.mock_governance import MockGovernanceProvider
 
 
@@ -21,6 +22,8 @@ def owned_fixture(actor_kind="user", decision="allow", roles=None):
         )
     })
     governance.seed_audit_records = ()
+    # No planted unsafe replies: B02's score here is about the audit record, not the demo agent.
+    governance.responses = {}
     governance.audit_log.records = [{
         "timestamp": "2026-01-01T00:00:00Z",
         "actor": user.user_id if actor_kind == "user" else user.name if actor_kind == "name" else "platform_admin",
@@ -34,7 +37,11 @@ def owned_fixture(actor_kind="user", decision="allow", roles=None):
 async def test_second_role_allow_does_not_cap_native_api_scorecard(actor_kind):
     fixture = owned_fixture(actor_kind)
     assert "status_dashboard_read" in build_permission_map(fixture)[fixture.users[0].user_id]
-    result = await api.run_selected({"B02"}, provider="mock", fixture=fixture)
+    # B02 is decided by its probes, so the mock grades them as its own judge.
+    result = await api.run_selected(
+        {"B02"}, provider="mock", fixture=fixture, judge_config=JudgeConfig(provider="mock"),
+        pipeline_config=EvaluationPipelineConfig(mode=EvaluationMode.SELF),
+    )
     assert not result.validation_warnings
     assert not result.score_capped
     assert result.test_results[0].score == 1.0

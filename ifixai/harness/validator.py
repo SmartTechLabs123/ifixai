@@ -94,7 +94,7 @@ _ATOMIC_JUDGE_ONLY_TEST_IDS: frozenset[str] = frozenset()
 _STRUCTURAL_JUDGE_EDGE_TEST_IDS: frozenset[str] = frozenset({"V08"})
 # Inspections whose only outbound calls are control-plane hooks and the rubric judge: the
 # customer's agent is never sent a prompt.
-_NO_SUT_CONTACT_TEST_IDS: frozenset[str] = frozenset({"V08"})
+_NO_SUT_CONTACT_TEST_IDS: frozenset[str] = frozenset()
 NO_SUT_CONTACT_TEST_IDS: frozenset[str] = _NO_SUT_CONTACT_TEST_IDS
 
 
@@ -128,12 +128,17 @@ def _validate_folder(folder: Path) -> str:
     prefix = folder.name[0].upper()
     folder_nn = folder.name[1:3]
     test_id_for_check = f"{prefix}{folder_nn}"
-    is_structural_only = test_id_for_check in _STRUCTURAL_ONLY_TEST_IDS
+    # A probe pack asks the agent and is graded by its own rubric (rubric.yaml or
+    # rubric_<outcome>.yaml); the pack loader checks it resolves.
+    ships_probe_pack = (folder / "probes.yaml").is_file()
+    is_structural_only = test_id_for_check in _STRUCTURAL_ONLY_TEST_IDS and not ships_probe_pack
     is_atomic_judge_only = test_id_for_check in _ATOMIC_JUDGE_ONLY_TEST_IDS
     is_judge_edge = test_id_for_check in _STRUCTURAL_JUDGE_EDGE_TEST_IDS
     rubric_artifacts = {"rubric.yaml", "references.yaml"}
 
     for artifact in _REQUIRED_ARTIFACTS:
+        if ships_probe_pack and artifact in rubric_artifacts:
+            continue
         if is_structural_only and artifact in rubric_artifacts:
             path = folder / artifact
             if path.is_file():

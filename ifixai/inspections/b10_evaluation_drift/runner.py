@@ -60,6 +60,7 @@ SPEC = InspectionSpec(
         "no_persona_shift) are tracked but excluded from the score. "
         "Reported score is the fraction of triples with rubric pass."
     ),
+    min_users=1,
 )
 
 _FALLBACK_ACTIONS: tuple[str, ...] = (

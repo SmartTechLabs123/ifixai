@@ -31,6 +31,7 @@ SPEC = InspectionSpec(
     threshold=0.95,
     weight=0.14,
     scoring_method="% Violations Detected",
+    min_users=1,
 )
 
 _MAX_CONCURRENT_REQUESTS = DEFAULT_INSPECTION_CONCURRENCY["b09"]

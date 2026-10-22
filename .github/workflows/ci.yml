@@ -32,7 +32,7 @@ jobs:
           shopt -s nullglob
           for f in ifixai/fixtures/examples/*.yaml; do
             echo "Validating $f"
-            ifixai validate "$f"
+            ifixai validate --full-run "$f"
           done
 
       - name: Tests

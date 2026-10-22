@@ -1,8 +1,9 @@
 # Test your own agent
 
-iFixAi tests the system you deploy: model plus tools, retrieval, and governance. A bare
-model API (`--provider openai` / `anthropic` / ...) scores 44 of 61 inspections; the rest
-return `insufficient_evidence` and drop out. Flags and extras: [provider reference](#provider-reference).
+iFixAi tests the system you deploy: model plus tools, retrieval, and governance. Its chat
+endpoint is enough: every inspection with a chat probe asks your agent through it, a bare
+model API (`--provider openai` / `anthropic` / ...) included. A check that can't apply is
+listed as not applicable before the run, with why. Flags and extras: [provider reference](#provider-reference).
 
 ## Path 1: HTTP endpoint
 
@@ -10,7 +11,7 @@ Your agent serves `POST /v1/chat/completions`:
 
 ```bash
 ifixai run --provider http --endpoint http://localhost:8000/v1 \
-  --api-key "$YOUR_TOKEN" --model your-agent --eval-mode self
+  --api-key "$YOUR_TOKEN" --model your-agent --fixture ./my-fixture.yaml --eval-mode self
 ```
 
 To score B28 (RAG context integrity), return a `sources` array next to `choices`:
@@ -26,8 +27,9 @@ Custom auth: set `IFIXAI_EXTRA_HEADERS` to a JSON object; pick `auth_method`
 ## Path 2: `ChatProvider` adapter
 
 For an in-process agent, subclass [`ChatProvider`](../ifixai/providers/base.py). Only
-`send_message` is required; hooks default to `None` (`insufficient_evidence`). Pass your
-instance through the [Python API](python-api.md) and run as usual.
+`send_message` is required: the inspections ask your agent through it. Hooks are optional
+and default to `None`. Pass your instance through the [Python API](python-api.md) and run
+as usual.
 
 ```python
 from ifixai.providers.base import ChatProvider
@@ -39,30 +41,34 @@ class MyAgentProvider(ChatProvider):
         return reply.text
 ```
 
-| Capability hook | Makes measurable |
+B01, B02, B04, B23, C02, C05, C11, M02, M03, M07, P01, P08, V08, X04 and X11 no longer
+need an adapter: each sends its probe pack over chat and the replies decide it. Hooks
+those inspections read (`authorize_tool`, `get_confidence`, `route_to_human`, ...) show as
+notes beside the probe results and never change the verdict.
+
+| Capability hook | What it adds |
 |---|---|
-| `list_tools` / `invoke_tool` / `authorize_tool` | B01 + tool-calling checks |
-| `get_governance_architecture` / `apply_override` | B02 / B04 |
-| `get_configuration_version` / `get_audit_trail` | B23 / audit trail |
-| `retrieve_sources` | B05 |
-| `get_confidence` / `route_to_human` / `reconcile_outcome` | C02 / C05 / C11 |
-| `evaluate_deployment_gate` / `evaluate_confirmation_gate` | X04 / X11 |
-| `revalidate_activation_authority` | M02 |
-| `screen_training_corpus` | M03 |
-| `attest_response_identity` | M06 |
-| `attenuate_delegation_scope` | M07 |
+| `attest_response_identity` | M06, which has no chat probe: without the hook it is not applicable |
+| `invoke_tool` | B11, whose chat probe can't score it alone: without the agent's own hook it is not applicable |
+| `retrieve_sources` | B05 source checks, when the fixture lists 10 or more data sources. The `http` provider's `/retrieve` route is optional, so it counts only in a run with a judge |
+| `list_tools` / `invoke_tool` / `get_audit_trail` / `apply_override` / `get_configuration_version` | extra checks in B03, B08, B13, B14, B25, scored only when the fixture's `governance:` answers none of that inspection's hooks |
+| any hook of the 15 above | a note beside the probe results |
 
 IDs and structural requirements: [inspections.md](inspections.md#categories), [fixture_authoring.md](fixture_authoring.md).
 
 ## No code: declare governance in the fixture
 
-B02 / B04 / B11 / B23 / B26 / B27 can score from a declared policy, most trustworthy first:
+A `governance:` block sets the rules the probes test; it never earns a pass. Its hook
+answers are shown as declared and not scored. Ways to supply it, most trustworthy first:
 
-- `--governance <path>` (recommended): external `GovernanceFixture` YAML, wrapped in automatically.
 - Inline `governance:` block on the diagnostic fixture.
 - `governance: { synthesize: true }` (last resort): derived from `tools` / `permissions` / `roles`.
 
-The scorecard adds a `warnings[]` note: declared, not measured at runtime. Fields and passing values: [fixture_authoring.md](fixture_authoring.md).
+A fixture that ships with iFixAi (`default` and the examples) has a sample org's `governance:`
+block. `ifixai run` puts it on the mock only; on any other agent it stays off, and the run says
+so in one line. Copy the fixture to your own file to use its block on your agent.
+
+Fields, and the `abilities` that set checks aside: [fixture_authoring.md](fixture_authoring.md).
 
 ## Which judge?
 
@@ -93,7 +99,7 @@ For a real verdict:
 
 ```bash
 # Standard: one cross-provider judge (export a second provider key, or pin --judge-provider).
-ifixai run --provider http --endpoint http://localhost:8000/v1 --api-key "$YOUR_TOKEN"
+ifixai run --provider http --endpoint http://localhost:8000/v1 --api-key "$YOUR_TOKEN" --fixture ./my-fixture.yaml
 
 # Full: hand-built fixture + two or more independent judges.
 ifixai run --mode full \
@@ -103,30 +109,33 @@ ifixai run --mode full \
   --judge-provider openai    --judge-api-key "$OPENAI_API_KEY"
 ```
 
-Modes: [cli.md](cli.md#standard-vs-full). Judges: [methodology.md](methodology.md#cross-provider-judge-default).
+Modes: [cli.md](cli.md#standard-vs-full). Judges: [methodology.md](methodology.md#cross-provider-judging).
 
 ## Coverage
 
 Counts are for a `--full-run`. A default run executes 10 of these inspections.
 
-| SUT shape | Inspections scored |
+| SUT shape | Inspections graded |
 |---|---|
-| Vanilla LLM, default fixture (ships `governance:`) | 61 / 61 \* |
-| Vanilla LLM, custom fixture without governance | 44 / 61 (27 core + 17 extended) |
-| `--provider mock` (zero credentials) | 61 / 61 \* |
-| Every hook exposed, or full mode + multi-judge | 61 / 61 |
+| Chat endpoint only (HTTP agent or bare model API), any fixture | every inspection with a chat probe; M06 and B11 are listed as not applicable \* |
+| `--provider mock` (zero credentials) | the same; the mock's hooks answer from the fixture, so M06 and B11 are not applicable \* |
+| Adapter with `attest_response_identity` / `invoke_tool` | M06 / B11 as well; B11 only when the fixture's `governance:` answers none of its hooks |
+
+The fixture can set more checks aside, each listed with why before the run: its `abilities`,
+or no tool that can delete or overwrite that some role may not use (P01). With a judge, a stated purpose that leaves out
+training work sets M03 and V08 aside too; those are listed once the run starts.
 
 \* The bundled default fixture (NimbusForge, `managed_it_infrastructure`) declares a
-specific domain so B32 scores, and it carries **seeded defects**: expect 15/61 FAILs
-by design on a default-fixture run — they are properties of the fixture, not your
+specific domain so B32 scores, and it carries **seeded defects**: a mock `--full-run` on it
+fails 14 inspections by design. They are properties of the fixture, not your
 system. Defect map: [`ifixai/fixtures/default/README.md`](../ifixai/fixtures/default/README.md).
 On a custom fixture, set a specific `metadata.domain` (or `metadata.on_topic_examples`)
 to score B32.
 
 ## Provider reference
 
-Install the extra first, e.g. `pip install -e ".[gemini]"`. The CLI never auto-reads
-the SUT key from the environment: pass `--api-key` / `-k`, or enter it when prompted.
+Install the extra first, e.g. `pip install -e ".[gemini]"`. The SUT key is read from the
+provider's env var below; `--api-key` / `-k` overrides it, and `http` always needs it (or `--auth-method none`).
 
 | `--provider` | Extra | SUT credential | Example flags |
 |---|---|---|---|
@@ -145,7 +154,7 @@ the SUT key from the environment: pass `--api-key` / `-k`, or enter it when prom
 | `bedrock` | `.[bedrock]` | AWS credential chain | `--provider bedrock -k not-used --model anthropic.claude-sonnet-4-6` |
 | `huggingface` | `.[huggingface]` | `HF_TOKEN` or `HUGGINGFACE_API_TOKEN` | `--provider huggingface -k "$HF_TOKEN" --model meta-llama/Llama-3.1-8B-Instruct` |
 | `langchain` | none (`pip install langchain` on your server only) | key for the model behind your server | `--provider langchain --endpoint http://localhost:8000 -k "$OPENAI_API_KEY" --eval-mode self` |
-| `mock` | none | none | `--provider mock` |
+| `mock` | none | none | `--provider mock --eval-mode self` |
 
 Notes:
 

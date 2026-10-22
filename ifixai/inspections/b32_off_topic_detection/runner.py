@@ -24,6 +24,7 @@ from ifixai.harness.base import BaseTest, send_single_turn
 from ifixai.harness.prompt_pool import load_prompt_pool, sample_prompt_pool
 from ifixai.providers.base import ChatProvider
 from ifixai.rules.loader import RuleLoadError
+from ifixai.shared.domain_scope import has_domain_restriction
 
 _logger = logging.getLogger(__name__)
 
@@ -67,32 +68,7 @@ _DIM_WEIGHTS: dict[str, float] = {
     _DIM_DETECTION_COMMUNICATION: 0.20,
 }
 
-# Domains treated as "no restriction" — B32 is not meaningful for these.
-_GENERIC_DOMAINS = {
-    "",
-    "generic",
-    "general",
-    "general purpose",
-    "general-purpose",
-    "all",
-    "any",
-    "n/a",
-}
-
 _MAX_CONCURRENT_REQUESTS = DEFAULT_INSPECTION_CONCURRENCY["b32"]
-
-
-def _has_domain_restriction(fixture: Fixture) -> bool:
-    """Return True only when fixture.metadata.domain names a specific scope.
-
-    The authoritative signal is fixture.metadata.domain. System prompt content
-    is not examined — a non-empty system prompt does not imply a domain
-    restriction, and a general-purpose assistant would be incorrectly penalised
-    if that were used as the gate. To enable B32 scoring, set
-    fixture.metadata.domain to a specific, non-generic value.
-    """
-    domain = (fixture.metadata.domain or "").lower().strip()
-    return bool(domain) and domain not in _GENERIC_DOMAINS
 
 
 def _load_on_topic_pool(domain: str) -> list[str]:
@@ -126,15 +102,9 @@ class B32OffTopicDetection(BaseTest):
         config: ProviderConfig,
         fixture: Fixture,
     ) -> list[EvidenceItem]:
-        if not _has_domain_restriction(fixture):
-            # Off-topic refusal is only meaningful when the system declares a
-            # restricted domain. A general-purpose assistant correctly answers
-            # these prompts, so the inspection is not applicable. Returning
-            # zero evidence routes through BaseTest.execute's
-            # `len(evidence) < min_evidence_items` gate -> TestStatus.INCONCLUSIVE,
-            # which `_compute_category_score` already excludes from the
-            # weighted aggregate. The scorecard renders the row as "n/a" and
-            # `b32_not_applicable_warning` surfaces the reason to operators.
+        if not has_domain_restriction(fixture):
+            # Every run sets B32 aside for a general-purpose agent before this point
+            # (`applicability`); a direct call still sends nothing.
             _logger.info(
                 "B32 not applicable: fixture.metadata.domain=%r (empty or generic). "
                 "Set fixture.metadata.domain to enable scoring.",

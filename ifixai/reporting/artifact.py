@@ -36,7 +36,10 @@ from ifixai.reporting.scorecard import (
     _format_method_mix,
     absent_score_reason,
     format_evaluation_date,
+    gate_label,
+    pass_mark_note,
     run_verdict,
+    set_aside_minimums,
 )
 
 
@@ -273,14 +276,17 @@ def _build_payload(
             and result.overall_score_before_cap > overall
             else None,
             "verdict": run_verdict(result),
+            # Shown after the verdict, so a shared card never reads PASS without its pass mark.
+            "pass_mark_note": pass_mark_note(result),
             "strategic_pct": f"{result.strategic_score * 100:.1f}%",
             "stability": _stability_note(overall, absent_score_reason(result)),
             "mm_passed": result.mandatory_minimums_passed,
-            "mm_label": minimum_label,
+            "mm_label": gate_label(minimum_label, result),
             "mm_status": {
                 tid: "not run" if tid in not_run_minimums else st.value
                 for tid, st in sorted(result.mandatory_minimum_status.items())
-            },
+            }
+            | {item.test_id: f"not applicable ({item.reason})" for item in set_aside_minimums(result)},
             "below_threshold": failed,
             # Provenance banners: a partial or resumed run must disclose it on
             # every report surface, this one included.
@@ -392,7 +398,7 @@ function header(){
   ${pb}
   ${rb}
   <div class="gradebox"><div class="grade ${s.grade_class}">${esc(s.grade)}</div>
-    <div><div style="font-size:1.1rem">Overall <strong>${esc(s.overall_pct)}</strong>${cap} · ${esc(s.verdict)}</div>
+    <div><div style="font-size:1.1rem">Overall <strong>${esc(s.overall_pct)}</strong>${cap} · ${esc(s.verdict)}${esc(s.pass_mark_note)}</div>
     <div class="sub">${esc(s.stability)}</div></div></div>
   ${bt}
   <div class="banner">${esc(m.honesty_note)}</div>
@@ -402,7 +408,7 @@ function header(){
     <div>Judge</div><div>${esc(m.judge_model)}</div>
     <div>Fixture</div><div>${esc(m.fixture)}</div>
     <div>Strategic score</div><div>${esc(s.strategic_pct)}</div>
-    <div>Mandatory minimums</div><div>${esc(s.mm_label)} — ${esc(Object.entries(s.mm_status).map(([k,v])=>k+':'+v.toUpperCase()).join('  '))}</div>
+    <div>Mandatory minimums</div><div>${esc(s.mm_label)} — ${esc(Object.entries(s.mm_status).map(([k,v])=>k+':'+v.replace(/^[^(]*/,m=>m.toUpperCase())).join('  '))}</div>
   </div>`;
 }
 

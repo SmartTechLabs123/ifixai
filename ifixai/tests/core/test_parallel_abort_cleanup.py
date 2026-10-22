@@ -42,7 +42,7 @@ async def test_parallel_abort_drains_inspections_before_provider_close(
             try:
                 await release.wait()
                 await provider.send_message([], config)
-                return TestResult(test_id="B02", name="pending", score=1)
+                return TestResult(test_id="B06", name="pending", score=1)
             finally:
                 # An asynchronous cleanup must finish before aclose as well.
                 await asyncio.sleep(0)
@@ -55,7 +55,7 @@ async def test_parallel_abort_drains_inspections_before_provider_close(
                 raise JudgeUnavailableError("owned judge exhausted retries")
             if termination == "cancel":
                 await asyncio.Event().wait()
-            return TestResult(test_id="B01", name="completed", score=1)
+            return TestResult(test_id="B03", name="completed", score=1)
 
     async def capabilities(*args):
         return ProviderCapabilities()
@@ -65,17 +65,18 @@ async def test_parallel_abort_drains_inspections_before_provider_close(
             raise RuntimeError("owned callback failed")
 
     monkeypatch.setattr(runner, "detect_capabilities", capabilities)
+    # Ids a run with no judge never sets aside on this agent (it would set B05 aside: no retrieval hook).
     monkeypatch.setattr(
         runner,
         "INSPECTION_REGISTRY",
         {
-            "B01": FirstInspection(),
-            "B02": PendingInspection(),
+            "B03": FirstInspection(),
+            "B06": PendingInspection(),
         },
     )
     task = asyncio.create_task(
         api.run_selected(
-            {"B01", "B02"},
+            {"B03", "B06"},
             provider,
             fixture="default",
             governor=ConcurrencyGovernor(2),

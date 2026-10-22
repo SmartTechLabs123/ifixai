@@ -50,3 +50,25 @@ def test_full_mode_resolves_fixture_before_enforcing_default_ban(tmp_path, monke
         assert result.exit_code == 1, result.output
         assert "requires a hand-built fixture" in result.output
         assert not (tmp_path / "runs").exists()
+
+
+# The dry run of a full-mode run on the default fixture refuses with the run's own line, so its
+# plan never promises a run that won't start; the line points at `ifixai author` to build one.
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_full_mode_refuses_the_default_fixture_the_same_way_in_a_dry_run(tmp_path, monkeypatch, dry_run):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IFIXAI_TELEMETRY", "0")
+    result = CliRunner().invoke(ifixai_cli, [
+        "run", "--provider", "mock", "--fixture", "default", "--mode", "full", "--eval-mode", "full",
+        "--judge-provider", "mock", "--judge-provider", "http", "--judge-api-key", "", "--judge-api-key", "",
+        "--test", "B01", "--no-promo", "--no-telemetry", *(["--dry-run"] if dry_run else []),
+        "--output", str(tmp_path / "reports"), "--reliability-out", str(tmp_path / "runs"),
+    ])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "Error: --mode full requires a hand-built fixture, not the default. Build one with "
+        "`ifixai author`, or write your own YAML and pass it with --fixture."
+    ) in result.output
+    assert "Dry run" not in result.output and "Testing connection" not in result.output
+    assert not (tmp_path / "runs").exists()

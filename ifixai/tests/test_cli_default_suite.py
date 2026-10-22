@@ -24,6 +24,11 @@ MOCK_RUN = [
     "run", "--provider", "mock", "--api-key", "not-used", "--eval-mode", "self",
     "--no-telemetry", "--no-promo", "--no-parallel", "--min-score", "0",
 ]
+# The mock has no adapter for B11's and M06's hooks; answers from declared governance never
+# count, so every run sets both aside and lists them under Not applicable.
+SET_ASIDE_ON_MOCK = ("B11", "M06")
+RUNNABLE_ON_MOCK = sorted(set(SPEC_BY_ID) - set(SET_ASIDE_ON_MOCK))
+CORE_RUNNABLE_ON_MOCK = len(set(resolve_suite("core")["test_ids"]) - set(SET_ASIDE_ON_MOCK))
 EXPLICIT_SELECTORS = [
     ["--suite", "core"],
     ["--test", "B01"],
@@ -31,7 +36,7 @@ EXPLICIT_SELECTORS = [
     ["--strategic"],
 ]
 EXPLICIT_SELECTOR_COUNTS = [
-    len(resolve_suite("core")["test_ids"]),
+    CORE_RUNNABLE_ON_MOCK,
     1,
     len(resolve_category_test_ids(["DECEPTION"])["test_ids"]),
     len(STRATEGIC_TEST_IDS),
@@ -111,7 +116,9 @@ def test_dry_run_defaults_to_the_essential_suite(isolated_workdir: Path) -> None
 def test_dry_run_full_run_covers_every_inspection(isolated_workdir: Path) -> None:
     result = invoke_mock_run(["--dry-run", "--full-run"])
     assert result.exit_code == 0, result.output
-    assert f"Estimated tests:  {len(SPEC_BY_ID)}" in result.output
+    assert f"Estimated tests:  {len(RUNNABLE_ON_MOCK)}" in result.output
+    set_aside = result.output.split("Not applicable (set aside before the run, never scored):", 1)[1]
+    assert [line.split()[0] for line in set_aside.strip().splitlines()] == list(SET_ASIDE_ON_MOCK)
     assert "Default run" not in result.output
 
 
@@ -142,14 +149,14 @@ def test_config_suite_beats_the_default(isolated_workdir: Path) -> None:
     (isolated_workdir / "ifixai.yaml").write_text("suite: core\n", encoding="utf-8")
     result = invoke_mock_run(["--dry-run"])
     assert result.exit_code == 0, result.output
-    assert f"Estimated tests:  {len(resolve_suite('core')['test_ids'])}" in result.output
+    assert f"Estimated tests:  {CORE_RUNNABLE_ON_MOCK}" in result.output
 
 
 def test_full_run_flag_beats_the_config_suite(isolated_workdir: Path) -> None:
     (isolated_workdir / "ifixai.yaml").write_text("suite: core\n", encoding="utf-8")
     result = invoke_mock_run(["--dry-run", "--full-run"])
     assert result.exit_code == 0, result.output
-    assert f"Estimated tests:  {len(SPEC_BY_ID)}" in result.output
+    assert f"Estimated tests:  {len(RUNNABLE_ON_MOCK)}" in result.output
 
 
 def test_full_run_rejects_a_selector_even_with_a_config_suite(isolated_workdir: Path) -> None:
@@ -160,9 +167,10 @@ def test_full_run_rejects_a_selector_even_with_a_config_suite(isolated_workdir: 
     assert not (isolated_workdir / "runs").exists()
 
 
+# The demo agent's planted replies fail B01 and P01, mandatory minimums, so its runs exit 2.
 def test_default_run_scores_the_ten_essential_inspections(isolated_workdir: Path) -> None:
     result = invoke_mock_run([])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 2, result.output
     assert f"Default run: 10 of {len(SPEC_BY_ID)} inspections" in result.output
     report = read_single_report(isolated_workdir)
     assert sorted(row["test_id"] for row in report["test_results"]) == sorted(ESSENTIAL_TEST_IDS)
@@ -172,15 +180,15 @@ def test_default_run_scores_the_ten_essential_inspections(isolated_workdir: Path
 
 
 def test_default_run_resumes_without_a_selector(isolated_workdir: Path) -> None:
-    assert invoke_mock_run([]).exit_code == 0
+    assert invoke_mock_run([]).exit_code == 2
     run_id = read_single_manifest(isolated_workdir)["run_id"]
     resumed = invoke_mock_run(["--resume", run_id])
-    assert resumed.exit_code == 0, resumed.output
+    assert resumed.exit_code == 2, resumed.output
     assert "10 of 10 inspections restored" in resumed.output
 
 
 def test_default_run_cannot_be_resumed_as_a_full_run(isolated_workdir: Path) -> None:
-    assert invoke_mock_run([]).exit_code == 0
+    assert invoke_mock_run([]).exit_code == 2
     run_id = read_single_manifest(isolated_workdir)["run_id"]
     resumed = invoke_mock_run(["--resume", run_id, "--full-run"])
     assert resumed.exit_code == 1, resumed.output
@@ -189,18 +197,20 @@ def test_default_run_cannot_be_resumed_as_a_full_run(isolated_workdir: Path) -> 
 
 def test_full_run_resumes_without_repeating_the_flag(isolated_workdir: Path) -> None:
     """A run started before the default changed, or with --full-run, resumes bare."""
-    assert invoke_mock_run(["--full-run"]).exit_code == 0
+    assert invoke_mock_run(["--full-run"]).exit_code == 2
     run_id = read_single_manifest(isolated_workdir)["run_id"]
     resumed = invoke_mock_run(["--resume", run_id])
-    assert resumed.exit_code == 0, resumed.output
-    assert f"{len(SPEC_BY_ID)} of {len(SPEC_BY_ID)} inspections restored" in resumed.output
+    assert resumed.exit_code == 2, resumed.output
+    runnable = len(RUNNABLE_ON_MOCK)
+    assert f"{runnable} of {runnable} inspections restored" in resumed.output
     assert "Default run" not in resumed.output
 
 
 def test_full_run_executes_every_inspection(isolated_workdir: Path) -> None:
     result = invoke_mock_run(["--full-run"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 2, result.output
     report = read_single_report(isolated_workdir)
-    assert sorted(row["test_id"] for row in report["test_results"]) == sorted(SPEC_BY_ID)
+    assert sorted(row["test_id"] for row in report["test_results"]) == RUNNABLE_ON_MOCK
+    assert [row["test_id"] for row in report["not_applicable"]] == list(SET_ASIDE_ON_MOCK)
     assert report["metadata"]["run_mode"] == "full"
     assert read_single_manifest(isolated_workdir)["mode_filter"] == ["all"]

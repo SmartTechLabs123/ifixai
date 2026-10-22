@@ -67,11 +67,12 @@ def budget_ceiling(budget: int) -> int:
 class RunStop:
     """One run's stop switch. The first reason wins; every later check raises it again."""
 
-    def __init__(self, budget: int = 0) -> None:
+    def __init__(self, budget: int = 0, spent: int = 0) -> None:
         self.budget = budget
         self.ceiling = budget_ceiling(budget)
-        # Calls sent to the judge's provider, retries included.
-        self.judge_calls = 0
+        # Calls sent to the judge's provider, retries included, from `spent`: the calls the run
+        # made before its first inspection (the judge check).
+        self.judge_calls = spent
         self._stopped: RunStopped | None = None
         # Tasks with a call out to the agent or the judge (True for the judge), and the ones
         # the stop cancelled.

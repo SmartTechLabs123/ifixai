@@ -12,14 +12,13 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-import yaml
 from click.testing import CliRunner, Result
 from rich.console import Console
 
 from ifixai.cli import ui
 from ifixai.cli.main import ifixai_cli
+from ifixai.harness.registry import create_inspection
 
-DEFAULT_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "default" / "fixture.yaml"
 B16_MANDATORY = "error_signal_present"
 _DIMS = re.compile(r"dimension names must be exactly one of:\s*([^\n]+)")
 REFUSAL = "I can't do that. It is outside what I am allowed to do, so I have not done it."
@@ -111,6 +110,49 @@ def test_scoped_run_exits_on_the_selected_inspection(
     assert "B01, B08, P01 were not selected in this scoped run" in result.output
 
 
+# The headline and the exit code read one verdict: a scoped run reads PASS or FAIL on what it
+# selected, and exits 0 or 2 on it. (Every other surface: test_every_surface_shows_the_one_run_verdict.)
+@pytest.mark.parametrize(("b12_passes", "verdict", "exit_code"), [(True, "PASS", 0), (False, "FAIL", 2)])
+def test_a_scoped_run_reads_and_exits_on_what_it_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, b12_passes: bool, verdict: str, exit_code: int
+) -> None:
+    box = io.StringIO()
+    monkeypatch.setattr(ui, "use_rich", lambda: True)
+    monkeypatch.setattr(ui, "console", lambda: Console(file=box, width=400, color_system=None))
+    with _server(_judge(lambda _names: b12_passes)) as judge_url:
+        result, report = _run(tmp_path, monkeypatch, judge_url, "-p", "mock", "-k", "x", "-b", "B12")
+    headline = box.getvalue().split("╰")[0]
+
+    assert _status(report, "B12") == verdict.lower()
+    assert f"{verdict} on the selected inspections" in headline, box.getvalue()
+    assert result.exit_code == exit_code, result.output
+
+
+# An inspection that errored never turns a passing score into ERROR: main and docs/cli.md exit 0 on
+# a score that clears --min-score, so the headline reads PASS and the error is still listed.
+def test_an_errored_inspection_leaves_a_passing_score_a_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    box = io.StringIO()
+    monkeypatch.setattr(ui, "use_rich", lambda: True)
+    monkeypatch.setattr(ui, "console", lambda: Console(file=box, width=400, color_system=None))
+    monkeypatch.setattr(type(create_inspection("B16")), "run", _crash)
+    ids = ["B01", "B08", "P01", "B12", "B16"]
+    with _server(_judge(lambda _names: True)) as judge_url:
+        result, report = _run(
+            tmp_path, monkeypatch, judge_url, "-p", "mock", "-k", "x", "--format", "both",
+            *[a for tid in ids for a in ("-b", tid)],
+        )
+    summary = next((tmp_path / "reports").glob("*-summary.md")).read_text(encoding="utf-8")
+
+    assert _status(report, "B16") == "error", result.output
+    assert report["overall"]["score"] >= 0.85
+    assert "RUN INVALID" not in result.output
+    assert result.exit_code == 0, result.output
+    assert report["overall"]["verdict"] == "pass"
+    assert "  PASS (pass mark 85%)  " in box.getvalue().split("╰")[0], box.getvalue()
+    assert "| **Verdict** | PASS (pass mark 85%) |" in summary
+    assert "B16" in result.output.split("Run manifest")[0].split("could not execute")[1].split("\n")[0]
+
+
 def test_terminal_results_box_explains_a_scoped_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     box = io.StringIO()
     monkeypatch.setattr(ui, "use_rich", lambda: True)
@@ -144,17 +186,48 @@ class MostlySilentAgent:
         return "" if digest[0] % 100 < 95 else REFUSAL
 
 
+async def _crash(*_args: object) -> list:
+    raise RuntimeError("inspection crashed")
+
+
 def test_invalid_run_exits_2_above_min_score(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    policy = tmp_path / "policy.yaml"
-    policy.write_text(yaml.safe_dump(yaml.safe_load(DEFAULT_FIXTURE.read_text(encoding="utf-8"))["governance"]), encoding="utf-8")
+    # The three safety gates pass, so there is a score; four of the seven inspections crash before
+    # any evidence, which makes the run invalid. A score above --min-score must not read as a pass.
+    crashed = ["B15", "B16", "B17", "B20"]
+    for test_id in crashed:
+        monkeypatch.setattr(type(create_inspection(test_id)), "run", _crash)
+    ids = ["B01", "B08", "P01", *crashed]
+    with _server(_judge(lambda _names: True)) as judge_url:
+        result, report = _run(
+            tmp_path, monkeypatch, judge_url, "-p", "mock", "-k", "x", "--min-score", "0.1",
+            *[a for tid in ids for a in ("-b", tid)],
+        )
+    assert [_status(report, tid) for tid in crashed] == ["error"] * 4, result.output
+    assert "RUN INVALID" in result.output
+    assert report["overall"]["score"] > 0.1
+    assert result.exit_code == 2, result.output
+
+
+# The run nonce goes into every system prompt and the seeds pick the probes, so with them pinned
+# the agent's prompts, and so which ones MostlySilentAgent answers, are the same on every run.
+PINNED = (
+    "--run-nonce", "0123456789abcdef", "--holdout-seed", "7", "--b12-seed", "7", "--b14-seed", "7",
+    "--b28-seed", "7", "--b29-seed", "7", "--b30-seed", "7", "--b32-seed", "7",
+)
+
+
+def test_invalid_run_exits_2_whatever_the_min_score(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The minimums go ungraded on a silent agent, so the score is withheld; a declared policy
+    # can no longer grade them in its place. Unpinned, B08 drew 10+ answers about one run in five
+    # and was graded.
     ids = ["B01", "B08", "P01", "B16", "B20", "B15", "B17", "B18", "B21", "B29", "B31", "B32"]
     with _server(_judge(lambda _names: True)) as judge_url, _server(MostlySilentAgent()) as agent_url:
         result, report = _run(
             tmp_path, monkeypatch, judge_url, "-p", "http", "-e", agent_url, "--auth-method", "none",
-            "--governance", str(policy), "--min-score", "0.1", *[a for tid in ids for a in ("-b", tid)],
+            "--min-score", "0", *PINNED, *[a for tid in ids for a in ("-b", tid)],
         )
     assert "RUN INVALID" in result.output
-    assert report["overall"]["score"] > 0.1
+    assert report["overall"]["score"] is None
     assert result.exit_code == 2, result.output
 
 

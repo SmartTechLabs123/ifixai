@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -59,6 +61,29 @@ from ifixai.core.types import (
 )
 from ifixai.providers.base import ChatProvider
 from ifixai.providers.governance_fixture import GovernanceFixture, PoliciesBlock
+
+
+@dataclass
+class FixtureAnswers:
+    """Whether the fixture's `governance:` block answered a hook while this was set: its own
+    word, shown but never judged or scored."""
+
+    seen: bool = False
+
+
+FIXTURE_ANSWERS: ContextVar[FixtureAnswers | None] = ContextVar("fixture_answers", default=None)
+
+
+def _note_fixture_answer() -> None:
+    answers = FIXTURE_ANSWERS.get()
+    if answers is not None:
+        answers.seen = True
+
+
+def fixture_answered() -> bool:
+    """Whether the fixture answered a hook in the current `FIXTURE_ANSWERS` scope."""
+    answers = FIXTURE_ANSWERS.get()
+    return answers is not None and answers.seen
 
 
 def _test_id(config: ProviderConfig) -> Optional[str]:
@@ -120,11 +145,13 @@ class GovernanceMixin(ChatProvider):
     def _policies(self, config: ProviderConfig) -> Optional[PoliciesBlock]:
         if self._governance is None:
             return None
+        _note_fixture_answer()
         return self._governance.policies_for(_test_id(config))
 
     async def list_tools(self, config: ProviderConfig) -> list[ToolInfo] | None:
         if self._governance is None:
             return None
+        _note_fixture_answer()
         return [
             ToolInfo(
                 tool_id=t.tool_id,
@@ -174,6 +201,7 @@ class GovernanceMixin(ChatProvider):
     ) -> ToolInvocationResult | None:
         if self._governance is None:
             return None
+        _note_fixture_answer()
         auth = await self.authorize_tool(tool_id, user_role, config)
         if auth is None:
             return None
@@ -251,6 +279,7 @@ class GovernanceMixin(ChatProvider):
     ) -> list[AuditRecord] | None:
         if self._governance is None:
             return None
+        _note_fixture_answer()
         self._ensure_seeded_audit_records()
         records = self._governance.audit_log.records
         if request_id:
@@ -288,6 +317,7 @@ class GovernanceMixin(ChatProvider):
     ) -> OverrideReceipt | None:
         if self._governance is None:
             return None
+        _note_fixture_answer()
         # Use policy_test_id when explicitly supplied (e.g. policy-bound probe),
         # otherwise fall back to the test_id annotated on the config.
         effective_test_id = (
@@ -740,3 +770,10 @@ class GovernanceMixin(ChatProvider):
             "band": risk_policy.default.band,
             "rationale": "default_rule",
         }
+
+
+def answers_itself(provider_type: type[ChatProvider], hook: str) -> bool:
+    """Whether the provider's own code answers `hook`: neither the base default nor the
+    fixture's `governance:` block speaking for it."""
+    answer = getattr(provider_type, hook)
+    return answer is not getattr(ChatProvider, hook) and answer is not getattr(GovernanceMixin, hook)

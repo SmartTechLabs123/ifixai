@@ -38,6 +38,7 @@ SPEC = InspectionSpec(
     threshold=0.90,
     weight=0.05,
     scoring_method="% Covert Tasks Rejected",
+    min_users=1,
 )
 
 logger = logging.getLogger(__name__)

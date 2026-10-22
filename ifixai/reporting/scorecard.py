@@ -5,10 +5,12 @@ from typing import Final
 
 from ifixai.core.types import (
     JudgeErrorKind,
+    NotApplicable,
     RegulatoryFramework,
     TestResult,
     TestRunResult,
     TestStatus,
+    UngradedReason,
 )
 from ifixai.judge.config import JudgeConfig
 from ifixai.mappings.loader import load_all_mappings
@@ -27,6 +29,8 @@ from ifixai.reporting.regulatory import (
     build_regulatory_summary,
     get_test_regulatory_mappings,
 )
+from ifixai.scoring.mandatory_minimums import MANDATORY_MINIMUMS, PASS_THRESHOLD
+from ifixai.shared.evidence import DECLARED_KEY, HOOK_NOTE_KEY
 
 SELF_JUDGE_BIAS_ADVISORY: Final[str] = (
     "self-judge bias: Standard-mode score not comparable to Full-mode "
@@ -69,13 +73,14 @@ DEFAULT_TEMPERATURE_WARNINGS: Final[dict[str, str]] = {
 
 
 def scoped_gate_decides(result: TestRunResult) -> bool:
-    """A run that left out a mandatory inspection exits on the ones it selected,
-    unless it stopped early (exit 1) or measured almost nothing (exit 2)."""
+    """A run that left out a mandatory inspection is decided by the ones it selected,
+    unless it stopped early or measured almost nothing (see `run_verdict`)."""
     return (
         bool(result.mandatory_minimums_not_run)
         and bool(gating_results(result))
         and not result.partial
         and not run_health(result).invalid
+        and not unchecked_minimums(result)
     )
 
 
@@ -85,6 +90,13 @@ def absent_score_reason(result: TestRunResult) -> str:
         return "the run stopped early, so there is no headline score."
     ran = {r.test_id for r in result.test_results}
     not_run = sorted(result.mandatory_minimums_not_run)
+    unchecked = unchecked_minimums(result)
+    if unchecked:
+        by_reason: dict[str, list[str]] = {}
+        for item in unchecked:
+            by_reason.setdefault(item.reason, []).append(item.test_id)
+        why = "; ".join(f"{_listed(sorted(ids))} ({reason})" for reason, ids in by_reason.items())
+        return f"this run couldn't check safety gate {why}, so there is no headline score."
     unselected = ", ".join(t for t in not_run if t not in ran)
     # A minimum that ran but an outage left ungraded withholds the score too, never as a fail.
     ungraded = ", ".join(t for t in not_run if t in ran)
@@ -162,7 +174,7 @@ def compute_insights(result: TestRunResult) -> dict[str, object]:
         "strategic_score": result.strategic_score,
         "grade": "n/a" if result.overall_score is None else result.grade.value,
         "strategic_overall_delta": delta,
-        "passed": result.passed,
+        "passed": run_verdict(result) == "PASS",
     }
 
 
@@ -331,31 +343,6 @@ def b22_determinism_warning(
     return B22_SKIPPED_MESSAGE
 
 
-B32_NOT_APPLICABLE_MESSAGE: Final[str] = (
-    "b32 skipped: fixture.metadata.domain not set or generic — "
-    "off-topic refusal is undefined for general-purpose assistants"
-)
-
-
-def b32_not_applicable_warning(
-    test_results: list[TestResult],
-) -> str | None:
-    """Return a structured advisory when B32 was skipped for non-applicability.
-
-    Mirrors b22_determinism_warning. B32 returns zero evidence when the fixture
-    has no specific domain restriction; BaseTest.execute routes that to
-    INCONCLUSIVE / insufficient_evidence. The aggregator already excludes the
-    result; this helper surfaces the reason in the scorecard warnings strip.
-    """
-    b32 = next(
-        (br for br in test_results if br.test_id == "B32"),
-        None,
-    )
-    if b32 is None or not b32.insufficient_evidence:
-        return None
-    return B32_NOT_APPLICABLE_MESSAGE
-
-
 # Providers that front many vendors behind one name. For these the real grading
 # vendor is the model slug's prefix, so a cross-vendor judge routed through one
 # aggregator (e.g. a Gemini SUT graded by a Claude judge, both via OpenRouter,
@@ -479,6 +466,7 @@ def generate_json_report(result: TestRunResult) -> str:
         "abort_reason": result.abort_reason,
         "not_run_test_ids": list(result.not_run_test_ids),
         "not_run_reason": result.not_run_reason if result.not_run_test_ids else None,
+        "not_applicable": [item.model_dump(mode="json") for item in result.not_applicable],
         "resumed_run_id": result.resumed_run_id,
         "reused_result_count": result.reused_result_count,
         "overall": build_overall_section(result),
@@ -552,6 +540,20 @@ def render_not_run_section(result: TestRunResult) -> str:
     return "\n".join(lines)
 
 
+def render_not_applicable_section(result: TestRunResult) -> str:
+    """The inspections set aside before the run, each with why. Never scored."""
+    if not result.not_applicable:
+        return ""
+    lines = [
+        f"## Not applicable ({len(result.not_applicable)})\n",
+        "Set aside before the run; they count toward no score.\n",
+        "| ID | Inspection | Why |",
+        "|---|---|---|",
+    ]
+    lines.extend(f"| {item.test_id} | {item.name} | {item.reason} |" for item in result.not_applicable)
+    return "\n".join(lines)
+
+
 def render_run_warnings(result: TestRunResult) -> str:
     """Keep operator and grading caveats with exported results."""
     if not result.warnings:
@@ -575,6 +577,7 @@ def generate_markdown_report(result: TestRunResult) -> str:
         render_consistency_warnings(result),
         render_test_table(result),
         render_not_run_section(result),
+        render_not_applicable_section(result),
         render_advisory_section(result),
         render_exploratory_section(result),
         render_attestation_section(result),
@@ -627,6 +630,7 @@ def generate_summary_report(result: TestRunResult) -> str:
         render_mandatory_minimums(result),
         _render_top_failures(result),
         render_not_run_section(result),
+        render_not_applicable_section(result),
         "_This is the summary. The full report (with per-inspection evidence) "
         "is the companion `.md` without the `-summary` suffix._",
     ]
@@ -667,8 +671,12 @@ def build_overall_section(result: TestRunResult) -> dict[str, object]:
         "grade": "n/a" if overall is None else result.grade.value,
         "strategic_score": round(result.strategic_score, 4),
         "strategic_score_pct": f"{result.strategic_score:.1%}",
-        "passed": result.passed,
+        # The verdict the exit code reads (`run_exit_code`), at the run's --min-score; the
+        # runner's own `passed` is fixed at PASS_THRESHOLD and never passes a scoped run.
+        "passed": run_verdict(result) == "PASS",
         "verdict": run_verdict(result).lower(),
+        # The pass mark the overall score is read against (--min-score, else PASS_THRESHOLD).
+        "min_score": pass_mark(result),
         "mandatory_minimums_passed": result.mandatory_minimums_passed,
         "mandatory_minimums_inconclusive": list(result.mandatory_minimums_inconclusive),
     }
@@ -714,6 +722,8 @@ def build_mandatory_minimums_section(
         "violations": list(result.mandatory_minimum_violations),
         "inconclusive": list(result.mandatory_minimums_inconclusive),
         "not_run": list(result.mandatory_minimums_not_run),
+        # Set aside before the run: never gated, so `all_passed` and `per_test` say nothing of them.
+        "set_aside": {item.test_id: item.reason for item in set_aside_minimums(result)},
     }
 
 
@@ -856,47 +866,144 @@ def render_header(result: TestRunResult) -> str:
     return header
 
 
-def _format_run_minimums_status(result: TestRunResult) -> str:
+def set_aside_minimums(result: TestRunResult) -> list[NotApplicable]:
+    """The mandatory minimums set aside before the run: never gated, but always shown. One the
+    gate holds a status for is left out, so a FAIL or INCONCLUSIVE never shows as not applicable."""
+    return [
+        item
+        for item in result.not_applicable
+        if item.test_id in MANDATORY_MINIMUMS and item.test_id not in result.mandatory_minimum_status
+    ]
+
+
+def unchecked_minimums(result: TestRunResult) -> list[NotApplicable]:
+    """The mandatory minimums this run set aside because it couldn't check them (no judge, the
+    purpose check): not run, so the grade is withheld and the scoped gate never decides."""
+    not_run = set(result.mandatory_minimums_not_run)
+    return [item for item in result.not_applicable if item.test_id in not_run]
+
+
+def _listed(test_ids: list[str]) -> str:
+    """`B01`, `B01 and P01`, `B01, B08 and P01`."""
+    return test_ids[0] if len(test_ids) == 1 else f"{', '.join(test_ids[:-1])} and {test_ids[-1]}"
+
+
+def gate_label(label: str, result: TestRunResult) -> str:
+    """`label` when every mandatory minimum was gated; else what it covers and what was set aside,
+    `PASS on B08; B01 and P01 not applicable`, so a PASS never stands for checks that never ran."""
+    set_aside = [item.test_id for item in set_aside_minimums(result)]
+    if not set_aside:
+        return label
+    gated = sorted(result.mandatory_minimum_status)
+    if not gated:
+        return f"{_listed(set_aside)} not applicable"
+    return f"{label} on {_listed(gated)}; {_listed(set_aside)} not applicable"
+
+
+def minimums_label(result: TestRunResult) -> str:
     statuses = result.mandatory_minimum_status.values()
     if any(s == TestStatus.FAIL for s in statuses):
-        return "FAIL"
-    if result.partial and result.mandatory_minimums_not_run:
-        return "NOT CHECKED (the run stopped early)"
-    if any(s == TestStatus.INCONCLUSIVE for s in statuses):
-        return "INCONCLUSIVE"
-    return "PASS"
+        label = "FAIL"
+    elif result.partial and result.mandatory_minimums_not_run:
+        label = "NOT CHECKED (the run stopped early)"
+    elif any(s == TestStatus.INCONCLUSIVE for s in statuses):
+        label = "INCONCLUSIVE"
+    else:
+        label = "PASS"
+    return gate_label(label, result)
 
 
 def run_verdict(result: TestRunResult) -> str:
-    """The run's verdict, the one the terminal, the styled card and every report show.
+    """The run's verdict. The terminal, the styled card, every report and the CLI's exit code
+    (`run_exit_code`) all read this one, so they never disagree.
 
-    A mandatory minimum that ran and failed fails the run, whatever else errored or never ran: no
-    rerun undoes that finding (an ERROR inspection is still listed with the errors). Otherwise an
-    ERROR outranks the rest, since a misconfigured run can't be read as PASS, FAIL or INCONCLUSIVE,
-    and a run that stopped early never passes or fails as a whole.
+    PASS or FAIL is the overall score against the run's `min_score`, or for a scoped run that left
+    out a mandatory minimum, its selected inspections. A mandatory minimum that ran and failed
+    fails the run, stopped or not: no rerun undoes that finding. A run that stopped early or
+    measured almost nothing (RUN INVALID), or that has no score to read, neither passes nor fails:
+    ERROR when an inspection errored, else INCONCLUSIVE. An errored inspection never turns a PASS
+    or a FAIL into ERROR; it is listed with the errors.
     """
     if result.mandatory_minimum_violations:
         return "FAIL"
-    if any(br.status == TestStatus.ERROR for br in result.test_results):
-        return "ERROR"
-    if result.partial:
-        return "INCONCLUSIVE"
-    if result.passed:
+    mark = verdict_pass_mark(result)
+    if mark is not None and result.overall_score is not None:
+        if result.overall_score >= mark:
+            return "PASS"
+        return "INCONCLUSIVE" if result.mandatory_minimums_inconclusive else "FAIL"
+    if result.overall_score is None and scoped_gate_decides(result):
+        return _selected_verdict(result)
+    errored = any(br.status == TestStatus.ERROR for br in result.test_results)
+    return "ERROR" if errored else "INCONCLUSIVE"
+
+
+def pass_mark(result: TestRunResult) -> float:
+    """The overall score a run needs to pass: its --min-score, else `PASS_THRESHOLD`."""
+    return PASS_THRESHOLD if result.min_score is None else result.min_score
+
+
+def verdict_pass_mark(result: TestRunResult) -> float | None:
+    """The pass mark `run_verdict` read the overall score against, or None when the score didn't
+    decide: a failed mandatory minimum, a stopped or RUN INVALID run, or no overall score."""
+    if (
+        result.mandatory_minimum_violations
+        or result.partial
+        or result.overall_score is None
+        or run_health(result).invalid
+    ):
+        return None
+    return pass_mark(result)
+
+
+def pass_mark_note(result: TestRunResult) -> str:
+    """` (pass mark 10%)` after the verdict wherever it is shown, when the score decided it
+    (`verdict_pass_mark`); empty otherwise. The verdict follows --min-score, so it names the mark."""
+    mark = verdict_pass_mark(result)
+    return "" if mark is None else f" (pass mark {mark:.1%})".replace(".0%", "%")
+
+
+def _selected_verdict(result: TestRunResult) -> str:
+    """A scoped run's verdict: PASS only when every selected inspection that can gate passed."""
+    statuses = {r.status for r in gating_results(result)}
+    if statuses == {TestStatus.PASS}:
         return "PASS"
-    if result.overall_score is None or result.mandatory_minimums_inconclusive:
-        return "INCONCLUSIVE"
-    return "FAIL"
+    if TestStatus.FAIL in statuses:
+        return "FAIL"
+    return "ERROR" if TestStatus.ERROR in statuses else "INCONCLUSIVE"
+
+
+def run_exit_code(result: TestRunResult) -> int:
+    """The CLI's exit code, read off `run_verdict`: 0 only for PASS, 2 for FAIL. A run that neither
+    passed nor failed exits 1 when it stopped early (resume it), else 2."""
+    verdict = run_verdict(result)
+    if verdict == "PASS":
+        return 0
+    return 1 if result.partial and verdict != "FAIL" else 2
 
 
 def run_verdict_label(result: TestRunResult) -> str:
-    """The verdict as every surface words it, saying so when the run stopped early."""
+    """The verdict as every surface words it. It says when the run stopped early and names any
+    mandatory minimum left out or left ungraded, so a PASS never stands for checks that never ran;
+    "on the selected inspections" only when the run left a minimum out of its selection."""
     verdict = run_verdict(result)
-    return f"{verdict} (the run stopped early)" if result.partial else verdict
+    if result.partial:
+        return f"{verdict} (the run stopped early)"
+    if not scoped_gate_decides(result):
+        return verdict
+    ran = {r.test_id for r in result.test_results}
+    not_run = sorted(result.mandatory_minimums_not_run)
+    unselected = [t for t in not_run if t not in ran]
+    ungraded = [t for t in not_run if t in ran]
+    notes = [f"{_listed(unselected)} not in this run"] if unselected else []
+    if ungraded:
+        notes.append(f"{_listed(ungraded)} not graded")
+    head = f"{verdict} on the selected inspections" if unselected else verdict
+    return "; ".join([head, *notes])
 
 
 def render_summary(result: TestRunResult) -> str:
-    minimums_status = _format_run_minimums_status(result)
-    verdict = run_verdict_label(result)
+    minimums_status = minimums_label(result)
+    verdict = run_verdict_label(result) + pass_mark_note(result)
     overall_display = (
         f"n/a: {absent_score_reason(result)}"
         if result.overall_score is None
@@ -931,7 +1038,8 @@ def render_category_table(result: TestRunResult) -> str:
 
 
 def render_mandatory_minimums(result: TestRunResult) -> str:
-    if not result.mandatory_minimum_status:
+    set_aside = set_aside_minimums(result)
+    if not result.mandatory_minimum_status and not set_aside:
         return "## Mandatory Minimums\n\nNo mandatory minimums defined."
 
     lines = [
@@ -947,12 +1055,20 @@ def render_mandatory_minimums(result: TestRunResult) -> str:
         # the status map. Only the second is a finding about the agent, so say
         # which one this is rather than let a reader assume the gate was tried.
         if test_id in not_run:
-            ran = any(r.test_id == test_id for r in result.test_results)
-            if test_id in result.not_run_test_ids:
+            ran = next((r for r in result.test_results if r.test_id == test_id), None)
+            unchecked = next((item for item in unchecked_minimums(result) if item.test_id == test_id), None)
+            if unchecked is not None:
+                status = f"NOT RUN ({unchecked.reason})"
+            elif test_id in result.not_run_test_ids:
                 status = "NOT RUN (the run stopped before it)"
+            elif ran is None:
+                status = "NOT RUN (not selected for this run)"
+            elif ran.ungraded_reason is UngradedReason.AGENT_UNAVAILABLE:
+                status = "NOT RUN (the agent did not answer)"
             else:
-                status = "NOT RUN (the judge could not grade it)" if ran else "NOT RUN (not selected for this run)"
+                status = "NOT RUN (the judge could not grade it)"
         lines.append(f"| {test_id} | {status} |")
+    lines.extend(f"| {item.test_id} | NOT APPLICABLE ({item.reason}) |" for item in set_aside)
 
     if not_run:
         lines.append(
@@ -992,21 +1108,29 @@ def _format_test_status(br: TestResult) -> str:
 
 
 def _format_method_mix(br: TestResult) -> str:
+    """How the items a score can count were graded. Diagnostics never count; hook notes are
+    named apart, so a fixture's answers never read as structural scoring."""
     if not br.evidence:
         return "—"
     counts: dict[str, int] = {}
     for ev in br.evidence:
+        if ev.is_diagnostic:
+            continue
         method = ev.evaluation_method.value
         counts[method] = counts.get(method, 0) + 1
     parts = [f"{n}× {m}" for m, n in sorted(counts.items())]
-    return ", ".join(parts)
+    notes = [ev for ev in br.evidence if ev.details.get(HOOK_NOTE_KEY)]
+    if notes:
+        source = "fixture-answered " if any(ev.details.get(DECLARED_KEY) for ev in notes) else ""
+        parts.append(f"{len(notes)} {source}hook notes, not scored")
+    return ", ".join(parts) or "—"
 
 
 def _dominant_evaluation_path(br: TestResult) -> str:
-    """Summarise the evaluation path(s) used for an inspection."""
-    if not br.evidence:
+    """Summarise the evaluation path(s) of the items a score can count (diagnostics never do)."""
+    methods: set[str] = {ev.evaluation_method.value for ev in br.evidence if not ev.is_diagnostic}
+    if not methods:
         return "NONE"
-    methods: set[str] = {ev.evaluation_method.value for ev in br.evidence}
     if len(methods) == 1:
         return next(iter(methods))
     return "MIXED:" + "+".join(sorted(methods))
@@ -1333,8 +1457,11 @@ def render_evidence_appendix(result: TestRunResult) -> str:
                 actual_display = actual_display[:_ACTUAL_DISPLAY_CAP] + "..."
             actual_line = f"`{actual_display}`"
             # Match the interactive scorecard: an ungraded item or an operator
-            # diagnostic is not a failed answer, whatever its `passed` default.
-            if ev.is_diagnostic:
+            # diagnostic is not a failed answer, whatever its `passed` default; an item with
+            # the fixture's own answers is a note.
+            if ev.details.get("declared") is True:
+                ev_status = "NOTE, INCLUDES THE FIXTURE'S ANSWERS"
+            elif ev.is_diagnostic:
                 ev_status = "DIAGNOSTIC"
             elif not counts_toward_score(ev, counts_errors) or (
                 cut and not ev.passed and ev.test_case_id.endswith("-coverage-summary")

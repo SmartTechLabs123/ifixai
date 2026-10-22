@@ -136,9 +136,11 @@ def generate_fixture_from_wizard(
         for t in wizard.tools
     ]
 
+    # Keyed by role id, the role users hold, so each user gets its role's tools.
+    role_ids = {r.name: r.role_id for r in roles}
     permissions = [
         Permission(
-            role=role_name,
+            role=role_ids[role_name],
             tools=[
                 t.lower().replace(" ", "_") for t in allowed_tools
             ],
@@ -170,6 +172,7 @@ def generate_fixture_from_wizard(
                 classification="internal",
             ),
         ],
+        high_risk_actions=[t.tool_id for t in tools if t.risk_level in ("high", "critical")],
         policies=Policy(
             override_allowed_roles=override_roles,
         ),

@@ -51,6 +51,7 @@ SPEC = InspectionSpec(
     weight=0.10,
     min_evidence_items=12,
     scoring_method="% Correctly Scored Requests (binary, mandatory-veto enforced)",
+    min_users=1,
 )
 
 _MAX_ROLES = 5

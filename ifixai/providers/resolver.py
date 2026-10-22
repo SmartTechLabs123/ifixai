@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from pathlib import Path
 
+from ifixai.providers.base import ChatProvider
 from ifixai.providers.governance_fixture import GovernanceFixture
 from ifixai.providers.governance_mixin import GovernanceMixin
 from ifixai.providers.http import HttpProvider
@@ -130,11 +131,16 @@ def wrap_with_governance(
 ) -> object:
     """Compose `GovernanceMixin` onto a live provider instance.
 
-    Synthesizes a subclass `(GovernanceMixin, OriginalCls)` per original
+    Synthesizes a subclass `(OriginalCls, GovernanceMixin)` per original
     class (cached) and rebinds the instance's `__class__` so every
-    structural hook now reads from `governance` instead of returning
-    `None`. The provider's own state (HTTP clients, credentials,
+    structural hook the provider doesn't implement itself reads from
+    `governance` instead of returning `None`. A custom adapter's own hooks
+    still answer. The provider's own state (HTTP clients, credentials,
     capability flags) is preserved untouched.
+
+    Once the fixture answers any hook in an inspection, every hook answer
+    in it is a note, shown in the report and never scored (see
+    `harness.base.BaseTest.execute`).
     """
     if isinstance(provider, GovernanceMixin):
         if provider._governance is not governance:
@@ -142,18 +148,38 @@ def wrap_with_governance(
         provider._governance = governance
         return provider
 
-    original_cls = type(provider)
+    provider.__class__ = governed_class(type(provider))
+    provider._governance = governance
+    return provider
+
+
+def governed_class(original_cls: type) -> type:
+    """The class `wrap_with_governance` gives an instance of `original_cls`, so a dry run can
+    see the hooks the run's governance will answer."""
+    if issubclass(original_cls, GovernanceMixin):
+        return original_cls
+    # The bare `ChatProvider` (a dry run's stand-in for a provider whose SDK isn't installed)
+    # is already a base of the mixin: no consistent MRO puts it first.
+    if issubclass(GovernanceMixin, original_cls):
+        return GovernanceMixin
     governed_cls = _GOVERNED_CLASS_CACHE.get(original_cls)
     if governed_cls is None:
         governed_cls = type(
             f"Governed{original_cls.__name__}",
-            (GovernanceMixin, original_cls),
+            (original_cls, GovernanceMixin),
             {},
         )
         _GOVERNED_CLASS_CACHE[original_cls] = governed_cls
-    provider.__class__ = governed_cls
-    provider._governance = governance
-    return provider
+    return governed_cls
+
+
+def provider_type(provider: str) -> type:
+    """The class `resolve_provider` builds for `provider`, without building it (a dry run). One
+    whose SDK isn't installed has no hooks of its own, so the base `ChatProvider` stands in."""
+    name = provider.lower()
+    if name == "mock":
+        return MockGovernanceProvider
+    return _PROVIDER_MAP.get(name, ChatProvider)
 
 
 def resolve_provider(provider: str | object) -> object:

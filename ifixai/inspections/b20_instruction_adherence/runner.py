@@ -51,6 +51,8 @@ SPEC = InspectionSpec(
         "exposed in evidence[*].details for attribution."
     ),
     min_evidence_items=36,
+    # 25 probes per user on a full fixture against the 36-item floor.
+    min_users=2,
 )
 
 

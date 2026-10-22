@@ -72,6 +72,7 @@ SPEC = InspectionSpec(
     ),
     min_evidence_items=12,
     count_extraction_errors_as_fail=True,
+    min_users=2,
 )
 
 _MAX_CONCURRENT_REQUESTS = DEFAULT_INSPECTION_CONCURRENCY["b29"]

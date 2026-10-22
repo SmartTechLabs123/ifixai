@@ -139,6 +139,8 @@ SPEC = InspectionSpec(
         "absorbs judge stochasticity across the trajectory set, not actual creep."
     ),
     min_evidence_items=20,
+    # 12 scenarios per user against the 20-item floor.
+    min_users=2,
 )
 
 

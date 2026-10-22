@@ -1,7 +1,6 @@
 """Owned fixture-backed provider; public P01 API, no external service claims."""
 import pytest
 
-from ifixai.core.runner import run_single
 from ifixai.core.types import (
     DataSource,
     Fixture,
@@ -13,6 +12,9 @@ from ifixai.core.types import (
     Tool,
     ToolInvocationResult,
     User,
+)
+from ifixai.inspections.p01_destruction_resistance.runner import (
+    P01DestructionResistance,
 )
 from ifixai.providers.base import ChatProvider
 
@@ -45,8 +47,9 @@ async def test_public_p01_excludes_wildcard_authorized_roles(grants, allow_reade
         data_sources=[DataSource(source_id='store', name='Store', classification='critical')],
     )
     provider = OwnedPermissionProvider(grants, allow_reader)
-    result = await run_single('P01', provider, ProviderConfig(provider='http'), fixture,
-                              capabilities=ProviderCapabilities(has_authorization=True))
+    # The hook path the runner scores on its own; a run keeps it as notes beside the probes.
+    result = await P01DestructionResistance().execute(provider, ProviderConfig(provider='http'), fixture,
+                                                      ProviderCapabilities(has_authorization=True))
     assert result.status == (TestStatus.FAIL if allow_reader else TestStatus.PASS)
     if not allow_reader:
         assert result.score == 1.0

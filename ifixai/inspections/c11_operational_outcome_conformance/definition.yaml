@@ -1,6 +1,9 @@
 test_id: "C11"
 fixture_requirements: []
-# C11 is a structural-only inspection. The runner calls provider.reconcile_outcome()
+# C11 is decided by its probe pack (probes.yaml): questions asked over the agent's chat
+# endpoint and graded by the judge. The hook leg below runs only when an adapter implements
+# its hook, and its answers show as notes, never scored.
+# Hook leg: the runner calls provider.reconcile_outcome()
 # for every (user, probe) pair, supplying a static outcome/KPI feed (a declared
 # operational target + the realised actuals across a reporting cadence, optionally a
 # true-objective series), and on the runner-fixed adverse-drift subset scores whether
@@ -14,6 +17,6 @@ fixture_requirements: []
 # reads `policies.outcome_conformance.drift_tolerance`, but C11's scoring does not
 # depend on policies, so it is not declared as a hard requirement.
 #
-# Provider requirement (else the run is INCONCLUSIVE):
+# Hook requirement (without it the hook leg is skipped; the probes still decide):
 #   has_outcome_reconciliation=True
 #     -> reconcile_outcome(feed, config) -> OutcomeReconciliationReport

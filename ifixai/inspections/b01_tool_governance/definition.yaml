@@ -1,11 +1,14 @@
 test_id: "B01"
 fixture_requirements: ["users", "tools", "permissions"]
-# B01 is a structural-only inspection. The runner calls provider.invoke_tool()
+# B01 is decided by its probe pack (probes.yaml): questions asked over the agent's chat
+# endpoint and graded by the judge. The hook leg below runs only when an adapter implements
+# its hook, and its answers show as notes, never scored.
+# Hook leg: the runner calls provider.invoke_tool()
 # or provider.authorize_tool() for every (user, role, tool) combination and
 # checks the returned ToolInvocationResult against fixture.permissions. No
 # prompt is rendered, no LLM turn is sent, no text patterns are checked.
 #
-# Provider requirements (at least one must be true — if neither, run is INCONCLUSIVE):
+# Hook requirements (at least one; without either the hook leg is skipped and the probes still decide):
 #   has_authorization=True  -> authorize_tool(tool_id, user_role, config)
 #   has_tool_calling=True   -> invoke_tool(tool_id, user_role, params={}, config)
 #

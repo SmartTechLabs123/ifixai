@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from ifixai.core.types import (
+    Abilities,
     DataSource,
     ExpectedClaim,
     Fixture,
@@ -31,6 +32,37 @@ class FixtureValidationError(Exception):
     def __init__(self, message: str, errors: list[str] | None = None) -> None:
         super().__init__(message)
         self.errors = errors or []
+
+class ProfileNotFixtureError(FixtureValidationError):
+    """An agent profile (what `ifixai author` reads) given where a fixture goes. `stray` names the
+    fixture fields it holds, which `ifixai author` refuses."""
+
+    def __init__(self, path: Path, stray: list[str]) -> None:
+        line = f"{path} is an agent profile, not a fixture. Run ifixai author {path} first, then use the fixture it writes."
+        if stray:
+            line += f" A profile can't hold {', '.join(stray)}: remove {'it' if len(stray) == 1 else 'them'} first."
+        super().__init__(line, errors=[line])
+
+# Top-level fields only an agent profile has: no fixture, current or legacy, has them at its top.
+PROFILE_ONLY_FIELDS = frozenset({"domain", "on_topic_examples", "safety_rules", "evidence"})
+# Top-level fields a fixture (current or legacy) has and a profile never does.
+FIXTURE_ONLY_FIELDS = frozenset(
+    {
+        "metadata", "tenant", "version", "description", "users", "permissions", "policies",
+        "test_cases", "sensitive_data_classes", "primary_objective_template",
+        "expected_claims", "governance",
+    }
+)
+
+def _refuse_a_profile(raw: dict[str, Any], path: Path) -> None:
+    """A profile has `name` or a field only a profile has, and no `metadata`. A legacy fixture
+    has a top-level `name` too, but also `tenant` or tools keyed `id`. Anything else loads as a fixture."""
+    if "metadata" in raw or "tenant" in raw or not (PROFILE_ONLY_FIELDS | {"name"}) & raw.keys():
+        return
+    tools = raw.get("tools")
+    if isinstance(tools, list) and any(isinstance(tool, dict) and "id" in tool for tool in tools):
+        return
+    raise ProfileNotFixtureError(path, sorted(FIXTURE_ONLY_FIELDS & raw.keys()))
 
 def load_schema() -> dict[str, Any]:
     with open(_SCHEMA_PATH, encoding="utf-8") as fh:
@@ -57,6 +89,10 @@ def resolve_fixture_path(name_or_path: str | Path) -> Path:
         f"Provide a file path or a built-in name from: {list_fixture_names()}"
     )
 
+def is_builtin_fixture(name_or_path: str | Path) -> bool:
+    """Whether `name_or_path` is one of the fixtures iFixAi ships, by name or by its path."""
+    return resolve_fixture_path(name_or_path).resolve().is_relative_to(_FIXTURES_DIR.resolve())
+
 def list_fixture_names() -> list[str]:
     if not _FIXTURES_DIR.exists():
         return []
@@ -75,38 +111,54 @@ def load_fixture(path: str | Path) -> Fixture:
     fixture_path = resolve_fixture_path(path)
 
     raw = _read_fixture_file(fixture_path)
+    _refuse_a_profile(raw, fixture_path)
     raw = _normalize_fixture_format(raw)
     _validate_against_schema(raw, fixture_path)
     return _parse_fixture(raw)
 
 def validate_fixture(path: str | Path) -> list[str]:
     try:
+        read_valid_fixture(path)
+    except FixtureValidationError as exc:
+        return exc.errors
+    return []
+
+def read_valid_fixture(path: str | Path) -> Fixture:
+    """`path` read once (it may be a pipe) and held to the checks a run enforces. Raises
+    FixtureValidationError whose `errors` are the lines `validate_fixture` returns."""
+    try:
         fixture_path = resolve_fixture_path(path)
     except FileNotFoundError as exc:
-        return [str(exc)]
+        raise _invalid(str(exc)) from exc
 
     try:
         raw = _read_fixture_file(fixture_path)
+        _refuse_a_profile(raw, fixture_path)
         raw = _normalize_fixture_format(raw)
+    except ProfileNotFixtureError:
+        raise
     except yaml.YAMLError as exc:
-        return [f"Invalid YAML: {exc}"]
+        raise _invalid(f"Invalid YAML: {exc}") from exc
     except json.JSONDecodeError as exc:
-        return [f"Invalid JSON: {exc}"]
+        raise _invalid(f"Invalid JSON: {exc}") from exc
     except (FixtureValidationError, OSError, UnicodeError) as exc:
-        return [str(exc)]
+        raise _invalid(str(exc)) from exc
 
     schema = load_schema()
     validator = jsonschema.Draft7Validator(schema)
     errors = [error.message for error in validator.iter_errors(raw)]
     if errors:
-        return errors
+        raise FixtureValidationError(f"{len(errors)} schema error(s)", errors=errors)
     # Schema validation is only the structural half of the loading contract.
     # Validate the same typed invariants a run will enforce before declaring Valid.
     try:
-        _parse_fixture(raw)
+        fixture = _parse_fixture(raw)
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
-        return [f"Invalid fixture fields: {exc}"]
-    return []
+        raise _invalid(f"Invalid fixture fields: {exc}") from exc
+    return fixture
+
+def _invalid(line: str) -> FixtureValidationError:
+    return FixtureValidationError(line, errors=[line])
 
 def list_test_coverage(fixture: Fixture) -> dict[str, int]:
     coverage: dict[str, int] = {}
@@ -342,7 +394,8 @@ def _validate_against_schema(
     if errors:
         messages = [e.message for e in errors]
         raise FixtureValidationError(
-            f"Fixture {path.name} failed validation with {len(errors)} error(s)",
+            f"Fixture {path.name} failed validation with {len(errors)} error(s): "
+            + "; ".join(messages),
             errors=messages,
         )
 
@@ -490,6 +543,7 @@ def _parse_fixture(raw: dict[str, Any]) -> Fixture:
         sensitive_data_classes=raw.get("sensitive_data_classes", []),
         system_purpose=raw.get("system_purpose", ""),
         primary_objective_template=raw.get("primary_objective_template", ""),
+        abilities=Abilities(**raw.get("abilities", {})),
     )
 
     if synthesize_governance_flag:
