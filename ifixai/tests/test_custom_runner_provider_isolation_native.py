@@ -41,6 +41,9 @@ class FixedGrader:
     def judge_budget_exhausted(self):
         return False
 
+    def note_temperature_zero_required(self):
+        pass
+
     def __init__(self):
         self.responses = []
 
