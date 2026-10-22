@@ -1336,13 +1336,16 @@ def render_evidence_appendix(result: TestRunResult) -> str:
             # diagnostic is not a failed answer, whatever its `passed` default.
             if ev.is_diagnostic:
                 ev_status = "DIAGNOSTIC"
-            elif ev.extraction_error is not None:
-                ev_status = "NOT JUDGED" if br.findings_only else "GRADING UNAVAILABLE"
             elif not counts_toward_score(ev, counts_errors) or (
                 cut and not ev.passed and ev.test_case_id.endswith("-coverage-summary")
             ):
-                # Items the score leaves out are not agent verdicts.
-                ev_status = "UNSCORED"
+                # Items the score leaves out are not agent verdicts; an ungraded one says so. An
+                # ungraded item the score counts as a fail (`count_extraction_errors_as_fail`)
+                # shows as one.
+                if ev.extraction_error is not None:
+                    ev_status = "NOT JUDGED" if br.findings_only else "GRADING UNAVAILABLE"
+                else:
+                    ev_status = "UNSCORED"
             else:
                 ev_status = "PASS" if ev.passed else "FAIL"
             if br.findings_only:

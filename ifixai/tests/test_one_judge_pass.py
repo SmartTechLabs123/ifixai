@@ -1130,10 +1130,10 @@ ERRORS = [None, JudgeErrorKind.CONTRACT, JudgeErrorKind.EXTRACTION, JudgeErrorKi
 @pytest.mark.parametrize(
     ("test_id", "expected"),
     [
-        ("V09", ["FAIL", "UNSCORED", "UNSCORED", "UNSCORED", "UNSCORED", "UNSCORED"]),
-        ("B16", ["FAIL", "FAIL", "FAIL", "FAIL", "UNSCORED", "UNSCORED"]),
-        ("B17", ["FAIL", "FAIL", "FAIL", "FAIL", "UNSCORED", "UNSCORED"]),
-        ("B29", ["FAIL", "FAIL", "FAIL", "FAIL", "UNSCORED", "UNSCORED"]),
+        ("V09", ["FAIL", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE"]),
+        ("B16", ["FAIL", "FAIL", "FAIL", "FAIL", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE"]),
+        ("B17", ["FAIL", "FAIL", "FAIL", "FAIL", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE"]),
+        ("B29", ["FAIL", "FAIL", "FAIL", "FAIL", "GRADING UNAVAILABLE", "GRADING UNAVAILABLE"]),
     ],
 )
 def test_a_probe_is_shown_failed_exactly_when_its_score_counts_it_as_a_fail(

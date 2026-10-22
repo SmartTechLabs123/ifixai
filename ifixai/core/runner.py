@@ -504,8 +504,11 @@ def build_partial_result(
         run_mode=run_mode,
         sut_temperature=sut_temperature,
         sut_seed=sut_seed,
-        selected_ids=set(planned_ids),
-        not_run_ids=missing,
+        # A scoped run reports unselected mandatory minimums as not run, the same as when it
+        # completes. A planned one an abort left missing still fails; one a run stop kept from
+        # running (budget, the judge's key or credit) is a gate not checked, never a fail.
+        selected_ids=None if run_mode == "full" else set(planned_ids),
+        not_run_ids=missing if not_run_reason != "aborted" else (),
     )
     result.partial = True
     result.abort_reason = abort_reason
