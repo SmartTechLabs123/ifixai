@@ -386,13 +386,18 @@ async def test_an_ensemble_judge_that_refuses_stops_the_run_even_when_the_other_
     pytest.importorskip("openai")
     monkeypatch.setenv("IFIXAI_JUDGE_FAIL_FAST", "1")
     verdicts = [{"claim": CLAIM.claim, "response_correct": False, "reason": "r"}]
+    other_arrived = asyncio.Event()
 
     class ByModel(AiohttpJudge):
         async def handle(self, request: web.Request) -> web.Response:
             model = (await request.json())["model"]
             self.prompts.append(model)
             if model == "m1":
+                # Refuse once the other judge's call is in: the stop cancels calls still out,
+                # and on a fast runner it otherwise cut m2's before it was sent.
+                await asyncio.wait_for(other_arrived.wait(), timeout=5)
                 return web.json_response(NO_CREDIT, status=402)
+            other_arrived.set()
             return web.json_response(completion(json.dumps(verdicts)))
 
     judge = ByModel()
@@ -1856,7 +1861,8 @@ def test_a_judge_whose_sdk_is_missing_stops_the_run_before_any_agent_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delitem(resolver_module._PROVIDER_MAP, "anthropic")
+    # Absent already where the SDK isn't installed (CI's `.[dev]`).
+    monkeypatch.delitem(resolver_module._PROVIDER_MAP, "anthropic", raising=False)
     with judge_server(answers=0, refusal=(401, DEAD_KEY)) as judge, agent_server(judge) as agent:
         result = CliRunner().invoke(ifixai_cli, [
             "run", "--provider", "http", "--endpoint", f"http://127.0.0.1:{agent.server_port}/v1",

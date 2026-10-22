@@ -22,6 +22,8 @@ from ifixai.harness.suites import suite_catalog
 #: this test cannot derive, so they are listed explicitly and reviewed by hand.
 ALLOWED_NON_COUNT_NUMBERS: dict[str, frozenset[int]] = {
     "essential": frozenset({6, 4}),
+    # "P01" names the mandatory minimum the suite leaves out.
+    "core": frozenset({1}),
 }
 
 

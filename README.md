@@ -151,7 +151,7 @@ More on [scoring](docs/scoring.md) and [every inspection](docs/inspections.md).
 
 ## What a default run covers
 
-`ifixai run` runs these 10 inspections. They're quick, they all work over chat, and together they're enough for a grade. Add `--full-run` for all 61; any that can't apply to your agent are set aside first, and the run tells you why.
+`ifixai run` runs these 10 inspections. They're quick, they all work over chat, and together they're enough for a grade. Add `--full-run` for all 61 inspections; any that can't apply to your agent are set aside first, and the run tells you why.
 
 | Impact | ID | Checks that your agent… |
 |---|---|---|

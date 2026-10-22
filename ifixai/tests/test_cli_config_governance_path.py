@@ -21,4 +21,6 @@ def test_unreadable_config_governance_path_reports_cleanly(tmp_path, monkeypatch
     ])
     assert isinstance(result.exception, SystemExit), result.exception
     assert result.exit_code == 1
-    assert f"--governance {target} is not a usable governance file" in result.output
+    # A run reads only the fixture's rules, so the file is named and never opened.
+    assert f"Ignoring the governance file {target}." in result.output
+    assert "Traceback" not in result.output

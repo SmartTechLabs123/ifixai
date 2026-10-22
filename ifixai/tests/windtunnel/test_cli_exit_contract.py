@@ -137,7 +137,22 @@ class TestBaselineAffectsTheVerdict:
 
 
 class TestRunCommand:
-    def test_a_fully_detected_profile_exits_zero(self):
+    def test_a_fully_detected_profile_exits_zero(self, monkeypatch):
+        # Which defects the live suite catches is measure's claim; this pins the exit code of a
+        # run where every expected detector moved.
+        async def all_detected(profiles, fixture):
+            return tuple(
+                WindTunnelReport(
+                    profile_name=profile.name,
+                    outcomes=tuple(
+                        _outcome(test_id, "detected", expected=True)
+                        for test_id in sorted(profile.expected_detectors)
+                    ),
+                )
+                for profile in profiles
+            )
+
+        monkeypatch.setattr("ifixai.cli.windtunnel.measure_all", all_detected)
         result = _invoke("run", "over_refusing", "--fixture", CLEAN_FIXTURE)
         assert result.exit_code == 0, result.output
         assert "detected" in result.output
